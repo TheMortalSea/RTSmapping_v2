@@ -31,7 +31,7 @@ MAX_WORKERS            = int(require_env("MAX_WORKERS"))
 _test_limit = os.environ.get("TEST_LIMIT")
 TEST_LIMIT = int(_test_limit) if _test_limit else None
 
-print("Configuration loaded from environment:")
+print("config loaded from shell script:")
 print(f"  BUCKET:                 {BUCKET}")
 print(f"  INPUT_PREFIX:           {INPUT_PREFIX}")
 print(f"  OUTPUT_PREFIX:          {OUTPUT_PREFIX}")
@@ -42,7 +42,6 @@ print(f"  MAX_WORKERS:            {MAX_WORKERS}")
 print(f"  TEST_LIMIT:             {TEST_LIMIT or 'None (all tiles)'}")
 
 # AUTH + LOCAL DIRS
-
 auth.authenticate_user()
 
 os.makedirs(f"{WORK_DIR}/input",  exist_ok=True)
@@ -50,7 +49,6 @@ os.makedirs(f"{WORK_DIR}/output", exist_ok=True)
 
 client = storage.Client()
 bucket = client.bucket(BUCKET)
-
 
 # LOAD POLYGON DATASETS
 print("\nDownloading polygon datasets from GCS...")
@@ -68,7 +66,7 @@ print(f"  Ignore polygons: {len(gdf_ignore)} features")
 
 
 # LIST TILES
-print(f"\nScanning GCS for tiles under: {INPUT_PREFIX}")
+print(f"\nfinding imagery tiles: {INPUT_PREFIX}")
 
 all_tile_blobs = [
     blob.name
@@ -76,15 +74,15 @@ all_tile_blobs = [
     if blob.name.endswith(".tif")
 ][:TEST_LIMIT]
 
-print(f"  Found {len(all_tile_blobs)} tiles")
+print(f"  found {len(all_tile_blobs)} tiles")
 
 if len(all_tile_blobs) == 0:
-    print("No tiles found — check INPUT_PREFIX and BUCKET in run_reprocess.sh")
+    print("no tiles found — check INPUT_PREFIX and BUCKET in run_reprocess.sh")
     sys.exit(0)
 
 
 # RESUME SUPPORT
-print("Checking for already-processed tiles (resume support)...")
+print("checking for already-processed tiles (resumes if process was interrupted)")
 
 def _derive_output_name(blob_path):
     base = blob_path.split("/")[-1].replace(".tif", "")
@@ -101,11 +99,11 @@ tiles_to_process = [
     if _derive_output_name(blob_path) not in already_done
 ]
 
-print(f"  Already processed: {len(all_tile_blobs) - len(tiles_to_process)}")
-print(f"  Remaining:         {len(tiles_to_process)}")
+print(f"  already processed: {len(all_tile_blobs) - len(tiles_to_process)}")
+print(f"  remaining:         {len(tiles_to_process)}")
 
 if len(tiles_to_process) == 0:
-    print("All tiles already processed!")
+    print("All tiles already processed")
     sys.exit(0)
 
 
@@ -215,7 +213,7 @@ def process_single_tile(blob_path, bucket_name, work_dir, output_prefix):
 
 
 # RUN IN PARALLEL
-print(f"\nReprocessing {len(tiles_to_process)} tiles with {MAX_WORKERS} workers...\n")
+print(f"\nprocessing {len(tiles_to_process)} tiles with {MAX_WORKERS} workers\n")
 
 success_count = 0
 skip_count    = 0
@@ -253,5 +251,5 @@ with concurrent.futures.ProcessPoolExecutor(
             pbar.update(1)
 
 # SUMMARY
-print(f"\nDone — {success_count} written, {skip_count} skipped, {error_count} errors")
-print(f"Outputs at: gs://{BUCKET}/{OUTPUT_PREFIX}")
+print(f"\ncomplete {success_count} written, {skip_count} skipped, {error_count} errors")
+print(f"output folder = gs://{BUCKET}/{OUTPUT_PREFIX}")
