@@ -193,9 +193,11 @@ def process_single_tile(blob_path, bucket_name, work_dir, output_prefix):
         if tile_nodata is not None:
             profile["nodata"] = tile_nodata
 
+        mask_band = new_mask[np.newaxis, :, :].astype(rgb_data.dtype)
+        rgbm_data = np.concatenate([rgb_data, mask_band], axis=0)  # shape: (4, H, W)
+
         with rasterio.open(local_output, "w", **profile) as dst:
-            dst.write(rgb_data)
-            dst.write(new_mask[np.newaxis, :, :].astype(rgb_data.dtype), 4)
+            dst.write(rgbm_data)  # writes all 4 bands at once
             dst.set_band_description(1, "Red")
             dst.set_band_description(2, "Green")
             dst.set_band_description(3, "Blue")
@@ -247,7 +249,7 @@ with concurrent.futures.ProcessPoolExecutor(
                     skip_count += 1
             except Exception as exc:
                 error_count += 1
-                tqdm.write(f"✗ ERROR: {blob_path.split('/')[-1]} — {exc}")
+                tqdm.write(f"ERROR: {blob_path.split('/')[-1]} — {exc}")
             pbar.update(1)
 
 # SUMMARY
