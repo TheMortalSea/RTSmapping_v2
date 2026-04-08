@@ -1,13 +1,12 @@
-#!/bin/bash
-# runs the positive tile generation process, this serves as a template or placeholder for paths
-
-export BUCKET="my-bucket"
+# this is meant to run in a colab environment
+%%bash
+export BUCKET="bucket"
 export INPUT_PREFIX="tiles/input/"
 export OUTPUT_PREFIX="tiles/output/"
-export POSITIVE_GEOJSON_BLOB="labels/positive.geojson"
-export IGNRORE_GEOJSON_BLOB="labels/ignore.geojson"
-export WORK_DIR="/content/work"   #this is the colab working directory chnge as needed
+export POSITIVE_GEOJSON_BLOB="training_labels"
+export IGNRORE_GEOJSON_BLOB="ignore_labels"
+export WORK_DIR="/content/work"
 export MAX_WORKERS=4
-# export TEST_LIMIT=10    # uncomment to test with a small batch
+# export TEST_LIMIT=10
 
-python "$(dirname "$0")/reprocess.py"
+python /content/RTSmapping_v2/data/data_generation/positive_tile_creation.py
