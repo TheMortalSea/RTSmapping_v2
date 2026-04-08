@@ -237,14 +237,14 @@ with concurrent.futures.ProcessPoolExecutor(
         for args in tile_args
     }
 
-    with tqdm(total=len(tiles_to_process), desc="Reprocessing tiles", unit="tile") as pbar:
+    with tqdm(total=len(tiles_to_process), desc="reprocessing tiles", unit="tile") as pbar:
         for future in concurrent.futures.as_completed(future_to_blob):
             blob_path = future_to_blob[future]
             try:
                 result = future.result()
                 if result is not None:
                     success_count += 1
-                    tqdm.write(f"✓ {result}")
+                    # tqdm.write(f"{result}") # optionally print successful tiles for error check
                 else:
                     skip_count += 1
             except Exception as exc:
