@@ -101,11 +101,6 @@ if len(tiles_to_process) == 0:
     print("All tiles already processed")
     sys.exit(0)
 
-tile_uid_map = {
-    blob_path: next_uid + i
-    for i, blob_path in enumerate(tiles_to_process)
-}
-
 
 def worker_init(positive_path, ignore_path):
     global gdf_positive, gdf_ignore
@@ -113,16 +108,15 @@ def worker_init(positive_path, ignore_path):
     gdf_ignore   = gpd.read_file(ignore_path)
 
 
-def process_single_tile(blob_path, uid, bucket_name, work_dir, rgb_prefix, labels_prefix):
+def process_single_tile(blob_path, bucket_name, work_dir):
     tile_filename = blob_path.split("/")[-1]
-    base_name     = tile_filename.replace(".tif", "")
+    base_name     = blob_path.replace("/", "_").replace(".tif", "")
     parts         = blob_path.split("/")
     col, row      = parts[-3], parts[-2]
-    uid_str       = f"{uid:06d}"
 
-    local_input      = f"{work_dir}/input/{col}_{row}_{tile_filename}"
-    local_rgb_out    = f"{work_dir}/output/{uid_str}_rgb.tif"
-    local_label_out  = f"{work_dir}/output/{uid_str}_label.tif"
+    local_input     = f"{work_dir}/input/{base_name}.tif"
+    local_rgb_out   = f"{work_dir}/output/rgb_{base_name}.tif"
+    local_label_out = f"{work_dir}/output/label_{base_name}.tif"
 
     client = storage.Client()
     bucket = client.bucket(bucket_name)
@@ -136,8 +130,7 @@ def process_single_tile(blob_path, uid, bucket_name, work_dir, rgb_prefix, label
             tile_crs       = src.crs
             tile_transform = src.transform
             tile_nodata    = src.nodata
-
-            rgb_data = src.read(indexes=[1, 2, 3])
+            rgb_data       = src.read(indexes=[1, 2, 3])
 
             tile_bounds = rasterio.transform.array_bounds(tile_height, tile_width, tile_transform)
             tile_bbox   = box(*tile_bounds)
@@ -196,13 +189,7 @@ def process_single_tile(blob_path, uid, bucket_name, work_dir, rgb_prefix, label
             dst.write(new_mask[np.newaxis, :, :])
             dst.set_band_description(1, "Mask: 0=background 1=positive 255=ignore")
 
-        bucket.blob(f"{rgb_prefix}{uid_str}.tif").upload_from_filename(local_rgb_out)
-        bucket.blob(f"{labels_prefix}{uid_str}.tif").upload_from_filename(local_label_out)
-
-        os.remove(local_rgb_out)
-        os.remove(local_label_out)
-
-        return f"{uid_str} — {col}/{row}/{tile_filename}"
+        return (local_rgb_out, local_label_out)
 
     finally:
         if os.path.exists(local_input):
@@ -222,7 +209,7 @@ with concurrent.futures.ProcessPoolExecutor(
 ) as executor:
 
     tile_args = [
-        (blob_path, tile_uid_map[blob_path], BUCKET, WORK_DIR, RGB_PREFIX, LABELS_PREFIX)
+        (blob_path, BUCKET, WORK_DIR)
         for blob_path in tiles_to_process
     ]
 
@@ -237,6 +224,13 @@ with concurrent.futures.ProcessPoolExecutor(
             try:
                 result = future.result()
                 if result is not None:
+                    local_rgb, local_label = result
+                    uid_str = f"{next_uid:06d}"
+                    bucket.blob(f"{RGB_PREFIX}{uid_str}.tif").upload_from_filename(local_rgb)
+                    bucket.blob(f"{LABELS_PREFIX}{uid_str}.tif").upload_from_filename(local_label)
+                    os.remove(local_rgb)
+                    os.remove(local_label)
+                    next_uid += 1
                     success_count += 1
                 else:
                     skip_count += 1
