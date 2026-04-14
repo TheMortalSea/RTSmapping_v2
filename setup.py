@@ -10,6 +10,8 @@ setup(
         "numpy",
         "pandas",
         "google-cloud-storage",
+        "pyyaml",
+        "tqdm",
     ],
     author="Yili Yang",
     author_email="yyang@woodwellclimate.org",
