@@ -4,6 +4,7 @@
 
 Deploy the trained segmentation model for pan-arctic inference (60-74°N) on 2025 PlanetScope basemap imagery to produce an RTS survey map. The pipeline prioritizes **precision over recall** to minimize false alarms in the final product.
 
+The data and model operation in inference should exactly match those in training. The best 'recipe' will be provided once the training and experiments are done.
 ---
 
 ## 2. Infrastructure
@@ -85,7 +86,7 @@ gs://abruptthawmapping/
 | Bands | RGB |
 | Resolution | ~3 m |
 | Coverage | 60-74°N (pan-arctic) |
-| CRS | EPSG:3413 |
+| CRS | EPSG:3857 |
 
 ### 3.2 Coverage Estimation
 
@@ -106,7 +107,7 @@ gs://abruptthawmapping/
 |-----------|-------|-----------|
 | Tile size | 512×512 pixels | Matches training tile size |
 | Spatial coverage | ~1.5 km × 1.5 km | At 3m resolution |
-| CRS | EPSG:3413 | Consistent with training |
+| CRS | EPSG:3857 | Consistent with training |
 | Format | GeoTIFF | Preserves georeferencing |
 
 ### 4.2 Overlap Configuration
@@ -132,6 +133,7 @@ The inference tile grid is **pre-filtered externally** (land-only, permafrost zo
 ---
 
 ## 5. Normalization
+Implement a simple Histogram Matching script or a "Mini-Normalization" check. Before running full inference on a new region, calculate the mean/std of a small 2025 sample and compare it to the 2024 normalization_stats.json.
 
 ### 5.1 Loading Statistics
 
@@ -143,13 +145,7 @@ The inference tile grid is **pre-filtered externally** (land-only, permafrost zo
 
 ### 5.2 Application
 
-For each input tile:
-1. Load RGB values as float32
-2. Subtract channel means: `x = x - mean[channel]`
-3. Divide by channel stds: `x = x / std[channel]`
-4. Feed normalized tensor to model
-
-**Warning**: If normalization statistics are not applied identically to training, model predictions will be unreliable.
+Use the exact normalization methods ands tatistics identically to training.
 
 ---
 
@@ -167,9 +163,8 @@ RTS range from ~50m to 2+ km. A single resolution cannot optimally detect all si
 |-------|---------------------|---------------|------------|
 | 1.0 | 3m (native) | 1.5 km | Small-medium (50m-500m) |
 | 0.5 | 6m | 3 km | Medium-large (200m-1km) |
-| 0.25 | 12m | 6 km | Very large (1km+) |
 
-**Recommended configuration**: Start with scales [1.0, 0.5]. Add 0.25 only if large RTS recall is problematic.
+First 1.0, if large RTS is problematic then 0.5
 
 ### 6.3 Multi-Scale Procedure
 
@@ -193,16 +188,6 @@ For each tile location:
 2. Downsample to 512×512
 3. Normalize, run inference
 4. Upsample to 2048×2048, crop center 512×512 → P_0.25
-
-### 6.4 Scale Fusion
-
-Combine predictions across scales using **pixel-wise maximum**:
-
-```
-P_final = max(P_1.0, P_0.5, P_0.25)
-```
-
-**Rationale**: If any scale confidently detects RTS, include it. Maximum operation is conservative toward detection while individual scale thresholds control precision.
 
 ---
 
@@ -272,49 +257,6 @@ The inference job must be resumable after interruption:
 1. Maintain manifest of completed tiles in `inference_log.json`
 2. On restart, load manifest and skip completed tiles
 3. Use atomic writes to GCS (write to temp, then rename)
-
----
-
-## 9. Prediction Merging
-
-### 9.1 Overlap Handling
-
-Adjacent tiles overlap by 50%. The overlapping regions have multiple predictions that must be merged.
-
-**Merging strategy: Maximum**
-
-For pixels covered by multiple tiles, take the maximum probability:
-```
-P_merged(x, y) = max(P_tile1(x, y), P_tile2(x, y), ...)
-```
-
-**Rationale**: Consistent with the detection philosophy—if any tile view detects RTS, include it.
-
-### 9.2 Merging Procedure
-
-**Option A: On-the-fly merging (memory-efficient)**
-1. Create output raster for region with NoData fill
-2. For each tile prediction:
-   - Read overlapping region from output
-   - Compute pixel-wise maximum with new prediction
-   - Write merged result back
-3. Advantage: Low memory; Disadvantage: Many I/O operations
-
-**Option B: Batch merging (faster)**
-1. Accumulate all tile predictions in memory (or memory-mapped file)
-2. Apply reduction (maximum) across overlapping tiles
-3. Write final merged raster
-4. Advantage: Faster; Disadvantage: High memory for large regions
-
-**Recommendation**: Use Option B for manageable regions (e.g., per Arctic subregion), Option A for full pan-arctic if memory-constrained.
-
-### 9.3 Output Chunking
-
-For pan-arctic scale, produce merged outputs per region rather than single global raster:
-- Easier to manage and distribute
-- Enables parallel processing
-- Allows region-specific quality control
-
 ---
 
 ## 10. Output Specification
@@ -327,7 +269,7 @@ For pan-arctic scale, produce merged outputs per region rather than single globa
 | Data type | Float32 |
 | Range | [0.0, 1.0] |
 | NoData value | -1.0 |
-| CRS | EPSG:3413 |
+| CRS | EPSG:3857 |
 | Resolution | 3m (native) |
 | Compression | LZW |
 
@@ -339,7 +281,7 @@ For pan-arctic scale, produce merged outputs per region rather than single globa
 | Data type | UInt8 |
 | Values | 0 (background), 1 (RTS) |
 | NoData value | 255 |
-| CRS | EPSG:3413 |
+| CRS | EPSG:3857 |
 | Resolution | 3m |
 | Compression | LZW |
 
@@ -351,7 +293,7 @@ Threshold applied: Use calibrated threshold from training (documented in model c
 |-----------|-------|
 | Format | GeoPackage (.gpkg) |
 | Geometry | Polygon (MultiPolygon for fragmented) |
-| CRS | EPSG:3413 |
+| CRS | EPSG:3857 |
 
 **Attributes per polygon**:
 

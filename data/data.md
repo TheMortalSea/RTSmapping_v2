@@ -72,8 +72,6 @@ HOW TO DEFINE BOUNDARY: enforcing perfect consistency would be exhausting and ar
 
 PATTERN: made sure the overall morphology read as a collapsed landscape (concaved).
 
-PARTIAL OBJECT: put the partial object to isolation (masking the adjacent tiles when labelling)
-
 ### 2.3 Partial Target Handling
 
 This is critical for training data quality:
@@ -88,6 +86,9 @@ This is critical for training data quality:
 
 **Rationale**: The model learns that "only barren floor associated with a headwall with shadow is RTS." Overlapping inference tiles ensure partial targets are detected where both features are visible. Use an Ignore Index （255） for pixels that are part of an RTS but lack the diagnostic headwall in that specific tile. This prevents the model from learning conflicting information while maintaining strict detection criteria. This is feature engineering with domain knowledge which especially important when training data is limited.
 
+How to make the decision of whether a partial object should be trained: put the partial object to isolation (masking the adjacent tiles when labelling), if the partial object can be confirmed without neighbour tiles context, train it.
+
+
 ### 2.4 Label Values
 
 | Value | Meaning |
@@ -96,6 +97,11 @@ This is critical for training data quality:
 | 1 | RTS (positive class) |
 | 255 | Ignore |
 ---
+The ignore values could be applied to several conditions, for example:
+- partial object that can't be confirmed without neighbouring tile context, even if it's obvious if with context
+- RTS-like features that can't be confirmed under the Planet image quality/resolution, even if it's clear in Esri basemap
+
+
 
 ## 3. Training Image Specification
 
@@ -222,12 +228,12 @@ Both PLANET-RGB and EXTRA store **raw values** (no normalization applied to stor
 ### 4.1 Normalization
 Before computing statistics, apply percentage clipping to remove outliers. This is a **one-off step** during statistics computation (not applied per-image at load time):
 - Run `scripts/check_data.py` first to visualise per-channel histograms and choose appropriate percentile bounds
+- PlanetScope pre-processing may have already handled normalisation and outliers, the normalisation in this step is mostly for value alignment with the pretrained backbone, rather than improving image quality.
 - Pass clipping percentiles as arguments to `scripts/compute_normalization_stats.py`
 - Clipping percentile decision should be decided by looking at the histogram. to use histogram to decide the clipping optimal value: calculate a histogram with all available postive and negative tiles and save the figure and raw data for manual assessment. 
 - The computed mean/std (on clipped data) are saved in `normalization_stats.json` — the DataLoader uses only those stored values
 
 **Normalisation** Should be calculated per-dataset, rather than per-image, to:
-- Preserves absolute radiometric information
 - Consistent inference behavior regardless of batch composition
 - Satellite imagery has consistent acquisition conditions within a sensor
 

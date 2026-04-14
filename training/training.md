@@ -40,11 +40,13 @@ Train a semantic segmentation model that detects Retrogressive Thaw Slumps (RTS)
 
 | Component | Choice | Rationale |
 |-----------|--------|-----------|
-| Architecture | UNet++ | Best performing in v1 experiments |
-| Encoder backbone | EfficientNet-B7 | Strong ImageNet features, efficient |
+| Architecture | UNet3+ | Best performing in v1 experiments |
+| Encoder backbone | EfficientNet | Strong ImageNet features, efficient |
 | Pretrained weights | ImageNet | Transfer learning for faster convergence |
 | Input size | 512×512×3 | RGB channels |
 | Output | Binary segmentation mask | Single-class prediction |
+
+The EfficientNet version should be tested - small-B3/mid-B5/large-B7.
 
 ### 3.2 Candidate Models for Experimentation
 
@@ -52,11 +54,11 @@ Experiment in priority order (stop when diminishing returns):
 
 | Priority | Model | Notes |
 |----------|-------|-------|
-| 1 (baseline) | UNet++ + EfficientNet-B7 | Proven in v1; strong CNN baseline |
+| 1 (baseline) | UNet3+ + EfficientNet-B() | Proven in v1; strong CNN baseline |
 | 2 | SegFormer-B5 | Efficient Vision Transformer; strong on dense prediction tasks |
 | 3 | DINOv3 encoder + dense head | Latest DINO self-supervised ViT; confirm model version at time of implementation |
 
-SAM is not a direct fit for pixel-level semantic segmentation (prompt-based mask decoder). Skip unless UNet++ and SegFormer both fail to meet precision targets and a dedicated feasibility study is done.
+SAM is not a direct fit for pixel-level semantic segmentation (prompt-based mask decoder). Skip unless UNet3+ and SegFormer both fail to meet precision targets and a dedicated feasibility study is done.
 Skip Prithvi, SATMAE, SwinTransformer, Mask2Former unless experiments clearly plateau.
 
 ### 3.3 Multi-Modal Fusion (for EXTRA dataset)
@@ -78,10 +80,6 @@ Note: late fusion may require architecture redesign
 **Critical**: The same normalization statistics used during training **must** be used during inference. The inference pipeline loads `normalization_stats.json` from the model directory and applies identical normalization.
 
 If 2025 imagery has significantly different radiometric properties than 2024 training data, this will manifest as degraded performance. Monitor inference predictions for systematic shifts.
-
-
-**Risk**: PlanetScope introduces new sensor generations (SuperDove flocks) frequently. The spectral response of 2025 data might differ slightly from 2024. Suggestion: Include a "Histogram Matching" step in the inference pipeline as a fallback, or ensure normalization_stats are robust. If the 2025 validation (early inference) looks poor, may need to re-calculate normalization stats on 2025 data (assuming the distribution of terrain types remains constant).
-
 ---
 
 ## 5. Loss Functions
@@ -139,7 +137,7 @@ soft_label_value: 0.05      # P(background near boundary) when boundary_handling
 - Options: constant soft values (0.05/0.95) or distance-based softening
 - Requires using BCE with soft targets (not cross-entropy with integer labels)
 
-**Experiment order**: Run baseline with `ignore` first; ablate vs `soft_labels` and `none` in Phase 2 loss experiments.
+**Experiment order**: Run baseline with `none` first; then ablate against soft_labels with a narrow band (1–2 pixels) and then a small soft value (~0.1).
 ---
 
 ## 6. Metrics
@@ -267,8 +265,8 @@ Run inference at multiple effective resolutions to catch different RTS scales. S
 
 | Parameter | Value |
 |-----------|-------|
-| Architecture | UNet++ |
-| Backbone | EfficientNet-B7 |
+| Architecture | UNet3+ |
+| Backbone | EfficientNet-B7/B5/B3 |
 | Pretrained weights | ImageNet |
 | Input channels | 3 (RGB) |
 | Input size | 512×512 |
@@ -483,7 +481,7 @@ TTA runs inference multiple times with different augmentations and averages pred
 | Standard | Identity, hflip, vflip, rot180 | 4× slower | ~2% |
 | Full | All 8 D4 symmetries | 8× slower | ~2-3% |
 
-**Recommendation**: Use Standard (4 transforms) for production—good balance of accuracy and speed.
+**Recommendation**: Use Minimal first, use Standard (4 transforms)only if necessary.
 
 ### 11.2 TTA Procedure
 
@@ -520,87 +518,6 @@ For each prevalence ratio (1:200, 1:500, 1:1000):
 
 ---
 
-## 13. Experiment Tracking
-
-### 13.1 MLflow Configuration
-
-**Tracking URI**: GCS-backed MLflow at `gs://abruptthawmapping/mlflow/`. Configurable via YAML:
-```yaml
-mlflow:
-  tracking_uri: "gs://abruptthawmapping/mlflow/"
-  experiment_name: "rts-segmentation-v2"
-```
-The `MLFLOW_TRACKING_URI` environment variable overrides the YAML value if set (for flexibility).
-
-**Experiment Structure**:
-- Experiment name: `rts-segmentation-v2`
-- Each run includes: hyperparameters, metrics, artifacts, system info
-
-**Required Parameters to Log**:
-
-| Category | Parameters |
-|----------|------------|
-| Model | architecture, backbone, pretrained, input_channels, input_size |
-| Loss | loss_function, focal_gamma, focal_alpha, boundary_ignore_width |
-| Optimizer | optimizer, learning_rate, weight_decay, gradient_clip_norm |
-| Schedule | scheduler, warmup_epochs, min_lr, freeze_backbone_epochs |
-| Training | batch_size, max_epochs, early_stopping_patience, ema_decay |
-| Data | data_version, train_pos_neg_ratio, curriculum_schedule |
-| System | git_commit, pytorch_version, cuda_version, gpu_model, gpu_count |
-
-**Metrics to Log Per Epoch**:
-- train_loss, train_iou_rts
-- val_balanced_iou, val_balanced_pr_auc
-- For each ratio (200, 500, 1000): val_{ratio}_pr_auc, val_{ratio}_iou_rts, val_{ratio}_obj_precision, val_{ratio}_obj_recall
-
-**Artifacts to Save**:
-- best_model.pth (EMA weights)
-- normalization_stats.json
-- config.yaml
-- pr_curves.png
-- threshold_calibration.json
-- requirements_frozen.txt
-- predictions.png (fixed 3 positive and 3 negative validation images subplot 3 columns by 2 rows)
-
-### 13.2 Experiment Progression
-
-Experiments should follow dependency order:
-
-**Phase 1: Baseline**
-- RGB, UNet++, EfficientNet-B7, Focal loss
-- Establish baseline performance
-
-**Phase 2: Loss Ablation** (depends on Phase 1)
-- Compare: Focal, Tversky (β > α), Class-balanced CE
-- Select best loss function
-
-**Phase 3: Curriculum Ablation** (depends on Phase 2)
-- Compare: Fixed ratios (1:10, 1:20), Curriculum schedules
-- Select best imbalance handling
-
-**Phase 4: Architecture** (depends on Phases 2-3)
-- Compare: UNet++, DeepLabV3+, SegFormer, SAM fine-tuned
-- Select best architecture
-
-**Phase 5: Auxiliary Data** (depends on Phase 4)
-- Compare: RGB only, RGB+NDVI, RGB+DEM, RGB+all EXTRA channels
-- Determine if auxiliary data helps
-
-**Phase 6: Fusion Method** (only if Phase 5 shows benefit)
-- Compare: Early fusion, Late fusion
-- Select best fusion strategy
-
-**Experiment execution**: A single `scripts/train.py` handles all experiments. Each experiment is defined by its own YAML config file in `configs/`:
-```
-configs/
-├── baseline.yaml         # Phase 1: UNet++, focal loss
-├── exp02_loss.yaml       # Phase 2: loss ablation (focal vs tversky vs class-balanced CE)
-├── exp03_curriculum.yaml # Phase 3: curriculum schedule ablation
-├── exp04_arch.yaml       # Phase 4: architecture comparison
-└── exp05_aux.yaml        # Phase 5: auxiliary data ablation
-```
-Run an experiment: `python scripts/train.py --config configs/baseline.yaml`
----
 
 ## 14. Statistical Significance
 
@@ -621,3 +538,4 @@ Final results table should include:
 | PR-AUC | X.XX ± X.XX | X.XX ± X.XX | X.XX ± X.XX |
 
 ---
+
