@@ -24,13 +24,14 @@ This project trains a deep learning model to detect RTS from PlanetScope basemap
 
 ## Training
 
+
 ## Inference
+
 
 ## Post-inference
 
+
 ## Computation
-Google Cloud Platform VM via PDG:
-https://docs.google.com/document/d/1BFwFRtXIYNjjQ7ovyEp6O1v31oTO8dSn8IDPotUBxhM/edit?pli=1&tab=t.0#heading=h.w9hi6k63xnp9
 
 Dockerization
 
