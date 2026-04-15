@@ -48,7 +48,7 @@ gs://abruptthawmapping/
 
 ### 2.3 Docker Environment
 
-**Base Image**: Same as training—`pytorch/pytorch:2.2.0-cuda12.1-cudnn8-devel`
+**Base Image**: Same as training — see `computing/docker_training.md` for the authoritative Dockerfile and base image.
 
 **Additional Inference Requirements**:
 
@@ -145,7 +145,7 @@ Implement a simple Histogram Matching script or a "Mini-Normalization" check. Be
 
 ### 5.2 Application
 
-Use the exact normalization methods ands tatistics identically to training.
+Use the exact normalization methods and statistics identically to training.
 
 ---
 
@@ -183,12 +183,6 @@ For each tile location:
 5. Upsample prediction back to 1024×1024
 6. Crop center 512×512 → P_0.5
 
-**Scale 0.25**:
-1. Load 2048×2048 region centered on tile location
-2. Downsample to 512×512
-3. Normalize, run inference
-4. Upsample to 2048×2048, crop center 512×512 → P_0.25
-
 ---
 
 ## 7. Test-Time Augmentation (TTA)
@@ -224,7 +218,6 @@ Total inference passes per tile location: n_scales × n_tta_transforms
 |---------------|---------------------|
 | 2 scales, no TTA | 2 |
 | 2 scales, minimal TTA | 4 |
-| 3 scales, minimal TTA | 6 |
 | 2 scales, standard TTA | 8 |
 
 ---
@@ -259,9 +252,9 @@ The inference job must be resumable after interruption:
 3. Use atomic writes to GCS (write to temp, then rename)
 ---
 
-## 10. Output Specification
+## 9. Output Specification
 
-### 10.1 Probability Raster
+### 9.1 Probability Raster
 
 | Attribute | Value |
 |-----------|-------|
@@ -271,9 +264,9 @@ The inference job must be resumable after interruption:
 | NoData value | -1.0 |
 | CRS | EPSG:3857 |
 | Resolution | 3m (native) |
-| Compression | LZW |
+| Compression | Deflate |
 
-### 10.2 Binary Mask
+### 9.2 Binary Mask
 
 | Attribute | Value |
 |-----------|-------|
@@ -283,11 +276,11 @@ The inference job must be resumable after interruption:
 | NoData value | 255 |
 | CRS | EPSG:3857 |
 | Resolution | 3m |
-| Compression | LZW |
+| Compression | Deflate |
 
 Threshold applied: Use calibrated threshold from training (documented in model config).
 
-### 10.3 Vector Output
+### 9.3 Vector Output
 
 | Attribute | Value |
 |-----------|-------|
@@ -300,8 +293,8 @@ Threshold applied: Use calibrated threshold from training (documented in model c
 | Field | Type | Description |
 |-------|------|-------------|
 | rts_id | Integer | Unique identifier |
-| area_m2 | Float | Polygon area in square meters |
-| perimeter_m | Float | Polygon perimeter in meters |
+| area_m2 | Float | Polygon area in square meters (geodesic) |
+| perimeter_m | Float | Polygon perimeter in meters (geodesic) |
 | centroid_lat | Float | Centroid latitude (WGS84) |
 | centroid_lon | Float | Centroid longitude (WGS84) |
 | mean_prob | Float | Mean probability within polygon |
@@ -309,7 +302,7 @@ Threshold applied: Use calibrated threshold from training (documented in model c
 | detection_scale | String | Scale(s) that detected this RTS |
 | tile_ids | String | Comma-separated tile IDs containing this RTS |
 
-### 10.4 Inference Metadata
+### 9.4 Inference Metadata
 
 Save with each inference run:
 
@@ -333,9 +326,9 @@ Save with each inference run:
 
 ---
 
-## 11. Quality Control
+## 10. Quality Control
 
-### 11.1 Sanity Checks During Inference
+### 10.1 Sanity Checks During Inference
 
 | Check | Action if Failed |
 |-------|------------------|
@@ -344,7 +337,7 @@ Save with each inference run:
 | Tile georeferencing valid | Stop and investigate |
 | GPU memory stable | Reduce batch size |
 
-### 11.2 Post-Inference Validation
+### 10.2 Post-Inference Validation
 
 Performed before releasing results (detailed in post-inference.md):
 - Visual inspection of sample predictions
@@ -354,9 +347,9 @@ Performed before releasing results (detailed in post-inference.md):
 
 ---
 
-## 12. Performance Optimization
+## 11. Performance Optimization
 
-### 12.1 I/O Optimization
+### 11.1 I/O Optimization
 
 | Technique | Description |
 |-----------|-------------|
@@ -365,7 +358,7 @@ Performed before releasing results (detailed in post-inference.md):
 | COG format | Cloud-Optimized GeoTIFF enables efficient partial reads |
 | Batch GCS operations | Upload predictions in batches, not per-tile |
 
-### 12.2 GPU Optimization
+### 11.2 GPU Optimization
 
 | Technique | Description |
 |-----------|-------------|
@@ -374,7 +367,7 @@ Performed before releasing results (detailed in post-inference.md):
 | Multiple streams | Overlap data transfer and compute |
 | Model compilation | torch.compile() for additional speedup |
 
-### 12.3 Estimated Throughput
+### 11.3 Estimated Throughput
 
 | Configuration | Tiles/Second (est.) | Time for 40M tiles |
 |---------------|---------------------|-------------------|
@@ -386,9 +379,9 @@ Performed before releasing results (detailed in post-inference.md):
 
 ---
 
-## 13. Workflow Integration
+## 12. Workflow Integration
 
-### 13.1 PDG Workflow
+### 12.1 PDG Workflow
 
 The inference pipeline integrates with the existing PDG (Permafrost Discovery Gateway) workflow infrastructure developed for DARTS inference.
 
@@ -398,7 +391,7 @@ The inference pipeline integrates with the existing PDG (Permafrost Discovery Ga
 - Logging: Compatible format for PDG monitoring
 - Parallelization: Workflow handles VM orchestration
 
-### 13.2 Docker Entry Point
+### 12.2 Docker Entry Point
 
 The inference container exposes a CLI interface for PDG workflow integration:
 
@@ -410,7 +403,7 @@ python scripts/inference.py --config configs/inference.yaml --tile-list tiles.cs
 - `--tile-list`: CSV file with tile IDs and bounding boxes to process (pre-filtered by PDG/RTS team)
 - Output: Prediction tiles written to GCS path defined in config; `inference_log.json` updated on completion
 
-### 13.3 Parallelization Strategy
+### 12.3 Parallelization Strategy
 
 **Tile-level parallelism** (managed by PDG workflow):
 1. RTS team generates the full filtered tile grid (CSV)
@@ -423,7 +416,7 @@ python scripts/inference.py --config configs/inference.yaml --tile-list tiles.cs
 - Multiple CPU workers handle I/O prefetching
 - No multi-GPU within single VM (simplifies code)
 
-### 13.4 Coordination
+### 12.4 Coordination
 
 | Responsibility | Owner |
 |----------------|-------|
@@ -439,7 +432,7 @@ python scripts/inference.py --config configs/inference.yaml --tile-list tiles.cs
 
 ---
 
-## 14. Inference Checklist
+## 13. Inference Checklist
 
 ### Pre-Inference
 - [ ] Model artifacts uploaded to GCS (model, normalization stats, config)
@@ -465,7 +458,7 @@ python scripts/inference.py --config configs/inference.yaml --tile-list tiles.cs
 
 ---
 
-## 15. Troubleshooting
+## 14. Troubleshooting
 
 | Issue | Possible Cause | Solution |
 |-------|---------------|----------|

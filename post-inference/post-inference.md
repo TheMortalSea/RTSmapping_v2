@@ -1,3 +1,9 @@
+
+
+Working in progress
+
+
+
 # Post inference processing
 
 
@@ -22,7 +28,7 @@ P_merged(x, y) = max(P_tile1(x, y), P_tile2(x, y), ...)
 Combine predictions across scales using **pixel-wise maximum**:
 
 ```
-P_final = max(P_1.0, P_0.5, P_0.25)
+P_final = max(P_1.0, P_0.5)
 ```
 
 **Rationale**: If any scale confidently detects RTS, include it. Maximum operation is conservative toward detection while individual scale thresholds control precision.
@@ -54,9 +60,14 @@ Adjacent (4-neighbours) tiles overlap by 50%. The overlapping regions have multi
 
 **Recommendation**: Use Option B for manageable regions (e.g., per Arctic subregion), Option A for full pan-arctic if memory-constrained.
 
+### Area and Perimeter Calculation
+
+EPSG:3857 distorts areas at high latitudes (~13x inflation at 74°N). All area and perimeter measurements must use **geodesic calculations** (e.g., `pyproj.Geod.geometry_area_perimeter`) or reproject to a local equal-area CRS — never compute directly from EPSG:3857 coordinates.
+
 ### Output Chunking
 
 For pan-arctic scale, produce merged outputs per region rather than single global raster:
 - Easier to manage and distribute
 - Enables parallel processing
 - Allows region-specific quality control
+

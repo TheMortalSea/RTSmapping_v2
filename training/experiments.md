@@ -50,24 +50,26 @@ The `MLFLOW_TRACKING_URI` environment variable overrides the YAML value if set (
 
 ## 2. Experiments progression
 
-### phase 0: Baseline
+### Phase 0: Baseline
 *Objective: Establish a competent foundation on 100% of the primary training data to act as the reference point for all sanity checks.*
 configuration as described in training.md
 
-### phase 1: sanity check: temporal-domain-shift
-*Calculate the generalization gap (Delta) between the 2024 Test-Realistic set and the 2025 Test-Realistic set to catch temporal domain shifts*
+### Phase 1: Sanity check — temporal domain shift
+*Calculate the generalization gap (Delta) between the 2024 Test-Realistic set and the 2025 Test-Realistic set to catch temporal domain shifts.*
 Procedure: Run inference using the Phase 0 Baseline on the 2025 micro-set.
 The Delta Metric: PR-AUC (2024 Test) - PR-AUC (2025 Test).
 
-### phase 2: Data Scaling & Diminishing Returns
+**TBD**: The 2025 micro-set (a small labeled validation set from 2025 imagery) has not been defined yet — tile count, region selection, and labeling plan must be decided before this phase can run.
+
+### Phase 2: Data Scaling & Diminishing Returns
 *Objective: Empirically determine data and parameter plateau (Neural Scaling Laws).*
 Train the Phase Baseline on **25%, 50%, 75%, and 100%** of the available positive RTS tiles and plot data-IoU and data-PRAUC
 
 Deep learning models typically show a power-law relationship between data volume and error reduction. We test this by plotting an empirical learning curve.
 
 **Procedure:**
-1. **Control Variables**: Fix the baseline model (`UNet3+` + `EfficientNet-B5`), hyperparameters, and keep the validation set strictly constant (`Val-Realistic`).
-2. **Data Subsets**: Create four separate training splits using exactly 25%, 50%, 75%, and 100% of the available positive RTS tiles. 
+1. **Control Variables**: Fix the baseline model (`UNet++` + `EfficientNet-B5`), hyperparameters, and keep the validation set strictly constant (`Val-Realistic`).
+2. **Data Subsets**: Create four separate training splits using exactly 25%, 50%, 75%, and 100% of the available positive RTS tiles. The full negative pool is kept for all subsets (only positives are subsetted) to isolate the effect of positive data volume — the curriculum sampler draws the appropriate ratio from the available negatives.
 3. **Training**: Train the baseline model to convergence on each subset.
 4. **Metrics to Track**: Record `PR-AUC` and `IoU_RTS` for each run.
 
@@ -85,20 +87,21 @@ To evaluate if the data distribution's degrees of freedom are sufficient to cons
 - If `Train IoU > 0.9` while `Val-Realistic IoU < 0.5`, the model has too much freedom and the data lacks sufficient variance.
 - *Remedy*: Increase the intensity of geometric/color augmentations in Albumentations, increase weight decay
 
-### Phase 3: test differnt hyper-parameters and training settings e.g backbone, loss, (the variables mentioned in the training.md)
+### Phase 3: Test different hyperparameters and training settings (backbone, loss, etc.)
 *Objective: Fine-tune the penalty landscape and architectural capacity to suppress False Positives without destroying Recall.*
-1. Loss Function (configs/phase3_loss.yaml): Compare Focal Loss vs. Tversky Loss. For Tversky, test $\beta > \alpha$ (e.g., $\alpha=0.3, \beta=0.7$) to explicitly penalize False Positives heavier than False Negatives.
-2. Boundary Handling (configs/phase3_boundary.yaml): Test boundary_ignore_width of 1, 2, and 3 pixels. Determine if ignoring boundary ambiguities improves core RTS classification.
+1. Loss Function: Compare Focal (baseline) vs. Focal+Dice (compound) vs. Tversky (β>α, e.g., α=0.3, β=0.7). Focal+Dice is the priority candidate — if it wins, use it as the foundation for subsequent phases.
+2. Boundary Handling: Test `boundary_handling: ignore` with boundary_ignore_width of 1, 2, and 3 pixels. Determine if ignoring boundary ambiguities improves core RTS classification.
 3. Backbone Sizing: If Phase 2 indicates a parameter plateau, drop to EfficientNet-B3. If Phase 2 shows continuous scaling, test EfficientNet-B7.
+4. Copy-Paste Augmentation: Paste RTS instances from positive tiles onto negative tiles to create synthetic positives. Test whether this improves recall without degrading precision.
 
-### Phase 4: test differnt EXTRA channels & Fusion 
+### Phase 4: Test different EXTRA channels & Fusion
 *Objective: Determine if multi-modal physical context improves the final map.*
 **Channel Value**: Compare RGB vs. RGB + NDVI vs. RGB + ArcticDEM derivatives (RE/SR).
 **Fusion Strategy** (Only if extra channels shows benefit): Compare Early Fusion (channel stacking) vs. Late Fusion (separate encoders(ask for instructions when implement)).
 
 ### Phase 5: Architecture Optimization
-*Objective: Test if more advanced (and computationally expensive) feature extractors yield meaningful gains over UNet3+.*
-**Compare**: UNet3+ (Baseline) vs. DeepLabV3+ vs. SegFormer (Transformer).
+*Objective: Test if more advanced (and computationally expensive) feature extractors yield meaningful gains over UNet++.*
+**Compare**: UNet++ (Baseline) vs. SegFormer-B5 vs. DINOv3 encoder + dense head.
 
 
 ### optional: try fine-tuning vision FMs
@@ -109,20 +112,7 @@ To evaluate if the data distribution's degrees of freedom are sufficient to cons
 
 A single `scripts/train.py` handles all experiments. Each experiment is defined by its own YAML configuration file in the `configs/` directory.
 
-### Directory Structure (e.g)
-```text
-configs/
-├── baseline.yaml         # Phase 1: UNet3+, focal loss, static 1:10 ratio
-├── exp02_scaling_25.yaml # Phase 2: 25% data subset
-├── exp02_scaling_50.yaml # Phase 2: 50% data subset
-├── exp03_hard_neg.yaml   # Phase 3: Added geomorphic confounders
-├── exp04_loss.yaml       # Phase 4: Tversky loss ablation
-├── exp04_curriculum.yaml # Phase 4: Curriculum schedule ablation
-├── exp05_arch.yaml       # Phase 5: SegFormer comparison
-└── exp06_aux.yaml        # Phase 6: NDVI/DEM addition
-```
-
-### Execution Command
+### Execution
 ```bash
 # Example: Running the diminishing returns test at 50% data
 python scripts/train.py --config configs/exp02_scaling_50.yaml
