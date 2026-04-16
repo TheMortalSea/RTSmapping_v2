@@ -4,6 +4,7 @@
 
 Deploy the trained segmentation model for pan-arctic inference (60-74°N) on 2025 PlanetScope basemap imagery to produce an RTS survey map. The pipeline prioritizes **precision over recall** to minimize false alarms in the final product.
 
+The data and model operation in inference should exactly match those in training. The best 'recipe' will be provided once the training and experiments are done.
 ---
 
 ## 2. Infrastructure
@@ -47,7 +48,7 @@ gs://abruptthawmapping/
 
 ### 2.3 Docker Environment
 
-**Base Image**: Same as training—`pytorch/pytorch:2.2.0-cuda12.1-cudnn8-devel`
+**Base Image**: Same as training — see `computing/docker_training.md` for the authoritative Dockerfile and base image.
 
 **Additional Inference Requirements**:
 
@@ -85,7 +86,7 @@ gs://abruptthawmapping/
 | Bands | RGB |
 | Resolution | ~3 m |
 | Coverage | 60-74°N (pan-arctic) |
-| CRS | EPSG:3413 |
+| CRS | EPSG:3857 |
 
 ### 3.2 Coverage Estimation
 
@@ -106,7 +107,7 @@ gs://abruptthawmapping/
 |-----------|-------|-----------|
 | Tile size | 512×512 pixels | Matches training tile size |
 | Spatial coverage | ~1.5 km × 1.5 km | At 3m resolution |
-| CRS | EPSG:3413 | Consistent with training |
+| CRS | EPSG:3857 | Consistent with training |
 | Format | GeoTIFF | Preserves georeferencing |
 
 ### 4.2 Overlap Configuration
@@ -132,6 +133,7 @@ The inference tile grid is **pre-filtered externally** (land-only, permafrost zo
 ---
 
 ## 5. Normalization
+Implement a simple Histogram Matching script or a "Mini-Normalization" check. Before running full inference on a new region, calculate the mean/std of a small 2025 sample and compare it to the 2024 normalization_stats.json.
 
 ### 5.1 Loading Statistics
 
@@ -143,13 +145,7 @@ The inference tile grid is **pre-filtered externally** (land-only, permafrost zo
 
 ### 5.2 Application
 
-For each input tile:
-1. Load RGB values as float32
-2. Subtract channel means: `x = x - mean[channel]`
-3. Divide by channel stds: `x = x / std[channel]`
-4. Feed normalized tensor to model
-
-**Warning**: If normalization statistics are not applied identically to training, model predictions will be unreliable.
+Use the exact normalization methods and statistics identically to training.
 
 ---
 
@@ -167,9 +163,8 @@ RTS range from ~50m to 2+ km. A single resolution cannot optimally detect all si
 |-------|---------------------|---------------|------------|
 | 1.0 | 3m (native) | 1.5 km | Small-medium (50m-500m) |
 | 0.5 | 6m | 3 km | Medium-large (200m-1km) |
-| 0.25 | 12m | 6 km | Very large (1km+) |
 
-**Recommended configuration**: Start with scales [1.0, 0.5]. Add 0.25 only if large RTS recall is problematic.
+First 1.0, if large RTS is problematic then 0.5
 
 ### 6.3 Multi-Scale Procedure
 
@@ -187,22 +182,6 @@ For each tile location:
 4. Run inference → probability map at 512×512
 5. Upsample prediction back to 1024×1024
 6. Crop center 512×512 → P_0.5
-
-**Scale 0.25**:
-1. Load 2048×2048 region centered on tile location
-2. Downsample to 512×512
-3. Normalize, run inference
-4. Upsample to 2048×2048, crop center 512×512 → P_0.25
-
-### 6.4 Scale Fusion
-
-Combine predictions across scales using **pixel-wise maximum**:
-
-```
-P_final = max(P_1.0, P_0.5, P_0.25)
-```
-
-**Rationale**: If any scale confidently detects RTS, include it. Maximum operation is conservative toward detection while individual scale thresholds control precision.
 
 ---
 
@@ -239,7 +218,6 @@ Total inference passes per tile location: n_scales × n_tta_transforms
 |---------------|---------------------|
 | 2 scales, no TTA | 2 |
 | 2 scales, minimal TTA | 4 |
-| 3 scales, minimal TTA | 6 |
 | 2 scales, standard TTA | 8 |
 
 ---
@@ -272,54 +250,11 @@ The inference job must be resumable after interruption:
 1. Maintain manifest of completed tiles in `inference_log.json`
 2. On restart, load manifest and skip completed tiles
 3. Use atomic writes to GCS (write to temp, then rename)
-
 ---
 
-## 9. Prediction Merging
+## 9. Output Specification
 
-### 9.1 Overlap Handling
-
-Adjacent tiles overlap by 50%. The overlapping regions have multiple predictions that must be merged.
-
-**Merging strategy: Maximum**
-
-For pixels covered by multiple tiles, take the maximum probability:
-```
-P_merged(x, y) = max(P_tile1(x, y), P_tile2(x, y), ...)
-```
-
-**Rationale**: Consistent with the detection philosophy—if any tile view detects RTS, include it.
-
-### 9.2 Merging Procedure
-
-**Option A: On-the-fly merging (memory-efficient)**
-1. Create output raster for region with NoData fill
-2. For each tile prediction:
-   - Read overlapping region from output
-   - Compute pixel-wise maximum with new prediction
-   - Write merged result back
-3. Advantage: Low memory; Disadvantage: Many I/O operations
-
-**Option B: Batch merging (faster)**
-1. Accumulate all tile predictions in memory (or memory-mapped file)
-2. Apply reduction (maximum) across overlapping tiles
-3. Write final merged raster
-4. Advantage: Faster; Disadvantage: High memory for large regions
-
-**Recommendation**: Use Option B for manageable regions (e.g., per Arctic subregion), Option A for full pan-arctic if memory-constrained.
-
-### 9.3 Output Chunking
-
-For pan-arctic scale, produce merged outputs per region rather than single global raster:
-- Easier to manage and distribute
-- Enables parallel processing
-- Allows region-specific quality control
-
----
-
-## 10. Output Specification
-
-### 10.1 Probability Raster
+### 9.1 Probability Raster
 
 | Attribute | Value |
 |-----------|-------|
@@ -327,11 +262,11 @@ For pan-arctic scale, produce merged outputs per region rather than single globa
 | Data type | Float32 |
 | Range | [0.0, 1.0] |
 | NoData value | -1.0 |
-| CRS | EPSG:3413 |
+| CRS | EPSG:3857 |
 | Resolution | 3m (native) |
-| Compression | LZW |
+| Compression | Deflate |
 
-### 10.2 Binary Mask
+### 9.2 Binary Mask
 
 | Attribute | Value |
 |-----------|-------|
@@ -339,27 +274,27 @@ For pan-arctic scale, produce merged outputs per region rather than single globa
 | Data type | UInt8 |
 | Values | 0 (background), 1 (RTS) |
 | NoData value | 255 |
-| CRS | EPSG:3413 |
+| CRS | EPSG:3857 |
 | Resolution | 3m |
-| Compression | LZW |
+| Compression | Deflate |
 
 Threshold applied: Use calibrated threshold from training (documented in model config).
 
-### 10.3 Vector Output
+### 9.3 Vector Output
 
 | Attribute | Value |
 |-----------|-------|
 | Format | GeoPackage (.gpkg) |
 | Geometry | Polygon (MultiPolygon for fragmented) |
-| CRS | EPSG:3413 |
+| CRS | EPSG:3857 |
 
 **Attributes per polygon**:
 
 | Field | Type | Description |
 |-------|------|-------------|
 | rts_id | Integer | Unique identifier |
-| area_m2 | Float | Polygon area in square meters |
-| perimeter_m | Float | Polygon perimeter in meters |
+| area_m2 | Float | Polygon area in square meters (geodesic) |
+| perimeter_m | Float | Polygon perimeter in meters (geodesic) |
 | centroid_lat | Float | Centroid latitude (WGS84) |
 | centroid_lon | Float | Centroid longitude (WGS84) |
 | mean_prob | Float | Mean probability within polygon |
@@ -367,7 +302,7 @@ Threshold applied: Use calibrated threshold from training (documented in model c
 | detection_scale | String | Scale(s) that detected this RTS |
 | tile_ids | String | Comma-separated tile IDs containing this RTS |
 
-### 10.4 Inference Metadata
+### 9.4 Inference Metadata
 
 Save with each inference run:
 
@@ -391,9 +326,9 @@ Save with each inference run:
 
 ---
 
-## 11. Quality Control
+## 10. Quality Control
 
-### 11.1 Sanity Checks During Inference
+### 10.1 Sanity Checks During Inference
 
 | Check | Action if Failed |
 |-------|------------------|
@@ -402,7 +337,7 @@ Save with each inference run:
 | Tile georeferencing valid | Stop and investigate |
 | GPU memory stable | Reduce batch size |
 
-### 11.2 Post-Inference Validation
+### 10.2 Post-Inference Validation
 
 Performed before releasing results (detailed in post-inference.md):
 - Visual inspection of sample predictions
@@ -412,9 +347,9 @@ Performed before releasing results (detailed in post-inference.md):
 
 ---
 
-## 12. Performance Optimization
+## 11. Performance Optimization
 
-### 12.1 I/O Optimization
+### 11.1 I/O Optimization
 
 | Technique | Description |
 |-----------|-------------|
@@ -423,7 +358,7 @@ Performed before releasing results (detailed in post-inference.md):
 | COG format | Cloud-Optimized GeoTIFF enables efficient partial reads |
 | Batch GCS operations | Upload predictions in batches, not per-tile |
 
-### 12.2 GPU Optimization
+### 11.2 GPU Optimization
 
 | Technique | Description |
 |-----------|-------------|
@@ -432,7 +367,7 @@ Performed before releasing results (detailed in post-inference.md):
 | Multiple streams | Overlap data transfer and compute |
 | Model compilation | torch.compile() for additional speedup |
 
-### 12.3 Estimated Throughput
+### 11.3 Estimated Throughput
 
 | Configuration | Tiles/Second (est.) | Time for 40M tiles |
 |---------------|---------------------|-------------------|
@@ -444,9 +379,9 @@ Performed before releasing results (detailed in post-inference.md):
 
 ---
 
-## 13. Workflow Integration
+## 12. Workflow Integration
 
-### 13.1 PDG Workflow
+### 12.1 PDG Workflow
 
 The inference pipeline integrates with the existing PDG (Permafrost Discovery Gateway) workflow infrastructure developed for DARTS inference.
 
@@ -456,7 +391,7 @@ The inference pipeline integrates with the existing PDG (Permafrost Discovery Ga
 - Logging: Compatible format for PDG monitoring
 - Parallelization: Workflow handles VM orchestration
 
-### 13.2 Docker Entry Point
+### 12.2 Docker Entry Point
 
 The inference container exposes a CLI interface for PDG workflow integration:
 
@@ -468,7 +403,7 @@ python scripts/inference.py --config configs/inference.yaml --tile-list tiles.cs
 - `--tile-list`: CSV file with tile IDs and bounding boxes to process (pre-filtered by PDG/RTS team)
 - Output: Prediction tiles written to GCS path defined in config; `inference_log.json` updated on completion
 
-### 13.3 Parallelization Strategy
+### 12.3 Parallelization Strategy
 
 **Tile-level parallelism** (managed by PDG workflow):
 1. RTS team generates the full filtered tile grid (CSV)
@@ -481,7 +416,7 @@ python scripts/inference.py --config configs/inference.yaml --tile-list tiles.cs
 - Multiple CPU workers handle I/O prefetching
 - No multi-GPU within single VM (simplifies code)
 
-### 13.4 Coordination
+### 12.4 Coordination
 
 | Responsibility | Owner |
 |----------------|-------|
@@ -497,7 +432,7 @@ python scripts/inference.py --config configs/inference.yaml --tile-list tiles.cs
 
 ---
 
-## 14. Inference Checklist
+## 13. Inference Checklist
 
 ### Pre-Inference
 - [ ] Model artifacts uploaded to GCS (model, normalization stats, config)
@@ -523,7 +458,7 @@ python scripts/inference.py --config configs/inference.yaml --tile-list tiles.cs
 
 ---
 
-## 15. Troubleshooting
+## 14. Troubleshooting
 
 | Issue | Possible Cause | Solution |
 |-------|---------------|----------|

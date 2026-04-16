@@ -69,7 +69,7 @@ Write tests in `tests/` for each module. Tests should be runnable without GPU wh
 
 ## Technical Constraints
 
-- **CRS**: EPSG:3413 everywhere. No exceptions.
+- **CRS**: EPSG:3857 everywhere. No exceptions.
 - **Tile size**: 512×512 pixels.
 - **Label values**: 0 = background, 1 = RTS, 255 = ignore.
 - **Normalization**: Per-dataset statistics (not per-image). Saved as `normalization_stats.json` alongside model checkpoints.

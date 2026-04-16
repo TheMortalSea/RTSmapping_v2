@@ -61,7 +61,7 @@
 - Clear morphological distinction from surrounding terrain
 
 **Exclude from label** (OR):
-- Features too small to show clear diagnostic characteristics at PlanetScope resolution
+- Features too small to show clear diagnostic characteristics at PlanetScope resolution 
 - Ambiguous features lacking obvious headwall shadow
 - Inactive/stabilized RTS without barren floor
 - Long debris tongue or mudflow that is distance from the slump floor (no thawing)
@@ -71,8 +71,6 @@
 HOW TO DEFINE BOUNDARY: enforcing perfect consistency would be exhausting and arguably impossible for gradational geomorphic boundaries. The label boundary always try to follow the visible colour/texture contrast between disturbed and undisturbed ground; where no clear contrast exists, connect the endpoints of the headwall arc with a natural curve. 
 
 PATTERN: made sure the overall morphology read as a collapsed landscape (concaved).
-
-PARTIAL OBJECT: put the partial object to isolation (masking the adjacent tiles when labelling)
 
 ### 2.3 Partial Target Handling
 
@@ -88,6 +86,9 @@ This is critical for training data quality:
 
 **Rationale**: The model learns that "only barren floor associated with a headwall with shadow is RTS." Overlapping inference tiles ensure partial targets are detected where both features are visible. Use an Ignore Index （255） for pixels that are part of an RTS but lack the diagnostic headwall in that specific tile. This prevents the model from learning conflicting information while maintaining strict detection criteria. This is feature engineering with domain knowledge which especially important when training data is limited.
 
+How to make the decision of whether a partial object should be trained: put the partial object to isolation (masking the adjacent tiles when labelling), if the partial object can be confirmed without neighbour tiles context, train it.
+
+
 ### 2.4 Label Values
 
 | Value | Meaning |
@@ -96,6 +97,11 @@ This is critical for training data quality:
 | 1 | RTS (positive class) |
 | 255 | Ignore |
 ---
+The ignore values could be applied to several conditions, for example:
+- partial object that can't be confirmed without neighbouring tile context, even if it's obvious if with context
+- RTS-like features that can't be confirmed under the Planet image quality/resolution, even if it's clear in Esri basemap
+
+
 
 ## 3. Training Image Specification
 
@@ -104,7 +110,7 @@ This is critical for training data quality:
 | Parameter | Value |
 |-----------|-------|
 | Tile size | 512 × 512 pixels |
-| Spatial coverage | ~2.4 km × 2.4 km (at 4.7 m resolution) |
+| Spatial coverage | ~1.5 km × 1.5 km (at 3 m resolution) |
 | CRS | EPSG:3857 (Pseudo-Mercator -- Spherical Mercator, Google Maps, OpenStreetMap, Bing, ArcGIS, ESRI) |
 | Format | GeoTIFF |
 | Grid alignment | Planet tile grid (same grid used for polygon refinement) |
@@ -207,7 +213,7 @@ The DataLoader maps each name to its band index using the fixed registry in §9.
 
 All auxiliary data must be:
 1. Reprojected to EPSG:3857
-2. Resampled to match PlanetScope resolution (~4.7 m) using **bilinear interpolation** for all channels
+2. Resampled to match PlanetScope nominal resolution (~3 m) using **bilinear interpolation** for all channels
 3. Co-registered with RGB using GeoTIFF bounding box information
 4. Stacked as channels in the fixed order defined in §9
 
@@ -222,12 +228,12 @@ Both PLANET-RGB and EXTRA store **raw values** (no normalization applied to stor
 ### 4.1 Normalization
 Before computing statistics, apply percentage clipping to remove outliers. This is a **one-off step** during statistics computation (not applied per-image at load time):
 - Run `scripts/check_data.py` first to visualise per-channel histograms and choose appropriate percentile bounds
+- PlanetScope pre-processing may have already handled normalisation and outliers, the normalisation in this step is mostly for value alignment with the pretrained backbone, rather than improving image quality.
 - Pass clipping percentiles as arguments to `scripts/compute_normalization_stats.py`
 - Clipping percentile decision should be decided by looking at the histogram. to use histogram to decide the clipping optimal value: calculate a histogram with all available postive and negative tiles and save the figure and raw data for manual assessment. 
 - The computed mean/std (on clipped data) are saved in `normalization_stats.json` — the DataLoader uses only those stored values
 
 **Normalisation** Should be calculated per-dataset, rather than per-image, to:
-- Preserves absolute radiometric information
 - Consistent inference behavior regardless of batch composition
 - Satellite imagery has consistent acquisition conditions within a sensor
 
@@ -288,7 +294,7 @@ Note: the above extracts mean and std for z-score standardisation, can also get 
 |N | Number of positive tiles|
 |M | Number of negative tiles|
 |f1 (training) | Start at 1:1, warm up to 1:20 |
-|f2a (val-balanced) | 1:20 |
+|f2a (val-balanced) | 1:20 (physical pool size; subsampled to 1:1 at evaluation time) |
 |f2b (val-realistic) | 1:200, 1:1000 | 
 |f3 (test-realistic) | 1:200, 1:1000 |
 
@@ -306,6 +312,24 @@ Group tiles by Arctic subregion based on ecology/permafrost extent. Entire regio
 **Region definitions**: Provided by Heidi Rodenhizer (boundaries complete). Storage format is geojson. see files in '/domain'.
 
 **Implementation**: `scripts/create_splits.py` reads `metadata.csv` (which has `RegionName` per tile) and assigns each region to train/val/test according to the target ratios. The output `splits.yaml` is committed to the repo for reproducibility.
+
+### 6.3 Tie-Break Rules for Region Assignment 
+
+- Whole-region assignment and 80/10/10 tile-count targets cannot both be satisfied exactly when regions vary in size and RTS density. ‘scripts/create_splits.py’ resolves conflicts using the following priority order. Constraints earlier in the list take precedence; when one fails, the script exits with an error rather than silently producing a degenerate split.
+
+1. Test set minimum positives — Test set must contain at least 100 positive tiles to enable statistically meaningful PR-AUC reporting at 1:1000 prevalence. If no whole-region assignment achieves this, fail loudly.
+2. Validation set ecoregion diversity — Val set must span at least 2 distinct ecoregions, so that early-stopping decisions are not tied to a single regional artifact. If only one region can be assigned to val without breaking constraint 1, fail loudly.
+3. Train set positive coverage — Train set should hold at least 70% of total positive tiles. Below this, emit a warning; do not fail.
+4. Tile-count ratio drift tolerance — Once constraints 1–3 are satisfied, accept up to ±10% drift from the 80/10/10 target (train: 70–90% of total tiles). Beyond this, fail loudly.
+
+- Geographic priority: assign the largest, most RTS-dense regions to train, the most diverse subset to val, and morphologically representative regions to test. The script logs its assignment reasoning.
+
+Outputs:
+
+- splits.yaml — region assignments per split (committed)
+splits_summary.json — per-split tile counts, positive counts, region list, observed vs. target drift, and the constraint-resolution log (committed)
+
+If the available regions cannot satisfy constraints 1–2, the project needs more labelled regions before splitting — not a softer split rule.
 
 ## 7. Negative Data Strategy
 

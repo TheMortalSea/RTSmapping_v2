@@ -21,7 +21,7 @@ Train a semantic segmentation model that detects Retrogressive Thaw Slumps (RTS)
 | Dev/test | L4 VM (`gpu-vm-l4`) — cheaper, same Docker image |
 
 
-### 2.3 Reproducibility Configuration
+### 2.2 Reproducibility Configuration
 
 | Setting | Value | Purpose |
 |---------|-------|---------|
@@ -40,11 +40,13 @@ Train a semantic segmentation model that detects Retrogressive Thaw Slumps (RTS)
 
 | Component | Choice | Rationale |
 |-----------|--------|-----------|
-| Architecture | UNet++ | Best performing in v1 experiments |
-| Encoder backbone | EfficientNet-B7 | Strong ImageNet features, efficient |
+| Architecture | UNet++ (via smp library) | Close to UNet3+ (v1 best performer); battle-tested library |
+| Encoder backbone | EfficientNet-B5 | Strong ImageNet features, good capacity/memory balance for 512×512 |
 | Pretrained weights | ImageNet | Transfer learning for faster convergence |
 | Input size | 512×512×3 | RGB channels |
 | Output | Binary segmentation mask | Single-class prediction |
+
+EfficientNet variants B3/B7 may be tested for capacity trade-offs. B5 is the baseline default.
 
 ### 3.2 Candidate Models for Experimentation
 
@@ -52,7 +54,7 @@ Experiment in priority order (stop when diminishing returns):
 
 | Priority | Model | Notes |
 |----------|-------|-------|
-| 1 (baseline) | UNet++ + EfficientNet-B7 | Proven in v1; strong CNN baseline |
+| 1 (baseline) | UNet++ + EfficientNet-B5 (smp) | Proven architecture class; strong CNN baseline |
 | 2 | SegFormer-B5 | Efficient Vision Transformer; strong on dense prediction tasks |
 | 3 | DINOv3 encoder + dense head | Latest DINO self-supervised ViT; confirm model version at time of implementation |
 
@@ -78,10 +80,6 @@ Note: late fusion may require architecture redesign
 **Critical**: The same normalization statistics used during training **must** be used during inference. The inference pipeline loads `normalization_stats.json` from the model directory and applies identical normalization.
 
 If 2025 imagery has significantly different radiometric properties than 2024 training data, this will manifest as degraded performance. Monitor inference predictions for systematic shifts.
-
-
-**Risk**: PlanetScope introduces new sensor generations (SuperDove flocks) frequently. The spectral response of 2025 data might differ slightly from 2024. Suggestion: Include a "Histogram Matching" step in the inference pipeline as a fallback, or ensure normalization_stats are robust. If the 2025 validation (early inference) looks poor, may need to re-calculate normalization stats on 2025 data (assuming the distribution of terrain types remains constant).
-
 ---
 
 ## 5. Loss Functions
@@ -110,20 +108,31 @@ Tversky loss allows explicit control over false positive vs false negative penal
 
 **For precision-focused training**: Set β > α to penalize false positives more heavily.
 
-### 5.3 Class-Balanced Cross-Entropy
+### 5.3 Compound Loss (Focal + Dice)
+
+Combine pixel-level and region-level objectives. Focal handles pixel-level calibration; Dice directly optimizes region overlap and is insensitive to the overwhelming number of true-negative pixels. This combination consistently outperforms single-component losses in segmentation benchmarks.
+
+**Formula**: `L = λ₁ × Focal(pred, target) + λ₂ × Dice(pred, target)`
+
+| Parameter | Baseline | Tuning Range |
+|-----------|----------|--------------|
+| λ₁ (focal weight) | 1.0 | [0.5, 1.0, 2.0] |
+| λ₂ (dice weight) | 1.0 | [0.5, 1.0, 2.0] |
+
+### 5.4 Class-Balanced Cross-Entropy
 
 Weight loss inversely proportional to class frequency. Options for computing weights:
 - Linear: weight_rts = num_bg_pixels / num_rts_pixels
 - Square root: weight_rts = sqrt(num_bg_pixels / num_rts_pixels)
 - Log: weight_rts = log(num_bg_pixels / num_rts_pixels)
 
-### 5.4 Boundary Uncertainty Handling
+### 5.5 Boundary Uncertainty Handling
 
 Label boundaries may be uncertain due to resolution mismatch or inherent ambiguity in RTS edges.
 
 Both approaches will be implemented and selected via YAML config for ablation:
 ```yaml
-boundary_handling: ignore   # options: none | ignore | soft_labels
+boundary_handling: none   # options: none | ignore | soft_labels
 boundary_ignore_width: 3    # pixels (used when boundary_handling: ignore)
 soft_label_value: 0.05      # P(background near boundary) when boundary_handling: soft_labels
 ```
@@ -132,14 +141,13 @@ soft_label_value: 0.05      # P(background near boundary) when boundary_handling
 - Exclude pixels within `boundary_ignore_width` pixels of label boundaries from loss computation (set to ignore index 255)
 - Applied on-the-fly in the DataLoader using scipy binary dilation on label mask
 - Simple, proven in medical imaging segmentation
-- Default for baseline experiments
 
 **Approach 2: Soft Labels** (`boundary_handling: soft_labels`)
 - Near-boundary pixels get softened labels: background → `soft_label_value`, RTS → `1 - soft_label_value`
 - Options: constant soft values (0.05/0.95) or distance-based softening
 - Requires using BCE with soft targets (not cross-entropy with integer labels)
 
-**Experiment order**: Run baseline with `ignore` first; ablate vs `soft_labels` and `none` in Phase 2 loss experiments.
+**Experiment order**: Run baseline with `none` first; then ablate against soft_labels with a narrow band (1–2 pixels) and then a small soft value (~0.1).
 ---
 
 ## 6. Metrics
@@ -149,6 +157,7 @@ soft_label_value: 0.05      # P(background near boundary) when boundary_handling
 | Metric | Formula | Use |
 |--------|---------|-----|
 | IoU_RTS | TP / (TP + FP + FN) | Primary pixel-level metric |
+| F1_RTS | 2TP / (2TP + FP + FN) | At operating threshold; for literature comparison |
 
 ### 6.2 Object-Level Metrics
 
@@ -158,6 +167,7 @@ Object-level evaluation treats each connected component as a detection instance.
 |--------|-------------|
 | Object Precision | Fraction of predicted objects that match ground truth |
 | Object Recall | Fraction of ground truth objects that are detected |
+| Object F1 | 2 × Obj_Precision × Obj_Recall / (Obj_Precision + Obj_Recall) — at operating threshold |
 
 **IoU Threshold for Matching**:
 
@@ -178,6 +188,8 @@ Object-level evaluation treats each connected component as a detection instance.
 - One large prediction overlapping multiple GT objects → matched to the best-IoU GT; remaining GT blobs count as FN
 - Multiple predictions overlapping one GT → only the first (highest confidence) matches; the rest count as FP
 
+**Threshold for in-training reporting**: A fixed reference threshold of 0.5 is applied to extract connected components during training. This threshold is for monitoring trends across epochs, not for deployment — focal-loss outputs are not calibrated, so absolute object precision/recall values at 0.5 should be interpreted as relative to other epochs of the same run. The deployment threshold is selected post-training via the calibration procedure in §6.4 and §12.2.
+
 ### 6.3 Summary Metrics
 
 | Metric | Formula | Use Case |
@@ -194,6 +206,8 @@ Two approaches for selecting operating threshold:
 | Region-specific thresholds | Calibrate per Arctic subregion | Adapts to regional characteristics | More complex, requires per-region validation data |
 
 **Recommendation**: Start with global threshold. If post-inference analysis reveals systematic regional performance differences, consider region-specific thresholds.
+
+Threshold calibration is run once, post-training, on the EMA-weight final model. In-training object metrics use the fixed 0.5 reference threshold (§6.2) to avoid a circular dependence between calibration and stopping decisions.
 
 ---
 
@@ -226,7 +240,7 @@ Real-world RTS prevalence is ~0.1-0.5%. With naive random sampling:
 | 51–100 | 1:15 | Approaching realistic conditions |
 | 101–300 | 1:20 | Near-realistic ratio for final refinement |
 
-**Implementation**: Linear interpolation between ratios at epoch boundaries. Ratio changes are applied at the epoch level (batch composition recalculated each epoch).
+**Implementation**: Step-wise ratio changes at epoch boundaries (not interpolated). Ratio changes are applied at the epoch level (batch composition recalculated each epoch).
 
 **Early Stopping Note**: With patience=20 on Val-Realistic, training will likely stop before epoch 300. The curriculum ensures the model has seen realistic ratios before convergence.
 
@@ -249,7 +263,6 @@ Run inference at multiple effective resolutions to catch different RTS scales. S
 |-------|---------------------|---------------|-----------------|
 | 1.0 | 3m (native) | 1.5 km | Small to medium |
 | 0.5 | 6m | 3 km | Medium to large |
-| 0.25 | 12m | 6 km | Very large |
 
 ### 8.3 Multi-Resolution Training
 
@@ -267,8 +280,8 @@ Run inference at multiple effective resolutions to catch different RTS scales. S
 
 | Parameter | Value |
 |-----------|-------|
-| Architecture | UNet++ |
-| Backbone | EfficientNet-B7 |
+| Architecture | UNet++ (smp) |
+| Backbone | EfficientNet-B5 |
 | Pretrained weights | ImageNet |
 | Input channels | 3 (RGB) |
 | Input size | 512×512 |
@@ -280,7 +293,7 @@ Run inference at multiple effective resolutions to catch different RTS scales. S
 | Loss function | Focal |
 | Gamma (γ) | 2 |
 | Alpha (α) | 0.25 |
-| Boundary ignore width | 3 pixels |
+| boundary_handling | none |
 
 **Optimizer Configuration**:
 
@@ -293,12 +306,14 @@ Run inference at multiple effective resolutions to catch different RTS scales. S
 
 **Learning Rate Schedule**:
 
-| Parameter | Value |
-|-----------|-------|
-| Scheduler | Cosine annealing |
-| Minimum LR | 1e-6 |
-| Warmup epochs | 5 |
-| Warmup start LR | 1e-6 |
+Phase 1 (frozen backbone) uses constant `frozen_lr`. Phase 2 (after unfreezing) uses cosine annealing with warmup.
+
+| Parameter | Value | Applies to |
+|-----------|-------|------------|
+| Scheduler | Cosine annealing | Phase 2 only |
+| Minimum LR | 1e-6 | Phase 2 only |
+| Warmup epochs | 5 | Phase 2 only (epochs 11-15) |
+| Warmup start LR | 1e-6 | Phase 2 only |
 
 **Backbone Freeze Strategy**:
 
@@ -323,6 +338,8 @@ After unfreezing, backbone uses `backbone_lr_multiplier × base_lr` to prevent c
 |-----------|-------|
 | Enabled | Yes |
 | Decay | 0.999 |
+| Used for validation | Yes (swap EMA in for validation, swap live weights back for training) |
+
 
 EMA maintains a smoothed copy of model weights. Final model uses EMA weights.
 
@@ -336,8 +353,9 @@ EMA maintains a smoothed copy of model weights. Final model uses EMA weights.
 | Multi-GPU (DDP) | Not implemented initially; code structured to allow DDP addition later |
 | Max epochs | 300 |
 | Early stopping patience | 20 epochs |
-| Early stopping metric | Val-Realistic PR-AUC |
-| Early stopping min delta | 0.001 |
+| Early stopping metric | Val-Realistic PR-AUC at 1:200, moving average over last 3 validations |
+| Early stopping min delta | 0.005 (placeholder; calibrate empirically — see §10.4) |
+| Early stopping start epoch | 50 | After curriculum reaches 1:15 |
 | Validation frequency | Every 5 epochs (configurable: `val_frequency`) |
 
 **Data Loading**:
@@ -389,15 +407,25 @@ Applied on-the-fly during training using Albumentations library.
 | Elastic transform | alpha=120, sigma=6 | 0.3 |
 | Affine transform | shear=(-10°, 10°) | 0.3 |
 
-**Color Augmentations** (RGB channels only):
+**Color/Radiometric Augmentations** (RGB channels only):
 
 | Augmentation | Parameters | Probability |
 |--------------|------------|-------------|
 | Brightness | ±0.2 | 0.5 |
 | Contrast | ±0.2 | 0.5 |
 | Saturation | ±0.2 | 0.5 |
+| Gaussian noise | var_limit=(10, 50) | 0.3 |
+| CLAHE | clip_limit=4.0, tile_grid_size=8×8 | 0.2 |
 
-**Note**: Color augmentations apply only to RGB channels, not auxiliary bands in EXTRA dataset.
+**Multi-Scale Augmentation** (applied to all channels):
+
+| Augmentation | Parameters | Probability |
+|--------------|------------|-------------|
+| RandomScale + PadIfNeeded/CenterCrop | scale=(0.5, 1.0), pad to 512×512 | 0.3 |
+
+RandomScale simulates the effective resolution variation seen during multi-scale inference (0.5x scale). This reduces the train-inference scale gap by exposing the model to downscaled imagery during training.
+
+**Note**: Color/radiometric augmentations apply only to RGB channels, not auxiliary bands in EXTRA dataset. Geometric and multi-scale augmentations apply to all channels and masks.
 
 ---
 
@@ -408,7 +436,7 @@ Applied on-the-fly during training using Albumentations library.
 **Data Preparation**:
 - [ ] Data validation checks pass
 - [ ] Normalisation statistics computed and saved
-- [ ] Boundary ignore masks created for all labels
+- [ ] If `boundary_handling: ignore`, boundary ignore masks created for all labels
 - [ ] Balanced batch sampler configured
 - [ ] Spatial blocking verified (no geographic overlap between splits)
 
@@ -425,6 +453,9 @@ Create a standalone script check_data.py that iterates through the DataLoader (n
 - [ ] Git commit hash recorded
 - [ ] Baseline config validated
 
+**calibration**
+- [ ] Validation noise floor measured: Run validation 5× on same checkpoint with augmentation disabled; compute std of PR-AUC at 1:200; set early_stopping_min_delta = 2 × std in baseline config.
+
 ### 10.2 Training Loop
 
 **Phase 1: Backbone Frozen (Epochs 1–10)**
@@ -436,8 +467,8 @@ Create a standalone script check_data.py that iterates through the DataLoader (n
 1. Unfreeze backbone with lower learning rate (0.1× base LR)
 2. Apply curriculum learning schedule for negative ratio
 3. Update EMA weights after each optimizer step
-4. Validate on Val-Realistic every `val_frequency` epochs (configurable in YAML; suggested default 5)
-5. Check early stopping criterion on Val-Realistic PR-AUC
+4. Validate on Val-Realistic every val_frequency epochs using EMA weights. Swap EMA weights into the model for the validation pass, then restore live weights before the next training step. All validation metrics, early-stopping decisions, and best-checkpoint comparisons use EMA weights. (configurable in YAML; suggested default 5)
+5. Check early stopping criterion on Val-Realistic PR-AUC，Early stopping is gated to begin at epoch 50, when the curriculum reaches near-realistic ratios; before this, validation runs and best-so-far checkpoints are saved but stopping is disabled
 6. Save checkpoint if best metric achieved
 
 ### 10.3 Validation Strategy
@@ -452,7 +483,7 @@ Create a standalone script check_data.py that iterates through the DataLoader (n
 
 ### 10.4 Post-Training Steps
 
-1. **Apply EMA weights**: Replace model weights with EMA-smoothed weights
+1. Confirm EMA weights for final model: validation already used EMA throughout training, so the final saved model is the EMA copy of the best-validation checkpoint. No metric change is expected at this step.
 2. **Temperature scaling calibration**: Learn temperature parameter T on Val-Realistic to calibrate prediction confidence
 3. **Threshold selection**: Using Val-Realistic, plot PR curves and select threshold where Precision ≥ target
 4. **Test-Time Augmentation evaluation**: Evaluate with and without TTA to quantify benefit
@@ -483,7 +514,7 @@ TTA runs inference multiple times with different augmentations and averages pred
 | Standard | Identity, hflip, vflip, rot180 | 4× slower | ~2% |
 | Full | All 8 D4 symmetries | 8× slower | ~2-3% |
 
-**Recommendation**: Use Standard (4 transforms) for production—good balance of accuracy and speed.
+**Recommendation**: Use Minimal first, use Standard (4 transforms)only if necessary.
 
 ### 11.2 TTA Procedure
 
@@ -520,89 +551,8 @@ For each prevalence ratio (1:200, 1:500, 1:1000):
 
 ---
 
-## 13. Experiment Tracking
 
-### 13.1 MLflow Configuration
-
-**Tracking URI**: GCS-backed MLflow at `gs://abruptthawmapping/mlflow/`. Configurable via YAML:
-```yaml
-mlflow:
-  tracking_uri: "gs://abruptthawmapping/mlflow/"
-  experiment_name: "rts-segmentation-v2"
-```
-The `MLFLOW_TRACKING_URI` environment variable overrides the YAML value if set (for flexibility).
-
-**Experiment Structure**:
-- Experiment name: `rts-segmentation-v2`
-- Each run includes: hyperparameters, metrics, artifacts, system info
-
-**Required Parameters to Log**:
-
-| Category | Parameters |
-|----------|------------|
-| Model | architecture, backbone, pretrained, input_channels, input_size |
-| Loss | loss_function, focal_gamma, focal_alpha, boundary_ignore_width |
-| Optimizer | optimizer, learning_rate, weight_decay, gradient_clip_norm |
-| Schedule | scheduler, warmup_epochs, min_lr, freeze_backbone_epochs |
-| Training | batch_size, max_epochs, early_stopping_patience, ema_decay |
-| Data | data_version, train_pos_neg_ratio, curriculum_schedule |
-| System | git_commit, pytorch_version, cuda_version, gpu_model, gpu_count |
-
-**Metrics to Log Per Epoch**:
-- train_loss, train_iou_rts
-- val_balanced_iou, val_balanced_pr_auc
-- For each ratio (200, 500, 1000): val_{ratio}_pr_auc, val_{ratio}_iou_rts, val_{ratio}_obj_precision, val_{ratio}_obj_recall
-
-**Artifacts to Save**:
-- best_model.pth (EMA weights)
-- normalization_stats.json
-- config.yaml
-- pr_curves.png
-- threshold_calibration.json
-- requirements_frozen.txt
-- predictions.png (fixed 3 positive and 3 negative validation images subplot 3 columns by 2 rows)
-
-### 13.2 Experiment Progression
-
-Experiments should follow dependency order:
-
-**Phase 1: Baseline**
-- RGB, UNet++, EfficientNet-B7, Focal loss
-- Establish baseline performance
-
-**Phase 2: Loss Ablation** (depends on Phase 1)
-- Compare: Focal, Tversky (β > α), Class-balanced CE
-- Select best loss function
-
-**Phase 3: Curriculum Ablation** (depends on Phase 2)
-- Compare: Fixed ratios (1:10, 1:20), Curriculum schedules
-- Select best imbalance handling
-
-**Phase 4: Architecture** (depends on Phases 2-3)
-- Compare: UNet++, DeepLabV3+, SegFormer, SAM fine-tuned
-- Select best architecture
-
-**Phase 5: Auxiliary Data** (depends on Phase 4)
-- Compare: RGB only, RGB+NDVI, RGB+DEM, RGB+all EXTRA channels
-- Determine if auxiliary data helps
-
-**Phase 6: Fusion Method** (only if Phase 5 shows benefit)
-- Compare: Early fusion, Late fusion
-- Select best fusion strategy
-
-**Experiment execution**: A single `scripts/train.py` handles all experiments. Each experiment is defined by its own YAML config file in `configs/`:
-```
-configs/
-├── baseline.yaml         # Phase 1: UNet++, focal loss
-├── exp02_loss.yaml       # Phase 2: loss ablation (focal vs tversky vs class-balanced CE)
-├── exp03_curriculum.yaml # Phase 3: curriculum schedule ablation
-├── exp04_arch.yaml       # Phase 4: architecture comparison
-└── exp05_aux.yaml        # Phase 5: auxiliary data ablation
-```
-Run an experiment: `python scripts/train.py --config configs/baseline.yaml`
----
-
-## 14. Statistical Significance
+## 13. Statistical Significance
 
 ### 14.1 Multiple Seeds
 
@@ -621,3 +571,4 @@ Final results table should include:
 | PR-AUC | X.XX ± X.XX | X.XX ± X.XX | X.XX ± X.XX |
 
 ---
+

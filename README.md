@@ -33,5 +33,10 @@ This project trains a deep learning model to detect RTS from PlanetScope basemap
 
 ## Computation
 
-- Google Cloud Platform VM (L4, A100/H100) via PDG
-- Dockerization for environment control on different VMs for training/inferencing
+Dockerization
+
+
+## Todos:
+1. training in multi-scale
+2. explore GEE satellite embedding as input feature
+3. 2025 micro set to test temporal domain shift
