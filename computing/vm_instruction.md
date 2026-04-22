@@ -50,7 +50,15 @@ gcloud container clusters update autopilot-cluster-1 --region us-west1 --enable-
 gcloud compute instances start gpu-vm-l4 --zone=us-west1-a
 ```
 
----
+**If zone is unavailable** (no allocation capacity), try alternative zones in order:
+```
+gcloud compute instances start gpu-vm-l4 --zone=us-west1-c
+gcloud compute instances start gpu-vm-l4 --zone=us-west2-a
+gcloud compute instances start gpu-vm-l4 --zone=us-west2-b
+gcloud compute instances start gpu-vm-l4 --zone=us-central1-a
+```
+
+Same for `ml-training-vm` in `us-west1-b` — try `us-west1-c`, `us-west2-a/b/c`, `us-central1-a` before contacting support.
 
 ## Part 2: VSCode Remote-SSH Setup (One-Time)
 
@@ -125,29 +133,40 @@ When prompted "Are you sure you want to continue connecting?", type **yes**. Thi
 
 ## Part 3: Daily Workflow
 
-### 3.1 Start Your Session
+### Unified Workflow for Both VMs
 
-1. Open **Google Cloud SDK Shell** → start the VM:
-   ```
-   gcloud compute instances start gpu-vm-l4 --zone=us-west1-a
-   ```
-2. Open **VSCode** → Ctrl+Shift+P → "Remote-SSH: Connect to Host" → `gpu-vm-l4`
-3. Open your project folder: **File → Open Folder** → navigate to `~/RTSmappingDL`
+**For both L4 and A100/H100:**
 
-### 3.2 End Your Session
+1. **Start VM** (in Google Cloud SDK Shell):
+   ```
+   gcloud compute instances start gpu-vm-l4 --zone=us-west1-a  # or ml-training-vm --zone=us-west1-b
+   gcloud compute instances list  # Get external IP
+   ```
 
-1. Close the VSCode remote window
-2. In Google Cloud SDK Shell, **stop the VM** (prevents charges):
+2. **Update SSH config** (`C:\Users\Yili Yang\.ssh\config`):
    ```
-   gcloud compute instances stop gpu-vm-l4 --zone=us-west1-a
+   Host gpu-vm-l4
+       HostName <external-ip>
+       User ext_rtsmapping_woodwellclimate_o
+       IdentityFile "C:\Users\Yili Yang\.ssh\google_compute_engine"
    ```
-3. Verify it stopped:
-   ```
-   gcloud compute instances list
-   ```
-   Status should show "TERMINATED".
 
-**Always stop VMs when not in use.** GPU VMs are expensive even when idle.
+3. **Connect** (VSCode): Ctrl+Shift+P → "Remote-SSH: Connect to Host" → choose VM
+
+4. **Develop or Train**:
+   - **L4**: Run scripts directly for quick feedback
+   - **A100/H100**: Use `screen -S training` for persistent background jobs (Ctrl+A then D to detach; `screen -r training` to reconnect)
+
+5. **Stop VM** (Google Cloud SDK Shell):
+   ```
+   gcloud compute instances stop gpu-vm-l4 --zone=us-west1-a  # or ml-training-vm --zone=us-west1-b
+   ```
+
+**Cost reminder**: L4 ~$0.35/hr idle; A100 ~$4.50/hr idle. **Always stop VMs when done.**
+
+**When to use which VM**:
+- **L4**: Code editing, debugging, `check_data.py`, quick sanity checks
+- **A100/H100**: Full training runs, pan-arctic inference (only after confirming readiness on L4)
 
 ---
 
@@ -215,75 +234,12 @@ gcloud compute scp --recurse "C:\path\to\folder" gpu-vm-l4:~/folder --zone=us-we
 
 ---
 
-## Part 6: Running Training
+## Part 6: GPU-Task Rules
 
-### Run a Script
-```bash
-source ~/ml-env/bin/activate
-cd ~/RTSmappingDL
-python scripts/check_data.py --config configs/baseline.yaml
-```
-
-### Run in Background (survives SSH disconnect)
-
-Using screen (recommended):
-```bash
-screen -S training
-source ~/ml-env/bin/activate
-python scripts/train.py --config configs/baseline.yaml
-# Ctrl+A then D to detach
-# Reconnect later: screen -r training
-```
-
-Using tmux:
-```bash
-tmux new -s training
-source ~/ml-env/bin/activate
-python scripts/train.py --config configs/baseline.yaml
-# Ctrl+B then D to detach
-# Reconnect later: tmux attach -t training
-```
-
-### Monitor GPU Usage
-```bash
-watch -n 1 nvidia-smi
-```
-
----
-
-## Part 7: Production Training (A100/H100)
-
-### Start and Connect
-```
-gcloud compute instances start ml-training-vm --zone=us-west1-b
-gcloud compute ssh ml-training-vm --zone=us-west1-b
-```
-
-To use VSCode Remote-SSH with the production VM, add a second entry to your SSH config with the production VM's IP and repeat the setup steps from Part 2.
-
-### Stop When Done
-```
-gcloud compute instances stop ml-training-vm --zone=us-west1-b
-```
-
----
-
-## Part 8: GPU-Task Rules
-
-| Task | VM | Rationale |
-|------|----|-----------|
-| Code editing, exploration, debugging | L4 VM | Cheapest GPU; sufficient for single-step tests |
-| Data validation, `check_data.py` | L4 VM | No heavy compute needed |
-| Short training runs, sanity checks | L4 VM | Fast feedback loop |
-| Full experiment training | A100/H100 VM | High throughput needed |
-| Pan-arctic inference | PDG workflow VMs | Coordinate with Luigi/Todd |
-
-**Rules**:
-1. Always stop VMs when not in use
-2. Develop and iterate on L4 — same Docker image as production, cheaper cost
-3. Use A100/H100 only for full training runs — confirm runs are ready before switching
-4. Data lives in GCS — never upload full dataset to VM local disk; use gcsfuse
-5. Use preemptible/spot instances for long training runs when possible
+1. **Always stop VMs when done** — L4 costs ~$0.35/hr idle; A100 costs ~$4.50/hr idle
+2. **Develop on L4**, use A100/H100 only for full training runs (after confirming readiness on L4)
+3. **Data lives in GCS** — use gcsfuse or `gsutil`, never upload full datasets to VM local disk
+4. **Pan-arctic inference** — coordinate with Luigi/Todd (PDG workflow VMs)
 
 ---
 
