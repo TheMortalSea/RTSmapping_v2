@@ -9,6 +9,7 @@ from google.colab import auth
 from google.cloud import storage
 import concurrent.futures
 from tqdm import tqdm
+import pandas as pd
 
 def require_env(name):
     val = os.environ.get(name)
@@ -22,14 +23,16 @@ INPUT_PREFIX          = require_env("INPUT_PREFIX")
 DATA_ROOT             = require_env("DATA_ROOT")
 POSITIVE_GEOJSON_BLOB = require_env("POSITIVE_GEOJSON")
 IGNORE_GEOJSON_BLOB   = require_env("IGNORE_GEOJSON")
+METADATA_SUBREGIONS   = require_env("METADATA_SUBREGIONS")
 WORK_DIR              = require_env("WORK_DIR")
 MAX_WORKERS           = int(require_env("MAX_WORKERS"))
 
 _test_limit = os.environ.get("TEST_LIMIT")
 TEST_LIMIT = int(_test_limit) if _test_limit else None
 
-RGB_PREFIX    = f"{DATA_ROOT}PLANET-RGB/"
-LABELS_PREFIX = f"{DATA_ROOT}labels/"
+RGB_PREFIX     = f"{DATA_ROOT}PLANET-RGB/"
+LABELS_PREFIX  = f"{DATA_ROOT}labels/"
+METADATA_PREFIX = f"{DATA_ROOT}metadata/"
 
 print("config loaded:")
 print(f"  BUCKET:        {BUCKET}")
@@ -52,6 +55,7 @@ print("\nDownloading polygon datasets from GCS...")
 
 positive_local = f"{WORK_DIR}/input/positive.geojson"
 ignore_local   = f"{WORK_DIR}/input/ignore.geojson"
+regions_local  = f"{WORK_DIR}/input/regions.geojson"
 
 bucket.blob(POSITIVE_GEOJSON_BLOB).download_to_filename(positive_local)
 gdf_positive = gpd.read_file(positive_local)
@@ -60,6 +64,29 @@ print(f"  Positive polygons: {len(gdf_positive)} features")
 bucket.blob(IGNORE_GEOJSON_BLOB).download_to_filename(ignore_local)
 gdf_ignore = gpd.read_file(ignore_local)
 print(f"  Ignore polygons:   {len(gdf_ignore)} features")
+
+# Download the regions GeoJSON (used for RegionName lookup)
+bucket.blob(METADATA_SUBREGIONS).download_to_filename(regions_local)
+gdf_regions = gpd.read_file(regions_local)
+if "ECO_NAME" not in gdf_regions.columns:
+    print("ERROR: 'ECO_NAME' column not found in regions GeoJSON.")
+    print(f"  Available columns: {list(gdf_regions.columns)}")
+    sys.exit(1)
+print(f"  Regions: {len(gdf_regions)} features")
+
+# Pre-compute region centroids in WGS84 for nearest-centroid matching.
+# We reproject to a geographic CRS so centroid distance is in degrees,
+# which is sufficient for coarse nearest-region lookup.
+gdf_regions_wgs84 = gdf_regions.to_crs("EPSG:4326")
+region_centroids  = gdf_regions_wgs84.geometry.centroid  # GeoSeries of Points
+
+
+def find_nearest_region(tile_centroid_wgs84):
+    """Return ECO_NAME of the region whose centroid is closest to the tile centroid."""
+    distances = region_centroids.distance(tile_centroid_wgs84)
+    nearest_idx = distances.idxmin()
+    return gdf_regions_wgs84.loc[nearest_idx, "ECO_NAME"]
+
 
 print(f"\nFinding imagery tiles: {INPUT_PREFIX}")
 
@@ -166,6 +193,23 @@ def process_single_tile(blob_path, bucket_name, work_dir):
             if new_mask.max() == 0:
                 return None
 
+            # --- Compute tile centroid in WGS84 for metadata ---
+            from shapely.geometry import Point
+            import pyproj
+            from shapely.ops import transform as shapely_transform
+
+            tile_centroid_native = tile_bbox.centroid
+
+            # Reproject centroid to WGS84
+            project = pyproj.Transformer.from_crs(
+                tile_crs.to_epsg(),
+                4326,
+                always_xy=True
+            ).transform
+            tile_centroid_wgs84 = shapely_transform(project, tile_centroid_native)
+            centroid_lon = tile_centroid_wgs84.x
+            centroid_lat = tile_centroid_wgs84.y
+
         base_profile = dict(
             driver="GTiff",
             width=tile_width,
@@ -189,7 +233,7 @@ def process_single_tile(blob_path, bucket_name, work_dir):
             dst.write(new_mask[np.newaxis, :, :])
             dst.set_band_description(1, "Mask: 0=background 1=positive 255=ignore")
 
-        return (local_rgb_out, local_label_out)
+        return (local_rgb_out, local_label_out, centroid_lat, centroid_lon)
 
     finally:
         if os.path.exists(local_input):
@@ -198,9 +242,10 @@ def process_single_tile(blob_path, bucket_name, work_dir):
 
 print(f"\nProcessing {len(tiles_to_process)} tiles with {MAX_WORKERS} workers\n")
 
-success_count = 0
-skip_count    = 0
-error_count   = 0
+success_count  = 0
+skip_count     = 0
+error_count    = 0
+metadata_rows  = []
 
 with concurrent.futures.ProcessPoolExecutor(
     max_workers=MAX_WORKERS,
@@ -224,12 +269,29 @@ with concurrent.futures.ProcessPoolExecutor(
             try:
                 result = future.result()
                 if result is not None:
-                    local_rgb, local_label = result
+                    local_rgb, local_label, centroid_lat, centroid_lon = result
+
                     uid_str = f"{next_uid:06d}"
+
                     bucket.blob(f"{RGB_PREFIX}{uid_str}.tif").upload_from_filename(local_rgb)
                     bucket.blob(f"{LABELS_PREFIX}{uid_str}.tif").upload_from_filename(local_label)
                     os.remove(local_rgb)
                     os.remove(local_label)
+
+                    # Nearest-region lookup using pre-computed WGS84 region centroids
+                    from shapely.geometry import Point
+                    tile_point  = Point(centroid_lon, centroid_lat)
+                    region_name = find_nearest_region(tile_point)
+
+                    metadata_rows.append({
+                        "Tile_ID":      uid_str,
+                        "centroid_lat": round(centroid_lat, 6),
+                        "centroid_lon": round(centroid_lon, 6),
+                        "TrainClass":   "positive",
+                        "RegionName":   region_name,
+                        "UIDs":         9999,
+                    })
+
                     next_uid += 1
                     success_count += 1
                 else:
@@ -239,6 +301,38 @@ with concurrent.futures.ProcessPoolExecutor(
                 tqdm.write(f"ERROR: {blob_path.split('/')[-1]} — {exc}")
             pbar.update(1)
 
+# ── Write metadata CSV ────────────────────────────────────────────────────────
+
+if metadata_rows:
+    metadata_df = pd.DataFrame(
+        metadata_rows,
+        columns=["Tile_ID", "centroid_lat", "centroid_lon", "TrainClass", "RegionName", "UIDs"]
+    )
+
+    local_csv = f"{WORK_DIR}/output/metadata.csv"
+
+    # If a metadata CSV already exists in GCS, download and append to it
+    metadata_blob_path = f"{METADATA_PREFIX}metadata.csv"
+    existing_blob = bucket.blob(metadata_blob_path)
+
+    if existing_blob.exists():
+        existing_local = f"{WORK_DIR}/input/metadata_existing.csv"
+        existing_blob.download_to_filename(existing_local)
+        existing_df = pd.read_csv(existing_local)
+        metadata_df = pd.concat([existing_df, metadata_df], ignore_index=True)
+        print(f"\nAppended {len(metadata_rows)} new rows to existing metadata CSV "
+              f"({len(existing_df)} existing rows → {len(metadata_df)} total)")
+    else:
+        print(f"\nCreating new metadata CSV with {len(metadata_df)} rows")
+
+    metadata_df.to_csv(local_csv, index=False)
+    bucket.blob(metadata_blob_path).upload_from_filename(local_csv)
+    os.remove(local_csv)
+    print(f"Metadata CSV uploaded → gs://{BUCKET}/{metadata_blob_path}")
+else:
+    print("\nNo successful tiles — metadata CSV not written")
+
 print(f"\nComplete — {success_count} written, {skip_count} skipped, {error_count} errors")
-print(f"RGB:    gs://{BUCKET}/{RGB_PREFIX}")
-print(f"Labels: gs://{BUCKET}/{LABELS_PREFIX}")
+print(f"RGB:      gs://{BUCKET}/{RGB_PREFIX}")
+print(f"Labels:   gs://{BUCKET}/{LABELS_PREFIX}")
+print(f"Metadata: gs://{BUCKET}/{METADATA_PREFIX}")
