@@ -67,8 +67,9 @@ polygon_local = f"{WORK_DIR}/input/polygons.geojson"
 regions_local = f"{WORK_DIR}/input/regions.geojson"
 
 bucket.blob(POLYGON_GEOJSON_BLOB).download_to_filename(polygon_local)
+gdf_polygons = gpd.read_file(polygon_local) 
 gdf_polygons = gdf_polygons[gdf_polygons["TrainClass"] == "negative"].copy()
-print(f"  Polygons: {len(gdf_polygons)} features (negatives)")
+print(f"  Polygons: {len(gdf_polygons)} features (negative class only)")
 
 bucket.blob(METADATA_SUBREGIONS).download_to_filename(regions_local)
 gdf_regions = gpd.read_file(regions_local)
