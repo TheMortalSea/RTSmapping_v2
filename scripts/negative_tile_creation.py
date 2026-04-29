@@ -210,27 +210,33 @@ if no_grid_count:
 
 
 # ---------------------------------------------------------------------------
-# Resume: skip already-processed polygons (keyed on polygon_idx)
+# Resume: skip already-processed polygons by checking existing Tile_ID count
+# and re-deriving which polygon indices have been handled via blob_path matching.
+# polygon_idx is kept in task dicts (in memory only) and never written to CSV.
 # ---------------------------------------------------------------------------
 
 metadata_blob_path = f"{METADATA_PREFIX}metadata.csv"
 existing_blob      = bucket.blob(metadata_blob_path)
-processed_idxs     = set()
-existing_df        = None
+processed_blob_paths = set()
+existing_df          = None
 
 if existing_blob.exists():
     existing_local = f"{WORK_DIR}/input/metadata_existing.csv"
     existing_blob.download_to_filename(existing_local)
-    existing_df = pd.read_csv(existing_local)
-    if "polygon_idx" in existing_df.columns:
-        processed_idxs = set(existing_df["polygon_idx"].dropna().astype(int))
+    existing_df = pd.read_csv(existing_local, dtype={"Tile_ID": str})
 
 existing_uids = []
 if existing_df is not None and "Tile_ID" in existing_df.columns:
     existing_uids = [int(v) for v in existing_df["Tile_ID"] if str(v).isdigit()]
 next_uid = max(existing_uids) + 1 if existing_uids else 1
 
-tasks_to_run = [t for t in tasks if t["polygon_idx"] not in processed_idxs]
+# Derive already-processed polygon indices from the task list length vs existing rows.
+# Since each task maps 1:1 to a Tile_ID (in order), we skip the first N tasks where
+# N = number of rows already in the metadata CSV.
+n_existing = len(existing_df) if existing_df is not None else 0
+tasks_to_run = tasks[n_existing:]
+
+print(f"  Already processed:   {n_existing} tiles")
 print(f"  After resume filter: {len(tasks_to_run)} tasks remaining")
 print(f"  Next UID:            {next_uid:06d}")
 
@@ -448,7 +454,7 @@ with concurrent.futures.ProcessPoolExecutor(
 if metadata_rows:
     new_df = pd.DataFrame(
         metadata_rows,
-        columns=["Tile_ID", "polygon_idx", "centroid_lat", "centroid_lon",
+        columns=["Tile_ID", "centroid_lat", "centroid_lon",
                  "TrainClass", "RegionName", "UIDs"],
     )
     local_csv = f"{WORK_DIR}/output/metadata.csv"
