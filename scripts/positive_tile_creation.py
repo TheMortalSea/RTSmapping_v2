@@ -157,7 +157,8 @@ def process_single_tile(blob_path, bucket_name, work_dir):
             tile_crs       = src.crs
             tile_transform = src.transform
             tile_nodata    = src.nodata
-            rgb_data       = src.read(indexes=[1, 2, 3])
+            bgr = src.read(indexes=[1, 2, 3])
+            rgb_data = bgr[[2, 1, 0], :, :]
 
             tile_bounds = rasterio.transform.array_bounds(tile_height, tile_width, tile_transform)
             tile_bbox   = box(*tile_bounds)
@@ -324,7 +325,7 @@ if metadata_rows:
     if existing_df is not None and "Tile_ID" in existing_df.columns:
         existing_uids = [int(v) for v in existing_df["Tile_ID"] if str(v).isdigit()]
     next_uid = max(existing_uids) + 1 if existing_uids else 1
-    
+
     metadata_df.to_csv(local_csv, index=False)
     bucket.blob(metadata_blob_path).upload_from_filename(local_csv)
     os.remove(local_csv)
