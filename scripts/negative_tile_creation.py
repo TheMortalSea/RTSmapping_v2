@@ -15,10 +15,6 @@ from tqdm import tqdm
 import pandas as pd
 import pyproj
 
-# ---------------------------------------------------------------------------
-# Config
-# ---------------------------------------------------------------------------
-
 def require_env(name):
     val = os.environ.get(name)
     if val is None:
@@ -48,10 +44,6 @@ print(f"  RGB output:    gs://{BUCKET}/{RGB_PREFIX}")
 print(f"  MAX_WORKERS:   {MAX_WORKERS}")
 print(f"  TARGET_TILES:  {TARGET_TILES or 'all'}")
 
-# ---------------------------------------------------------------------------
-# Auth + GCS
-# ---------------------------------------------------------------------------
-
 auth.authenticate_user()
 
 os.makedirs(f"{WORK_DIR}/input",  exist_ok=True)
@@ -59,10 +51,6 @@ os.makedirs(f"{WORK_DIR}/output", exist_ok=True)
 
 client = storage.Client()
 bucket = client.bucket(BUCKET)
-
-# ---------------------------------------------------------------------------
-# Load datasets
-# ---------------------------------------------------------------------------
 
 print("\nDownloading datasets from GCS...")
 
@@ -358,7 +346,7 @@ if metadata_rows:
     metadata_df = pd.DataFrame(
         metadata_rows,
         columns=["Tile_ID", "centroid_lat", "centroid_lon",
-                 "TrainClass", "RegionName", "UIDs", "source_blob"],
+                 "TrainClass", "RegionName", "UIDs"],
     )
     local_csv = f"{WORK_DIR}/output/metadata.csv"
 
