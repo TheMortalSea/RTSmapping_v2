@@ -2,11 +2,10 @@
 
 import os
 import sys
-import numpy as np
 import rasterio
 from rasterio.windows import Window
 import geopandas as gpd
-from shapely.geometry import box, Point
+from shapely.geometry import Point
 from shapely.ops import transform as shapely_transform
 from shapely.strtree import STRtree
 from google.colab import auth
@@ -28,8 +27,8 @@ def require_env(name):
     return val
 
 BUCKET               = require_env("BUCKET")
-INPUT_PREFIX         = require_env("INPUT_PREFIX")
 POLYGON_GEOJSON_BLOB = require_env("POLYGON_GEOJSON_BLOB")
+GRID_GEOJSON_BLOB    = require_env("GRID_GEOJSON_BLOB")
 DATA_ROOT            = require_env("DATA_ROOT")
 METADATA_SUBREGIONS  = require_env("METADATA_SUBREGIONS")
 WORK_DIR             = require_env("WORK_DIR")
@@ -40,13 +39,11 @@ TARGET_TILES = int(_target) if _target else None
 
 TILE_SIZE       = 512
 WORKING_CRS     = "EPSG:6933"
-TILE_CRS        = "EPSG:3857"   # Planet basemaps are Web Mercator
 RGB_PREFIX      = f"{DATA_ROOT}/PLANET-RGB/"
 METADATA_PREFIX = f"{DATA_ROOT}/metadata/"
 
 print("Configuration:")
 print(f"  BUCKET:        {BUCKET}")
-print(f"  INPUT_PREFIX:  {INPUT_PREFIX}")
 print(f"  RGB output:    gs://{BUCKET}/{RGB_PREFIX}")
 print(f"  MAX_WORKERS:   {MAX_WORKERS}")
 print(f"  TARGET_TILES:  {TARGET_TILES or 'all'}")
@@ -64,23 +61,27 @@ client = storage.Client()
 bucket = client.bucket(BUCKET)
 
 # ---------------------------------------------------------------------------
-# Load + filter polygons
+# Load datasets
 # ---------------------------------------------------------------------------
 
 print("\nDownloading datasets from GCS...")
 
 polygon_local = f"{WORK_DIR}/input/polygons.geojson"
 regions_local = f"{WORK_DIR}/input/regions.geojson"
+grid_local    = f"{WORK_DIR}/input/grid.geojson"
 
 bucket.blob(POLYGON_GEOJSON_BLOB).download_to_filename(polygon_local)
 bucket.blob(METADATA_SUBREGIONS).download_to_filename(regions_local)
+bucket.blob(GRID_GEOJSON_BLOB).download_to_filename(grid_local)
 
+# Polygons — filter to negative, reproject, fix invalid geometries
 gdf_polygons = gpd.read_file(polygon_local)
 gdf_polygons = gdf_polygons[gdf_polygons["TrainClass"] == "Negative"].copy()
 gdf_polygons = gdf_polygons.to_crs(WORKING_CRS)
-gdf_polygons["geometry"] = gdf_polygons["geometry"].buffer(0)  # fix invalid geometries once
+gdf_polygons["geometry"] = gdf_polygons["geometry"].buffer(0)
 print(f"  Negative polygons:  {len(gdf_polygons)}")
 
+# Regions
 gdf_regions       = gpd.read_file(regions_local)
 gdf_regions_wgs84 = gdf_regions.to_crs("EPSG:4326")
 gdf_regions_work  = gdf_regions.to_crs(WORKING_CRS)
@@ -88,8 +89,12 @@ gdf_regions_work  = gdf_regions.to_crs(WORKING_CRS)
 if "ECO_NAME" not in gdf_regions.columns:
     print(f"ERROR: 'ECO_NAME' not found. Available: {list(gdf_regions.columns)}")
     sys.exit(1)
-
 print(f"  Ecoregions:         {len(gdf_regions)}")
+
+# Grid — reproject to working CRS for spatial joins
+gdf_grid = gpd.read_file(grid_local)
+gdf_grid = gdf_grid.to_crs(WORKING_CRS)
+print(f"  Grid cells:         {len(gdf_grid)}")
 
 # ---------------------------------------------------------------------------
 # Assign ecoregions to polygons via spatial join
@@ -107,7 +112,7 @@ joined = gpd.sjoin(
 )
 gdf_polygons["ECO_NAME"] = joined["ECO_NAME"].values
 
-# Nearest fallback for any polygon centroid that missed all regions
+# Nearest fallback for any centroid that missed all regions
 missing = gdf_polygons["ECO_NAME"].isna()
 if missing.any():
     region_tree = STRtree(gdf_regions_work.geometry.centroid.values)
@@ -141,59 +146,42 @@ sampled_local = f"{WORK_DIR}/input/polygons_sampled.geojson"
 gdf_sampled.to_file(sampled_local, driver="GeoJSON")
 
 # ---------------------------------------------------------------------------
-# STRtree for fast region lookup (used in main process after each tile)
+# STRtree for fast region lookup
 # ---------------------------------------------------------------------------
 
-_region_tree = STRtree(gdf_regions_wgs84.geometry.centroid.values)
+_region_tree = STRtree(gdf_regions_work.geometry.centroid.values)
 
 def find_nearest_region(tile_centroid_wgs84: Point) -> str:
-    nearest_i = _region_tree.nearest(tile_centroid_wgs84)
-    return gdf_regions_wgs84.iloc[nearest_i]["ECO_NAME"]
+    # Project the WGS84 point to WORKING_CRS for the lookup
+    projector  = pyproj.Transformer.from_crs(4326, WORKING_CRS, always_xy=True).transform
+    pt_work    = shapely_transform(projector, tile_centroid_wgs84)
+    nearest_i  = _region_tree.nearest(pt_work)
+    return gdf_regions_work.iloc[nearest_i]["ECO_NAME"]
 
 # ---------------------------------------------------------------------------
-# Pre-filter tiles by bbox — skip tiles with no polygon overlap before downloading
+# Use grid GeoJSON to find tiles that intersect sampled polygons
 #
-# Planet tile path structure:
-#   .../101/1471/global_quarterly_2024q3_mosaic_101-1471_quad.tif
-#   parts[-3] = zoom, parts[-2] = x, filename contains y after last "-"
+# Spatial join grid cells against sampled polygons, then construct each
+# blob path from delivery_location + basemap_name + grid_column-grid_row
 # ---------------------------------------------------------------------------
 
-EARTH_HALF_CIRC = 20037508.3427892
+print("\nFinding tiles that intersect sampled polygons via grid...")
 
-def tile_path_to_bbox_3857(blob_path: str):
-    parts    = blob_path.rstrip("/").split("/")
-    zoom     = int(parts[-3])
-    x        = int(parts[-2])
-    y        = int(parts[-1].split("_quad")[0].split("-")[-1])
-    tile_m   = (EARTH_HALF_CIRC * 2) / (2 ** zoom)
-    xmin     = -EARTH_HALF_CIRC + x       * tile_m
-    xmax     = -EARTH_HALF_CIRC + (x + 1) * tile_m
-    ymax     =  EARTH_HALF_CIRC - y       * tile_m
-    ymin     =  EARTH_HALF_CIRC - (y + 1) * tile_m
-    return box(xmin, ymin, xmax, ymax)
+poly_tree = STRtree(gdf_sampled.geometry.values)
+candidate_idx = poly_tree.query(gdf_grid.geometry, predicate="intersects")
 
+# candidate_idx is shape (2, N): row 0 = grid indices, row 1 = polygon indices
+grid_hits = gdf_grid.iloc[candidate_idx[0]].drop_duplicates().copy()
+print(f"  Grid cells intersecting sampled polygons: {len(grid_hits)}")
 
-print(f"\nListing source tiles at: gs://{BUCKET}/{INPUT_PREFIX}")
+def grid_row_to_blob(row) -> str:
+    delivery = row["delivery_location"].rstrip("/")
+    filename = f"{row['basemap_name']}_{row['grid_column']}-{row['grid_row']}_quad.tif"
+    return f"{delivery}/{filename}"
 
-all_tile_blobs = [
-    b.name for b in bucket.list_blobs(prefix=INPUT_PREFIX)
-    if b.name.endswith("_quad.tif")
-]
-print(f"  Total tiles found:     {len(all_tile_blobs)}")
-
-sampled_3857 = gdf_sampled.to_crs(TILE_CRS)
-sampled_tree = STRtree(sampled_3857.geometry.values)
-
-tiles_intersecting = []
-for blob_path in all_tile_blobs:
-    try:
-        bbox = tile_path_to_bbox_3857(blob_path)
-        if sampled_tree.query(bbox, predicate="intersects").size > 0:
-            tiles_intersecting.append(blob_path)
-    except Exception:
-        continue
-
-print(f"  After bbox pre-filter: {len(tiles_intersecting)} tiles overlap sampled polygons")
+grid_hits["blob_path"] = grid_hits.apply(grid_row_to_blob, axis=1)
+all_tile_blobs = grid_hits["blob_path"].tolist()
+print(f"  Blob paths constructed: {len(all_tile_blobs)}")
 
 # ---------------------------------------------------------------------------
 # Resume: skip already-processed tiles
@@ -216,9 +204,9 @@ if existing_df is not None and "Tile_ID" in existing_df.columns:
     existing_uids = [int(v) for v in existing_df["Tile_ID"] if str(v).isdigit()]
 next_uid = max(existing_uids) + 1 if existing_uids else 1
 
-tiles_to_process = [b for b in tiles_intersecting if b not in processed_paths]
-print(f"  After resume filter:   {len(tiles_to_process)} tiles remaining")
-print(f"  Next UID:              {next_uid:06d}")
+tiles_to_process = [b for b in all_tile_blobs if b not in processed_paths]
+print(f"  After resume filter:  {len(tiles_to_process)} tiles remaining")
+print(f"  Next UID:             {next_uid:06d}")
 
 if not tiles_to_process:
     print("All tiles already processed.")
@@ -245,6 +233,11 @@ def worker_init(sampled_polygon_path: str):
 
 
 def process_single_tile(blob_path: str, work_dir: str):
+    from shapely.geometry import box
+    from shapely.ops import transform as shapely_transform
+    import rasterio
+    from rasterio.windows import Window
+
     parts     = blob_path.rstrip("/").split("/")
     base_name = "_".join(parts[-3:]).replace(".tif", "")
 
