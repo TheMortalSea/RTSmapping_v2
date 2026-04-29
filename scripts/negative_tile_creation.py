@@ -1,4 +1,4 @@
-# PLANET IS BGR not RGB — read bands respectively
+# PLANET IS BGR not RGB — bands are 1=Blue, 2=Green, 3=Red
 
 import os
 import sys
@@ -16,6 +16,10 @@ from tqdm import tqdm
 import pandas as pd
 import pyproj
 
+# ---------------------------------------------------------------------------
+# Config
+# ---------------------------------------------------------------------------
+
 def require_env(name):
     val = os.environ.get(name)
     if val is None:
@@ -31,26 +35,27 @@ METADATA_SUBREGIONS  = require_env("METADATA_SUBREGIONS")
 WORK_DIR             = require_env("WORK_DIR")
 MAX_WORKERS          = int(require_env("MAX_WORKERS"))
 
-# TARGET_TILES replaces TEST_LIMIT — this is the total number of output tiles wanted
-_target = os.environ.get("TARGET_TILES")
+_target      = os.environ.get("TARGET_TILES")
 TARGET_TILES = int(_target) if _target else None
 
 TILE_SIZE       = 512
+WORKING_CRS     = "EPSG:6933"
+TILE_CRS        = "EPSG:3857"   # Planet basemaps are Web Mercator
 RGB_PREFIX      = f"{DATA_ROOT}/PLANET-RGB/"
 METADATA_PREFIX = f"{DATA_ROOT}/metadata/"
 
-# CRS used for all spatial operations — equal-area so distances/intersections are meaningful
-WORKING_CRS = "EPSG:6933"
-
 print("Configuration:")
-print(f"  BUCKET:              {BUCKET}")
-print(f"  INPUT_PREFIX:        {INPUT_PREFIX}")
-print(f"  POLYGON_GEOJSON_BLOB:{POLYGON_GEOJSON_BLOB}")
-print(f"  RGB output:          gs://{BUCKET}/{RGB_PREFIX}")
-print(f"  Metadata output:     gs://{BUCKET}/{METADATA_PREFIX}")
-print(f"  MAX_WORKERS:         {MAX_WORKERS}")
-print(f"  TARGET_TILES:        {TARGET_TILES or 'None (all negative tiles)'}")
+print(f"  BUCKET:        {BUCKET}")
+print(f"  INPUT_PREFIX:  {INPUT_PREFIX}")
+print(f"  RGB output:    gs://{BUCKET}/{RGB_PREFIX}")
+print(f"  MAX_WORKERS:   {MAX_WORKERS}")
+print(f"  TARGET_TILES:  {TARGET_TILES or 'all'}")
 
+# ---------------------------------------------------------------------------
+# Auth + GCS
+# ---------------------------------------------------------------------------
+
+auth.authenticate_user()
 
 os.makedirs(f"{WORK_DIR}/input",  exist_ok=True)
 os.makedirs(f"{WORK_DIR}/output", exist_ok=True)
@@ -58,209 +63,214 @@ os.makedirs(f"{WORK_DIR}/output", exist_ok=True)
 client = storage.Client()
 bucket = client.bucket(BUCKET)
 
+# ---------------------------------------------------------------------------
+# Load + filter polygons
+# ---------------------------------------------------------------------------
 
-print("\nDownloading polygon dataset from GCS...")
+print("\nDownloading datasets from GCS...")
 
 polygon_local = f"{WORK_DIR}/input/polygons.geojson"
 regions_local = f"{WORK_DIR}/input/regions.geojson"
 
 bucket.blob(POLYGON_GEOJSON_BLOB).download_to_filename(polygon_local)
-gdf_polygons = gpd.read_file(polygon_local)
-print(f"  Polygons loaded:     {len(gdf_polygons)} total features")
-
-# Filter to negative class only
-gdf_polygons = gdf_polygons[gdf_polygons["TrainClass"] == "Negative"].copy()
-print(f"  Negative class:      {len(gdf_polygons)} features")
-
-# Reproject to working CRS once here — workers inherit the saved file
-gdf_polygons = gdf_polygons.to_crs(WORKING_CRS)
-
-
-
 bucket.blob(METADATA_SUBREGIONS).download_to_filename(regions_local)
-gdf_regions = gpd.read_file(regions_local)
 
-if "ECO_NAME" not in gdf_regions.columns:
-    print(f"ERROR: 'ECO_NAME' column not found in regions GeoJSON.")
-    print(f"  Available columns: {list(gdf_regions.columns)}")
-    sys.exit(1)
+gdf_polygons = gpd.read_file(polygon_local)
+gdf_polygons = gdf_polygons[gdf_polygons["TrainClass"] == "Negative"].copy()
+gdf_polygons = gdf_polygons.to_crs(WORKING_CRS)
+gdf_polygons["geometry"] = gdf_polygons["geometry"].buffer(0)  # fix invalid geometries once
+print(f"  Negative polygons:  {len(gdf_polygons)}")
 
-print(f"  Regions loaded:      {len(gdf_regions)} ecoregions")
-
-# Reproject regions to working CRS
+gdf_regions       = gpd.read_file(regions_local)
 gdf_regions_wgs84 = gdf_regions.to_crs("EPSG:4326")
 gdf_regions_work  = gdf_regions.to_crs(WORKING_CRS)
 
-print("\nAssigning ecoregions to polygons via spatial join...")
+if "ECO_NAME" not in gdf_regions.columns:
+    print(f"ERROR: 'ECO_NAME' not found. Available: {list(gdf_regions.columns)}")
+    sys.exit(1)
 
-# Use centroid of each polygon for the join — faster than full geometry join
-polygon_centroids = gdf_polygons.copy()
-polygon_centroids["geometry"] = gdf_polygons.geometry.centroid
+print(f"  Ecoregions:         {len(gdf_regions)}")
 
-gdf_polygons_with_region = gpd.sjoin(
-    polygon_centroids[["geometry"]],
+# ---------------------------------------------------------------------------
+# Assign ecoregions to polygons via spatial join
+# ---------------------------------------------------------------------------
+
+print("\nAssigning ecoregions to polygons...")
+
+poly_centroids = gdf_polygons.copy()
+poly_centroids["geometry"] = gdf_polygons.geometry.centroid
+
+joined = gpd.sjoin(
+    poly_centroids[["geometry"]],
     gdf_regions_work[["geometry", "ECO_NAME"]],
-    how       = "left",
-    predicate = "within",
+    how="left", predicate="within",
 )
+gdf_polygons["ECO_NAME"] = joined["ECO_NAME"].values
 
-# Attach ECO_NAME back to original polygons
-gdf_polygons["ECO_NAME"] = gdf_polygons_with_region["ECO_NAME"].values
-
-# Polygons whose centroid didn't fall within any region — assign nearest region
-missing_mask = gdf_polygons["ECO_NAME"].isna()
-if missing_mask.any():
-    print(f"  {missing_mask.sum()} polygons outside all regions — assigning nearest ecoregion...")
-    region_centroids_work = gdf_regions_work.geometry.centroid
-    region_tree = STRtree(region_centroids_work.values)
-
-    for idx in gdf_polygons[missing_mask].index:
-        poly_centroid = gdf_polygons.loc[idx, "geometry"].centroid
-        nearest_i     = region_tree.nearest(poly_centroid)
+# Nearest fallback for any polygon centroid that missed all regions
+missing = gdf_polygons["ECO_NAME"].isna()
+if missing.any():
+    region_tree = STRtree(gdf_regions_work.geometry.centroid.values)
+    for idx in gdf_polygons[missing].index:
+        nearest_i = region_tree.nearest(gdf_polygons.loc[idx, "geometry"].centroid)
         gdf_polygons.at[idx, "ECO_NAME"] = gdf_regions_work.iloc[nearest_i]["ECO_NAME"]
+    print(f"  {missing.sum()} polygons assigned via nearest centroid")
 
+# ---------------------------------------------------------------------------
+# Stratified sampling — equal polygons per ecoregion
+# ---------------------------------------------------------------------------
 
 eco_groups   = gdf_polygons.groupby("ECO_NAME")
 n_ecoregions = len(eco_groups)
+per_region   = max(1, TARGET_TILES // n_ecoregions) if TARGET_TILES else None
 
-if TARGET_TILES is not None:
-    per_region = max(1, TARGET_TILES // n_ecoregions)
-    print(f"\nStratified sampling: {TARGET_TILES} target tiles / "
-          f"{n_ecoregions} ecoregions = {per_region} per region")
-else:
-    per_region = None
-    print(f"\nNo TARGET_TILES set — using all {len(gdf_polygons)} negative polygons")
+print(f"\nSampling: {TARGET_TILES or 'all'} tiles across {n_ecoregions} ecoregions"
+      + (f" = {per_region} per region" if per_region else ""))
 
 sampled_parts = []
-for eco_name, group in eco_groups:
+for _, group in eco_groups:
     if per_region is None or len(group) <= per_region:
         sampled_parts.append(group)
     else:
         sampled_parts.append(group.sample(n=per_region, random_state=42))
 
 gdf_sampled = pd.concat(sampled_parts).reset_index(drop=True)
-print(f"  Sampled polygons:    {len(gdf_sampled)} "
-      f"(across {n_ecoregions} ecoregions)")
+print(f"  Sampled polygons:   {len(gdf_sampled)}")
 
-# Save sampled polygon file — this is what workers will load
 sampled_local = f"{WORK_DIR}/input/polygons_sampled.geojson"
 gdf_sampled.to_file(sampled_local, driver="GeoJSON")
 
+# ---------------------------------------------------------------------------
+# STRtree for fast region lookup (used in main process after each tile)
+# ---------------------------------------------------------------------------
 
-region_centroids_wgs84 = gdf_regions_wgs84.geometry.centroid
-_region_tree           = STRtree(region_centroids_wgs84.values)
+_region_tree = STRtree(gdf_regions_wgs84.geometry.centroid.values)
 
 def find_nearest_region(tile_centroid_wgs84: Point) -> str:
-    """Return ECO_NAME of the region whose centroid is closest to the tile centroid."""
     nearest_i = _region_tree.nearest(tile_centroid_wgs84)
     return gdf_regions_wgs84.iloc[nearest_i]["ECO_NAME"]
+
+# ---------------------------------------------------------------------------
+# Pre-filter tiles by bbox — skip tiles with no polygon overlap before downloading
+#
+# Planet tile path structure:
+#   .../101/1471/global_quarterly_2024q3_mosaic_101-1471_quad.tif
+#   parts[-3] = zoom, parts[-2] = x, filename contains y after last "-"
+# ---------------------------------------------------------------------------
+
+EARTH_HALF_CIRC = 20037508.3427892
+
+def tile_path_to_bbox_3857(blob_path: str):
+    parts    = blob_path.rstrip("/").split("/")
+    zoom     = int(parts[-3])
+    x        = int(parts[-2])
+    y        = int(parts[-1].split("_quad")[0].split("-")[-1])
+    tile_m   = (EARTH_HALF_CIRC * 2) / (2 ** zoom)
+    xmin     = -EARTH_HALF_CIRC + x       * tile_m
+    xmax     = -EARTH_HALF_CIRC + (x + 1) * tile_m
+    ymax     =  EARTH_HALF_CIRC - y       * tile_m
+    ymin     =  EARTH_HALF_CIRC - (y + 1) * tile_m
+    return box(xmin, ymin, xmax, ymax)
+
 
 print(f"\nListing source tiles at: gs://{BUCKET}/{INPUT_PREFIX}")
 
 all_tile_blobs = [
-    blob.name
-    for blob in bucket.list_blobs(prefix=INPUT_PREFIX)
-    if blob.name.endswith("_quad.tif")
+    b.name for b in bucket.list_blobs(prefix=INPUT_PREFIX)
+    if b.name.endswith("_quad.tif")
 ]
+print(f"  Total tiles found:     {len(all_tile_blobs)}")
 
-print(f"  Found: {len(all_tile_blobs)} tiles")
+sampled_3857 = gdf_sampled.to_crs(TILE_CRS)
+sampled_tree = STRtree(sampled_3857.geometry.values)
 
-if not all_tile_blobs:
-    print("No tiles found — check INPUT_PREFIX and BUCKET.")
-    sys.exit(0)
+tiles_intersecting = []
+for blob_path in all_tile_blobs:
+    try:
+        bbox = tile_path_to_bbox_3857(blob_path)
+        if sampled_tree.query(bbox, predicate="intersects").size > 0:
+            tiles_intersecting.append(blob_path)
+    except Exception:
+        continue
 
-print("Checking for already-processed tiles...")
+print(f"  After bbox pre-filter: {len(tiles_intersecting)} tiles overlap sampled polygons")
+
+# ---------------------------------------------------------------------------
+# Resume: skip already-processed tiles
+# ---------------------------------------------------------------------------
 
 metadata_blob_path = f"{METADATA_PREFIX}metadata.csv"
 existing_blob      = bucket.blob(metadata_blob_path)
-
-processed_source_paths: set[str] = set()
-existing_df = None
+processed_paths    = set()
+existing_df        = None
 
 if existing_blob.exists():
     existing_local = f"{WORK_DIR}/input/metadata_existing.csv"
     existing_blob.download_to_filename(existing_local)
-    existing_df = pd.read_csv(existing_local)
+    existing_df    = pd.read_csv(existing_local)
     if "source_blob" in existing_df.columns:
-        processed_source_paths = set(existing_df["source_blob"].dropna())
+        processed_paths = set(existing_df["source_blob"].dropna())
 
 existing_uids = []
 if existing_df is not None and "Tile_ID" in existing_df.columns:
     existing_uids = [int(v) for v in existing_df["Tile_ID"] if str(v).isdigit()]
 next_uid = max(existing_uids) + 1 if existing_uids else 1
 
-tiles_to_process = [b for b in all_tile_blobs if b not in processed_source_paths]
-
-print(f"  Already processed:   {len(all_tile_blobs) - len(tiles_to_process)}")
-print(f"  Remaining:           {len(tiles_to_process)}")
-print(f"  Next UID:            {next_uid:06d}")
+tiles_to_process = [b for b in tiles_intersecting if b not in processed_paths]
+print(f"  After resume filter:   {len(tiles_to_process)} tiles remaining")
+print(f"  Next UID:              {next_uid:06d}")
 
 if not tiles_to_process:
     print("All tiles already processed.")
     sys.exit(0)
 
+# ---------------------------------------------------------------------------
+# Worker — init caches GCS client, spatial index, and CRS transformers
+# ---------------------------------------------------------------------------
+
 def worker_init(sampled_polygon_path: str):
-    """
-    Load the pre-filtered, pre-reprojected, sampled polygon file.
-    Build a spatial index for fast intersection checks.
-    """
     global _gdf_polygons, _polygon_sindex
+    global _gcs_bucket
+    global _project_to_work, _project_to_wgs84
 
-    _gdf_polygons = gpd.read_file(sampled_polygon_path)
-    # File is already in WORKING_CRS — no reproject needed here
-
-    # Build spatial index once per worker
+    _gdf_polygons   = gpd.read_file(sampled_polygon_path)  # already WORKING_CRS + buffered
     _polygon_sindex = _gdf_polygons.sindex
 
+    _gcs_client = storage.Client()
+    _gcs_bucket = _gcs_client.bucket(BUCKET)
 
-def process_single_tile(blob_path: str, bucket_name: str, work_dir: str):
+    # Planet tiles are always EPSG:3857 — cache transformers once per worker
+    _project_to_work  = pyproj.Transformer.from_crs(3857, WORKING_CRS, always_xy=True).transform
+    _project_to_wgs84 = pyproj.Transformer.from_crs(3857, 4326,        always_xy=True).transform
+
+
+def process_single_tile(blob_path: str, work_dir: str):
     parts     = blob_path.rstrip("/").split("/")
     base_name = "_".join(parts[-3:]).replace(".tif", "")
 
     local_input   = f"{work_dir}/input/{base_name}.tif"
     local_rgb_out = f"{work_dir}/output/rgb_{base_name}.tif"
 
-    client = storage.Client()
-    bucket = client.bucket(bucket_name)
-
     try:
-        bucket.blob(blob_path).download_to_filename(local_input)
+        _gcs_bucket.blob(blob_path).download_to_filename(local_input)
 
         with rasterio.open(local_input) as src:
-            tile_w   = src.width
-            tile_h   = src.height
-            tile_crs = src.crs
-            tile_tf  = src.transform
-
-            win_w = min(TILE_SIZE, tile_w)
-            win_h = min(TILE_SIZE, tile_h)
+            win_w = min(TILE_SIZE, src.width)
+            win_h = min(TILE_SIZE, src.height)
             win   = Window(0, 0, win_w, win_h)
 
-            # Reproject tile bbox to WORKING_CRS for intersection check
-            tile_bounds_native = rasterio.transform.array_bounds(
-                win_h, win_w, rasterio.windows.transform(win, tile_tf)
+            tile_bounds      = rasterio.transform.array_bounds(
+                win_h, win_w, rasterio.windows.transform(win, src.transform)
             )
-            tile_bbox_native = box(*tile_bounds_native)
+            tile_bbox_native = box(*tile_bounds)
+            tile_bbox_work   = shapely_transform(_project_to_work, tile_bbox_native)
 
-            project_to_work = pyproj.Transformer.from_crs(
-                tile_crs.to_epsg(), WORKING_CRS, always_xy=True
-            ).transform
-            tile_bbox_work = shapely_transform(project_to_work, tile_bbox_native)
-
-            # Fast intersection using spatial index
             candidate_idx = list(_polygon_sindex.intersection(tile_bbox_work.bounds))
             if not candidate_idx:
                 return None
-
-            candidates = _gdf_polygons.iloc[candidate_idx]
-            candidates = candidates.copy()
-            candidates["geometry"] = candidates["geometry"].buffer(0)
-            matches = candidates[candidates.intersects(tile_bbox_work)]
-
-            if matches.empty:
+            if not _gdf_polygons.iloc[candidate_idx].intersects(tile_bbox_work).any():
                 return None
 
-            # Read BGR bands (Planet band order: 1=B, 2=G, 3=R)
             try:
                 rgb_data = src.read(indexes=[1, 2, 3], window=win)
             except Exception:
@@ -269,43 +279,31 @@ def process_single_tile(blob_path: str, bucket_name: str, work_dir: str):
             if src.nodata is not None and (rgb_data == src.nodata).all():
                 return None
 
-            chip_tf = rasterio.windows.transform(win, tile_tf)
+            chip_tf        = rasterio.windows.transform(win, src.transform)
+            centroid_wgs84 = shapely_transform(_project_to_wgs84, tile_bbox_native.centroid)
 
-            # Tile centroid → WGS84 for metadata
-            tile_centroid_native = tile_bbox_native.centroid
-            project_to_wgs84 = pyproj.Transformer.from_crs(
-                tile_crs.to_epsg(), 4326, always_xy=True
-            ).transform
-            tile_centroid_wgs84 = shapely_transform(project_to_wgs84, tile_centroid_native)
-            centroid_lon = tile_centroid_wgs84.x
-            centroid_lat = tile_centroid_wgs84.y
-
-        # Write RGB chip
         profile = dict(
-            driver    = "GTiff",
-            count     = 3,
-            dtype     = rgb_data.dtype,
-            width     = win_w,
-            height    = win_h,
-            crs       = tile_crs,
-            transform = chip_tf,
-            compress  = "LZW",
+            driver="GTiff", count=3, dtype=rgb_data.dtype,
+            width=win_w, height=win_h,
+            crs=src.crs, transform=chip_tf, compress="LZW",
         )
-
         with rasterio.open(local_rgb_out, "w", **profile) as dst:
             dst.write(rgb_data)
-            dst.set_band_description(1, "Blue")   # Band 1 is Blue in Planet BGR
+            dst.set_band_description(1, "Blue")
             dst.set_band_description(2, "Green")
             dst.set_band_description(3, "Red")
 
-        return (local_rgb_out, centroid_lat, centroid_lon)
+        return (local_rgb_out, centroid_wgs84.y, centroid_wgs84.x)
 
     finally:
         if os.path.exists(local_input):
             os.remove(local_input)
 
+# ---------------------------------------------------------------------------
+# Execution
+# ---------------------------------------------------------------------------
 
-print(f"\nProcessing {len(tiles_to_process)} tiles with {MAX_WORKERS} workers…\n")
+print(f"\nProcessing {len(tiles_to_process)} tiles with {MAX_WORKERS} workers...\n")
 
 success_count = 0
 skip_count    = 0
@@ -313,31 +311,29 @@ error_count   = 0
 metadata_rows = []
 
 with concurrent.futures.ProcessPoolExecutor(
-    max_workers  = MAX_WORKERS,
-    initializer  = worker_init,
-    initargs     = (sampled_local,),
+    max_workers=MAX_WORKERS,
+    initializer=worker_init,
+    initargs=(sampled_local,),
 ) as executor:
 
     future_to_blob = {
-        executor.submit(process_single_tile, blob, BUCKET, WORK_DIR): blob
+        executor.submit(process_single_tile, blob, WORK_DIR): blob
         for blob in tiles_to_process
     }
 
-    with tqdm(total=len(tiles_to_process), desc="processing tiles", unit="tile") as pbar:
+    with tqdm(total=len(tiles_to_process), desc="tiles", unit="tile") as pbar:
         for future in concurrent.futures.as_completed(future_to_blob):
             blob_path = future_to_blob[future]
             try:
                 result = future.result()
                 if result is not None:
                     local_rgb, centroid_lat, centroid_lon = result
-
                     uid_str = f"{next_uid:06d}"
 
                     bucket.blob(f"{RGB_PREFIX}{uid_str}.tif").upload_from_filename(local_rgb)
                     os.remove(local_rgb)
 
-                    tile_point  = Point(centroid_lon, centroid_lat)
-                    region_name = find_nearest_region(tile_point)
+                    region_name = find_nearest_region(Point(centroid_lon, centroid_lat))
 
                     metadata_rows.append({
                         "Tile_ID":      uid_str,
@@ -357,9 +353,13 @@ with concurrent.futures.ProcessPoolExecutor(
 
             except Exception as exc:
                 error_count += 1
-                tqdm.write(f"✗ ERROR: {blob_path.split('/')[-1]} — {exc}")
+                tqdm.write(f"✗ {blob_path.split('/')[-1]} — {exc}")
 
             pbar.update(1)
+
+# ---------------------------------------------------------------------------
+# Write metadata
+# ---------------------------------------------------------------------------
 
 if metadata_rows:
     metadata_df = pd.DataFrame(
@@ -371,18 +371,17 @@ if metadata_rows:
 
     if existing_df is not None:
         metadata_df = pd.concat([existing_df, metadata_df], ignore_index=True)
-        print(f"\nAppended {len(metadata_rows)} rows → {len(metadata_df)} total in CSV")
+        print(f"\nAppended {len(metadata_rows)} rows → {len(metadata_df)} total")
     else:
-        print(f"\nCreating new metadata CSV with {len(metadata_df)} rows")
+        print(f"\nNew metadata CSV with {len(metadata_df)} rows")
 
     metadata_df.to_csv(local_csv, index=False)
     bucket.blob(metadata_blob_path).upload_from_filename(local_csv)
     os.remove(local_csv)
-    print(f"Metadata uploaded → gs://{BUCKET}/{metadata_blob_path}")
+    print(f"Metadata → gs://{BUCKET}/{metadata_blob_path}")
 else:
-    print("\nNo successful tiles — metadata CSV not written.")
+    print("\nNo successful tiles — metadata not written.")
 
-print(f"\n{'─'*50}")
-print(f"Complete:  {success_count} written | {skip_count} skipped (no overlap) | {error_count} errors")
+print(f"\n{success_count} written | {skip_count} skipped | {error_count} errors")
 print(f"RGB chips: gs://{BUCKET}/{RGB_PREFIX}")
 print(f"Metadata:  gs://{BUCKET}/{METADATA_PREFIX}")
