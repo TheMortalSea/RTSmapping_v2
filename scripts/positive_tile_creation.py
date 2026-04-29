@@ -311,20 +311,20 @@ if metadata_rows:
 
     local_csv = f"{WORK_DIR}/output/metadata.csv"
 
-    # If a metadata CSV already exists in GCS, download and append to it
+    
     metadata_blob_path = f"{METADATA_PREFIX}metadata.csv"
     existing_blob = bucket.blob(metadata_blob_path)
-
+    existing_df = None
     if existing_blob.exists():
         existing_local = f"{WORK_DIR}/input/metadata_existing.csv"
         existing_blob.download_to_filename(existing_local)
         existing_df = pd.read_csv(existing_local)
-        metadata_df = pd.concat([existing_df, metadata_df], ignore_index=True)
-        print(f"\nAppended {len(metadata_rows)} new rows to existing metadata CSV "
-              f"({len(existing_df)} existing rows → {len(metadata_df)} total)")
-    else:
-        print(f"\nCreating new metadata CSV with {len(metadata_df)} rows")
 
+    existing_uids = []
+    if existing_df is not None and "Tile_ID" in existing_df.columns:
+        existing_uids = [int(v) for v in existing_df["Tile_ID"] if str(v).isdigit()]
+    next_uid = max(existing_uids) + 1 if existing_uids else 1
+    
     metadata_df.to_csv(local_csv, index=False)
     bucket.blob(metadata_blob_path).upload_from_filename(local_csv)
     os.remove(local_csv)
