@@ -319,7 +319,7 @@ if metadata_rows:
     if existing_blob.exists():
         existing_local = f"{WORK_DIR}/input/metadata_existing.csv"
         existing_blob.download_to_filename(existing_local)
-        existing_df = pd.read_csv(existing_local)
+        existing_df = pd.read_csv(existing_local, dtype={"Tile_ID": str})
 
     existing_uids = []
     if existing_df is not None and "Tile_ID" in existing_df.columns:

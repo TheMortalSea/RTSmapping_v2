@@ -420,13 +420,11 @@ with concurrent.futures.ProcessPoolExecutor(
 
                     metadata_rows.append({
                         "Tile_ID":      uid_str,
-                        "polygon_idx":  task["polygon_idx"],
                         "centroid_lat": round(centroid_lat, 6),
                         "centroid_lon": round(centroid_lon, 6),
                         "TrainClass":   "negative",
                         "RegionName":   region_name,
                         "UIDs":         9999,
-                        "source_blob":  task["blob_path"],
                     })
 
                     next_uid      += 1
@@ -451,7 +449,7 @@ if metadata_rows:
     new_df = pd.DataFrame(
         metadata_rows,
         columns=["Tile_ID", "polygon_idx", "centroid_lat", "centroid_lon",
-                 "TrainClass", "RegionName", "UIDs", "source_blob"],
+                 "TrainClass", "RegionName", "UIDs"],
     )
     local_csv = f"{WORK_DIR}/output/metadata.csv"
 
