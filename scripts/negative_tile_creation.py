@@ -69,7 +69,7 @@ gdf_polygons = gpd.read_file(polygon_local)
 print(f"  Polygons loaded:     {len(gdf_polygons)} total features")
 
 # Filter to negative class only
-gdf_polygons = gdf_polygons[gdf_polygons["TrainClass"] == "negative"].copy()
+gdf_polygons = gdf_polygons[gdf_polygons["TrainClass"] == "Negative"].copy()
 print(f"  Negative class:      {len(gdf_polygons)} features")
 
 # Reproject to working CRS once here — workers inherit the saved file
