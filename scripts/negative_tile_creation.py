@@ -459,6 +459,8 @@ if metadata_rows:
     )
     local_csv = f"{WORK_DIR}/output/metadata.csv"
 
+    METADATA_COLUMNS = ["Tile_ID", "centroid_lat", "centroid_lon", "TrainClass", "RegionName", "UIDs"]
+
     if existing_df is not None:
         combined = pd.concat([existing_df, new_df], ignore_index=True)
         print(f"\nAppended {len(new_df)} rows → {len(combined)} total")
@@ -466,7 +468,9 @@ if metadata_rows:
         combined = new_df
         print(f"\nNew metadata CSV with {len(combined)} rows")
 
+    combined = combined.reindex(columns=METADATA_COLUMNS)
     combined.to_csv(local_csv, index=False)
+    
     bucket.blob(metadata_blob_path).upload_from_filename(local_csv)
     os.remove(local_csv)
     print(f"Metadata → gs://{BUCKET}/{metadata_blob_path}")

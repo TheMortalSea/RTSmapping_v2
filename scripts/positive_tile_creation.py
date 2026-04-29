@@ -78,7 +78,7 @@ print(f"  Regions: {len(gdf_regions)} features")
 # We reproject to a geographic CRS so centroid distance is in degrees,
 # which is sufficient for coarse nearest-region lookup.
 gdf_regions_wgs84 = gdf_regions.to_crs("EPSG:4326")
-region_centroids  = gdf_regions_wgs84.geometry.centroid  # GeoSeries of Points
+region_centroids  = gdf_regions_wgs84.geometry.centroid 
 
 
 def find_nearest_region(tile_centroid_wgs84):
@@ -309,27 +309,27 @@ if metadata_rows:
         metadata_rows,
         columns=["Tile_ID", "centroid_lat", "centroid_lon", "TrainClass", "RegionName", "UIDs"]
     )
+    # Ensure Tile_ID is always a zero-padded string
+    metadata_df["Tile_ID"] = metadata_df["Tile_ID"].astype(str).str.zfill(6)
 
     local_csv = f"{WORK_DIR}/output/metadata.csv"
-
-    
     metadata_blob_path = f"{METADATA_PREFIX}metadata.csv"
     existing_blob = bucket.blob(metadata_blob_path)
-    existing_df = None
+
     if existing_blob.exists():
         existing_local = f"{WORK_DIR}/input/metadata_existing.csv"
         existing_blob.download_to_filename(existing_local)
         existing_df = pd.read_csv(existing_local, dtype={"Tile_ID": str})
+        # Re-pad in case existing rows were previously truncated
+        existing_df["Tile_ID"] = existing_df["Tile_ID"].astype(str).str.zfill(6)
+        combined_df = pd.concat([existing_df, metadata_df], ignore_index=True)
+    else:
+        combined_df = metadata_df
 
-    existing_uids = []
-    if existing_df is not None and "Tile_ID" in existing_df.columns:
-        existing_uids = [int(v) for v in existing_df["Tile_ID"] if str(v).isdigit()]
-    next_uid = max(existing_uids) + 1 if existing_uids else 1
-
-    metadata_df.to_csv(local_csv, index=False)
+    combined_df.to_csv(local_csv, index=False)
     bucket.blob(metadata_blob_path).upload_from_filename(local_csv)
     os.remove(local_csv)
-    print(f"Metadata CSV uploaded → gs://{BUCKET}/{metadata_blob_path}")
+    print(f"Metadata CSV uploaded to gs://{BUCKET}/{metadata_blob_path}")
 else:
     print("\nNo successful tiles — metadata CSV not written")
 
