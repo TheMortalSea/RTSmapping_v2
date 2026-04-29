@@ -32,7 +32,7 @@ TEST_LIMIT = int(_test_limit) if _test_limit else None
 
 RGB_PREFIX     = f"{DATA_ROOT}PLANET-RGB/"
 LABELS_PREFIX  = f"{DATA_ROOT}labels/"
-METADATA_PREFIX = f"{DATA_ROOT}metadata/"
+METADATA_PREFIX = f"{DATA_ROOT}"
 
 print("config loaded:")
 print(f"  BUCKET:        {BUCKET}")

@@ -40,7 +40,7 @@ TARGET_TILES = int(_target) if _target else None
 TILE_SIZE       = 512
 WORKING_CRS     = "EPSG:6933"
 RGB_PREFIX      = f"{DATA_ROOT}/PLANET-RGB/"
-METADATA_PREFIX = f"{DATA_ROOT}/metadata/"
+METADATA_PREFIX = f"{DATA_ROOT}"
 
 print("Configuration:")
 print(f"  BUCKET:        {BUCKET}")
