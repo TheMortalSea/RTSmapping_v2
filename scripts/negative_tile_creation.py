@@ -35,10 +35,11 @@ MAX_WORKERS          = int(require_env("MAX_WORKERS"))
 _target      = os.environ.get("TARGET_TILES")
 TARGET_TILES = int(_target) if _target else None
 
-TILE_SIZE       = 512
-WORKING_CRS     = "EPSG:6933"
-RGB_PREFIX      = f"{DATA_ROOT}/PLANET-RGB/"
-METADATA_PREFIX = f"{DATA_ROOT}/"
+TILE_SIZE        = 512
+WORKING_CRS      = "EPSG:6933"
+RGB_PREFIX       = f"{DATA_ROOT}/PLANET-RGB/"
+METADATA_PREFIX  = f"{DATA_ROOT}/"
+METADATA_COLUMNS = ["Tile_ID", "centroid_lat", "centroid_lon", "TrainClass", "RegionName", "UIDs"]
 
 print(f"BUCKET: {BUCKET} | workers: {MAX_WORKERS} | target: {TARGET_TILES or 'all'}")
 
@@ -150,7 +151,6 @@ for i, poly_row in gdf_sampled.iterrows():
     grid_row  = gdf_grid.iloc[covering[0]]
     tasks.append({
         "polygon_geom": poly_row.geometry,
-        "polygon_idx":  i,
         "blob_path":    grid_row_to_blob(grid_row),
         "eco_name":     poly_row.get("ECO_NAME", ""),
     })
@@ -158,26 +158,76 @@ for i, poly_row in gdf_sampled.iterrows():
 print(f"Tasks: {len(tasks)} built, {no_grid_count} polygons had no covering grid cell")
 
 
+# -- UID derivation ----------------------------------------------------------
+# Tile_ID is a 12-character geohash of the tile centroid (lat, lon).
+# Geohash is a compact base-32 encoding that gives ~37 mm precision at
+# 12 characters and is fully reversible to lat/lon without the CSV.
+# Standard alphabet: 0-9 b-z (excluding a, i, l, o to avoid confusion).
+#
+# Example: lat=39.47, lon=-105.21  ->  9xj0tck3mm3c
+
+_GEOHASH_BASE32 = "0123456789bcdefghjkmnpqrstuvwxyz"
+
+def make_tile_uid(lat: float, lon: float, precision: int = 12) -> str:
+    lat_range, lon_range = [-90.0, 90.0], [-180.0, 180.0]
+    bits    = [16, 8, 4, 2, 1]
+    bit_idx = 0
+    even    = True
+    ch      = 0
+    result  = []
+    while len(result) < precision:
+        if even:
+            mid = (lon_range[0] + lon_range[1]) / 2
+            if lon >= mid:
+                ch |= bits[bit_idx]
+                lon_range[0] = mid
+            else:
+                lon_range[1] = mid
+        else:
+            mid = (lat_range[0] + lat_range[1]) / 2
+            if lat >= mid:
+                ch |= bits[bit_idx]
+                lat_range[0] = mid
+            else:
+                lat_range[1] = mid
+        even = not even
+        if bit_idx < 4:
+            bit_idx += 1
+        else:
+            result.append(_GEOHASH_BASE32[ch])
+            ch      = 0
+            bit_idx = 0
+    return "".join(result)
+
 # -- Resume support ----------------------------------------------------------
 
 metadata_blob_path = f"{METADATA_PREFIX}metadata.csv"
-existing_blob      = bucket.blob(metadata_blob_path)
+metadata_blob      = bucket.blob(metadata_blob_path)
 existing_df        = None
+done_centroids     = set()
 
-if existing_blob.exists():
+if metadata_blob.exists():
     existing_local = f"{WORK_DIR}/input/metadata_existing.csv"
-    existing_blob.download_to_filename(existing_local)
+    metadata_blob.download_to_filename(existing_local)
     existing_df = pd.read_csv(existing_local, dtype={"Tile_ID": str})
 
-existing_uids = []
-if existing_df is not None and "Tile_ID" in existing_df.columns:
-    existing_uids = [int(v) for v in existing_df["Tile_ID"] if str(v).isdigit()]
-next_uid = max(existing_uids) + 1 if existing_uids else 1
+    # Each tile centroid is unique - use (lat, lon) rounded to 4dp as the
+    # duplicate key, matching the precision encoded in the UID.
+    done_centroids = set(
+        zip(
+            existing_df["centroid_lat"].round(4),
+            existing_df["centroid_lon"].round(4),
+        )
+    )
+    print(f"Found existing metadata: {len(existing_df)} rows, {len(done_centroids)} centroids done")
+else:
+    print("No existing metadata found - starting fresh")
 
-n_existing    = len(existing_df) if existing_df is not None else 0
-tasks_to_run  = tasks[n_existing:]
+# Centroids are not known until a tile is opened, so all tasks are queued and
+# the duplicate check happens in the result loop once we have the actual coords.
+tasks_to_run = tasks
 
-print(f"Resuming from tile {next_uid} — {n_existing} done, {len(tasks_to_run)} remaining")
+print(f"{len(done_centroids)} tiles already in metadata, {len(tasks_to_run)} tasks queued")
 
 if not tasks_to_run:
     print("Nothing to do.")
@@ -218,10 +268,9 @@ def worker_init(sampled_polygon_path: str):
 
 def process_single_tile(task: dict, work_dir: str):
     poly_geom = task["polygon_geom"]
-    poly_idx  = task["polygon_idx"]
     blob_path = task["blob_path"]
 
-    base_name     = f"poly_{poly_idx:06d}"
+    base_name     = blob_path.split("/")[-1].replace(".tif", "")
     local_input   = f"{work_dir}/input/{base_name}.tif"
     local_rgb_out = f"{work_dir}/output/rgb_{base_name}.tif"
 
@@ -307,49 +356,58 @@ with concurrent.futures.ProcessPoolExecutor(
                 result = future.result()
                 if result is not None:
                     local_rgb, centroid_lat, centroid_lon = result
-                    uid_str = f"{next_uid:06d}"
+                    centroid_key = (round(centroid_lat, 6), round(centroid_lon, 6))
 
-                    bucket.blob(f"{RGB_PREFIX}{uid_str}.tif").upload_from_filename(local_rgb)
-                    os.remove(local_rgb)
+                    if centroid_key in done_centroids:
+                        skip_count += 1
+                        tqdm.write(f" already done  {task['blob_path'].split("/")[-1]}  (centroid match)")
+                        os.remove(local_rgb)
+                    else:
+                        uid_str = make_tile_uid(centroid_key[0], centroid_key[1])
 
-                    metadata_rows.append({
-                        "Tile_ID":      uid_str,
-                        "centroid_lat": round(centroid_lat, 6),
-                        "centroid_lon": round(centroid_lon, 6),
-                        "TrainClass":   "negative",
-                        "RegionName":   find_nearest_region(centroid_lon, centroid_lat),
-                        "UIDs":         9999,
-                    })
+                        bucket.blob(f"{RGB_PREFIX}{uid_str}.tif").upload_from_filename(local_rgb)
+                        os.remove(local_rgb)
 
-                    next_uid      += 1
-                    success_count += 1
-                    tqdm.write(f"✓ {uid_str}  poly_{task['polygon_idx']:06d}  {task['blob_path'].split('/')[-1]}")
+                        metadata_rows.append({
+                            "Tile_ID":      uid_str,
+                            "centroid_lat": centroid_key[0],
+                            "centroid_lon": centroid_key[1],
+                            "TrainClass":   "negative",
+                            "RegionName":   find_nearest_region(centroid_lon, centroid_lat),
+                            "UIDs":         9999,
+                        })
+
+                        done_centroids.add(centroid_key)
+                        success_count += 1
+                        tqdm.write(f"✓ {uid_str}  {task['blob_path'].split("/")[-1]}")
                 else:
                     skip_count += 1
-                    tqdm.write(f" skipped  poly_{task['polygon_idx']:06d}")
+                    tqdm.write(f" skipped  {task['blob_path'].split("/")[-1]}")
 
             except Exception as exc:
                 error_count += 1
-                tqdm.write(f"poly_{task['polygon_idx']:06d} — {exc}")
+                tqdm.write(f"{task['blob_path'].split("/")[-1]} — {exc}")
 
             pbar.update(1)
 
 
 # -- Write metadata ----------------------------------------------------------
 
-METADATA_COLUMNS = ["Tile_ID", "centroid_lat", "centroid_lon", "TrainClass", "RegionName", "UIDs"]
-
 if metadata_rows:
     new_df    = pd.DataFrame(metadata_rows, columns=METADATA_COLUMNS)
     local_csv = f"{WORK_DIR}/output/metadata.csv"
 
-    combined = pd.concat([existing_df, new_df], ignore_index=True) if existing_df is not None else new_df
+    if existing_df is not None:
+        combined = pd.concat([existing_df, new_df], ignore_index=True)
+    else:
+        combined = new_df
+
     combined = combined.reindex(columns=METADATA_COLUMNS)
     combined.to_csv(local_csv, index=False)
 
     bucket.blob(metadata_blob_path).upload_from_filename(local_csv)
     os.remove(local_csv)
-    print(f"Metadata: {len(combined)} rows gs://{BUCKET}/{metadata_blob_path}")
+    print(f"Metadata: {len(combined)} rows → gs://{BUCKET}/{metadata_blob_path}")
 else:
     print("No successful tiles — metadata not written.")
 
