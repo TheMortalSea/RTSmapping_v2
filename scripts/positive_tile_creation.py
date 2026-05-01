@@ -32,9 +32,10 @@ MAX_WORKERS           = int(require_env("MAX_WORKERS"))
 _test_limit = os.environ.get("TEST_LIMIT")
 TEST_LIMIT = int(_test_limit) if _test_limit else None
 
-RGB_PREFIX      = f"{DATA_ROOT}PLANET-RGB/"
-LABELS_PREFIX   = f"{DATA_ROOT}labels/"
-METADATA_PREFIX = f"{DATA_ROOT}"
+RGB_PREFIX       = f"{DATA_ROOT}PLANET-RGB/"
+LABELS_PREFIX    = f"{DATA_ROOT}labels/"
+METADATA_PREFIX  = f"{DATA_ROOT}"
+METADATA_COLUMNS = ["Tile_ID", "centroid_lat", "centroid_lon", "TrainClass", "RegionName", "UIDs"]
 
 EQUAL_AREA_CRS = "EPSG:6933"
 
@@ -62,7 +63,7 @@ if "ECO_NAME" not in gdf_regions.columns:
     print(f"ERROR: 'ECO_NAME' column not found in regions GeoJSON. Available: {list(gdf_regions.columns)}")
     sys.exit(1)
 
-gdf_regions_ea  = gdf_regions.to_crs(EQUAL_AREA_CRS)
+gdf_regions_ea   = gdf_regions.to_crs(EQUAL_AREA_CRS)
 region_centroids = gdf_regions_ea.geometry.centroid
 
 
@@ -78,29 +79,89 @@ all_tile_blobs = [
     if blob.name.endswith(".tif")
 ][:TEST_LIMIT]
 
-print(f"Found {len(all_tile_blobs)} tiles")
+print(f"Found {len(all_tile_blobs)} tiles in input prefix")
 
 if not all_tile_blobs:
     print("No tiles found — check INPUT_PREFIX and BUCKET")
     sys.exit(0)
 
-already_done_names = {
-    blob.name.split("/")[-1]
-    for blob in bucket.list_blobs(prefix=LABELS_PREFIX)
-    if blob.name.endswith(".tif")
-}
 
-existing_uids = [int(n.replace(".tif", "")) for n in already_done_names if n.replace(".tif", "").isdigit()]
-next_uid      = max(existing_uids) + 1 if existing_uids else 1
+# -- UID derivation ----------------------------------------------------------
+# Tile_ID is a 12-character geohash of the tile centroid (lat, lon).
+# Geohash is a compact base-32 encoding that gives ~37 mm precision at
+# 12 characters and is fully reversible to lat/lon without the CSV.
+# Standard alphabet: 0-9 b-z (excluding a, i, l, o to avoid confusion).
+#
+# Example: lat=39.47, lon=-105.21  ->  9xj0tck3mm3c
 
-tiles_to_process = [b for b in all_tile_blobs if b.split("/")[-1] not in already_done_names]
+_GEOHASH_BASE32 = "0123456789bcdefghjkmnpqrstuvwxyz"
 
-print(f"Already processed: {len(all_tile_blobs) - len(tiles_to_process)} | Remaining: {len(tiles_to_process)} | Next UID: {next_uid:06d}")
+def make_tile_uid(lat: float, lon: float, precision: int = 12) -> str:
+    lat_range, lon_range = [-90.0, 90.0], [-180.0, 180.0]
+    bits    = [16, 8, 4, 2, 1]
+    bit_idx = 0
+    even    = True
+    ch      = 0
+    result  = []
+    while len(result) < precision:
+        if even:
+            mid = (lon_range[0] + lon_range[1]) / 2
+            if lon >= mid:
+                ch |= bits[bit_idx]
+                lon_range[0] = mid
+            else:
+                lon_range[1] = mid
+        else:
+            mid = (lat_range[0] + lat_range[1]) / 2
+            if lat >= mid:
+                ch |= bits[bit_idx]
+                lat_range[0] = mid
+            else:
+                lat_range[1] = mid
+        even = not even
+        if bit_idx < 4:
+            bit_idx += 1
+        else:
+            result.append(_GEOHASH_BASE32[ch])
+            ch      = 0
+            bit_idx = 0
+    return "".join(result)
+
+# -- Resume support ----------------------------------------------------------
+
+metadata_blob_path = f"{METADATA_PREFIX}metadata.csv"
+metadata_blob      = bucket.blob(metadata_blob_path)
+existing_df        = None
+done_centroids     = set()
+
+if metadata_blob.exists():
+    existing_local = f"{WORK_DIR}/input/metadata_existing.csv"
+    metadata_blob.download_to_filename(existing_local)
+    existing_df = pd.read_csv(existing_local, dtype={"Tile_ID": str})
+
+    # Each tile centroid is unique - use (lat, lon) rounded to 4dp as the
+    # duplicate key, matching the precision encoded in the UID.
+    done_centroids = set(
+        zip(
+            existing_df["centroid_lat"].round(4),
+            existing_df["centroid_lon"].round(4),
+        )
+    )
+    print(f"Found existing metadata: {len(existing_df)} rows, {len(done_centroids)} centroids done")
+else:
+    print("No existing metadata found - starting fresh")
+
+# All blobs are queued; the centroid check in the result loop handles skipping.
+tiles_to_process = all_tile_blobs
+
+print(f"{len(done_centroids)} tiles already in metadata, {len(tiles_to_process)} tasks queued")
 
 if not tiles_to_process:
     print("All tiles already processed")
     sys.exit(0)
 
+
+# -- Worker ------------------------------------------------------------------
 
 def worker_init(positive_path, ignore_path):
     global gdf_positive, gdf_ignore
@@ -109,7 +170,6 @@ def worker_init(positive_path, ignore_path):
 
 
 def process_single_tile(blob_path, bucket_name, work_dir):
-    tile_filename   = blob_path.split("/")[-1]
     base_name       = blob_path.replace("/", "_").replace(".tif", "")
     local_input     = f"{work_dir}/input/{base_name}.tif"
     local_rgb_out   = f"{work_dir}/output/rgb_{base_name}.tif"
@@ -184,6 +244,8 @@ def process_single_tile(blob_path, bucket_name, work_dir):
             os.remove(local_input)
 
 
+# -- Run ---------------------------------------------------------------------
+
 print(f"Processing {len(tiles_to_process)} tiles with {MAX_WORKERS} workers\n")
 
 success_count = 0
@@ -209,26 +271,34 @@ with concurrent.futures.ProcessPoolExecutor(
                 result = future.result()
                 if result is not None:
                     local_rgb, local_label, centroid_lat, centroid_lon = result
-                    uid_str = f"{next_uid:06d}"
+                    centroid_key = (round(centroid_lat, 6), round(centroid_lon, 6))
 
-                    bucket.blob(f"{RGB_PREFIX}{uid_str}.tif").upload_from_filename(local_rgb)
-                    bucket.blob(f"{LABELS_PREFIX}{uid_str}.tif").upload_from_filename(local_label)
-                    os.remove(local_rgb)
-                    os.remove(local_label)
+                    if centroid_key in done_centroids:
+                        skip_count += 1
+                        tqdm.write(f" already done  {blob_path.split('/')[-1]}  (centroid match)")
+                        os.remove(local_rgb)
+                        os.remove(local_label)
+                    else:
+                        uid_str = make_tile_uid(centroid_key[0], centroid_key[1])
 
-                    region_name = find_nearest_region(Point(centroid_lon, centroid_lat))
+                        bucket.blob(f"{RGB_PREFIX}{uid_str}.tif").upload_from_filename(local_rgb)
+                        bucket.blob(f"{LABELS_PREFIX}{uid_str}.tif").upload_from_filename(local_label)
+                        os.remove(local_rgb)
+                        os.remove(local_label)
 
-                    metadata_rows.append({
-                        "Tile_ID":      uid_str,
-                        "centroid_lat": round(centroid_lat, 6),
-                        "centroid_lon": round(centroid_lon, 6),
-                        "TrainClass":   "positive",
-                        "RegionName":   region_name,
-                        "UIDs":         9999,
-                    })
+                        region_name = find_nearest_region(Point(centroid_lon, centroid_lat))
 
-                    next_uid      += 1
-                    success_count += 1
+                        metadata_rows.append({
+                            "Tile_ID":      uid_str,
+                            "centroid_lat": centroid_key[0],
+                            "centroid_lon": centroid_key[1],
+                            "TrainClass":   "positive",
+                            "RegionName":   region_name,
+                            "UIDs":         9999,
+                        })
+
+                        done_centroids.add(centroid_key)
+                        success_count += 1
                 else:
                     skip_count += 1
             except Exception as exc:
@@ -236,27 +306,24 @@ with concurrent.futures.ProcessPoolExecutor(
                 tqdm.write(f"ERROR: {blob_path.split('/')[-1]} — {exc}")
             pbar.update(1)
 
+
+# -- Write metadata ----------------------------------------------------------
+
 if metadata_rows:
-    metadata_df = pd.DataFrame(metadata_rows, columns=["Tile_ID", "centroid_lat", "centroid_lon", "TrainClass", "RegionName", "UIDs"])
-    metadata_df["Tile_ID"] = metadata_df["Tile_ID"].astype(str).str.zfill(6)
+    new_df    = pd.DataFrame(metadata_rows, columns=METADATA_COLUMNS)
+    local_csv = f"{WORK_DIR}/output/metadata.csv"
 
-    local_csv          = f"{WORK_DIR}/output/metadata.csv"
-    metadata_blob_path = f"{METADATA_PREFIX}metadata.csv"
-    existing_blob      = bucket.blob(metadata_blob_path)
-
-    if existing_blob.exists():
-        existing_local = f"{WORK_DIR}/input/metadata_existing.csv"
-        existing_blob.download_to_filename(existing_local)
-        existing_df = pd.read_csv(existing_local, dtype={"Tile_ID": str})
-        existing_df["Tile_ID"] = existing_df["Tile_ID"].astype(str).str.zfill(6)
-        combined_df = pd.concat([existing_df, metadata_df], ignore_index=True)
+    if existing_df is not None:
+        combined = pd.concat([existing_df, new_df], ignore_index=True)
     else:
-        combined_df = metadata_df
+        combined = new_df
 
-    combined_df.to_csv(local_csv, index=False)
+    combined = combined.reindex(columns=METADATA_COLUMNS)
+    combined.to_csv(local_csv, index=False)
+
     bucket.blob(metadata_blob_path).upload_from_filename(local_csv)
     os.remove(local_csv)
-    print(f"Metadata written to gs://{BUCKET}/{metadata_blob_path}")
+    print(f"Metadata: {len(combined)} rows → gs://{BUCKET}/{metadata_blob_path}")
 else:
     print("No successful tiles — metadata CSV not written")
 
