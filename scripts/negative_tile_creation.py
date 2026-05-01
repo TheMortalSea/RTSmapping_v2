@@ -326,11 +326,11 @@ with concurrent.futures.ProcessPoolExecutor(
                     tqdm.write(f"✓ {uid_str}  poly_{task['polygon_idx']:06d}  {task['blob_path'].split('/')[-1]}")
                 else:
                     skip_count += 1
-                    tqdm.write(f"↷ skipped  poly_{task['polygon_idx']:06d}")
+                    tqdm.write(f" skipped  poly_{task['polygon_idx']:06d}")
 
             except Exception as exc:
                 error_count += 1
-                tqdm.write(f"✗ poly_{task['polygon_idx']:06d} — {exc}")
+                tqdm.write(f"poly_{task['polygon_idx']:06d} — {exc}")
 
             pbar.update(1)
 
@@ -349,7 +349,7 @@ if metadata_rows:
 
     bucket.blob(metadata_blob_path).upload_from_filename(local_csv)
     os.remove(local_csv)
-    print(f"Metadata: {len(combined)} rows → gs://{BUCKET}/{metadata_blob_path}")
+    print(f"Metadata: {len(combined)} rows gs://{BUCKET}/{metadata_blob_path}")
 else:
     print("No successful tiles — metadata not written.")
 
