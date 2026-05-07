@@ -86,19 +86,17 @@ warnings = []
 
 def fail(check, msg):
     issues.append(("FAIL", check, msg))
-    print(f"  ✗ FAIL  [{check}] {msg}")
+    print(f"  FAIL  [{check}] {msg}")
 
 def warn(check, msg):
     warnings.append(("WARN", check, msg))
-    print(f"  ⚠ WARN  [{check}] {msg}")
+    print(f"  WARN  [{check}] {msg}")
 
 def ok(check, msg):
-    print(f"  ✓ OK    [{check}] {msg}")
+    print(f"  OK    [{check}] {msg}")
 
 def section(title):
-    print(f"\n{'='*70}")
     print(f"  {title}")
-    print(f"{'='*70}")
 
 
 # Geohash re-derivation (copied verbatim from pipeline) ───────────────────
@@ -480,10 +478,10 @@ else:
 
 print()
 if n_fail == 0:
-    print("  ✅ All checks passed.")
+    print("  All checks passed.")
 elif n_fail <= 2:
     print(f"  ⚠️  {n_fail} check(s) failed — review before training.")
 else:
-    print(f"  ❌ {n_fail} check(s) failed — pipeline output needs attention.")
+    print(f" {n_fail} check(s) failed — pipeline output needs attention.")
 
 print()
