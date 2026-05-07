@@ -207,8 +207,7 @@ def process_single_tile(blob_path, bucket_name, work_dir):
             tile_crs       = src.crs
             tile_transform = src.transform
             tile_nodata    = src.nodata
-            bgr            = src.read(indexes=[1, 2, 3])
-            rgb_data       = bgr[[2, 1, 0], :, :]
+            rgb_data = src.read(indexes=[1, 2, 3], window=win)
 
             tile_bounds = rasterio.transform.array_bounds(tile_height, tile_width, tile_transform)
             tile_bbox   = box(*tile_bounds)

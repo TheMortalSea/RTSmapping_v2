@@ -67,7 +67,7 @@ client = storage.Client()
 bucket = client.bucket(BUCKET)
 
 
-# Load datasets ------------------------------------------------
+# Load datasets --------------------------------------
 
 polygon_local = f"{WORK_DIR}/input/polygons.geojson"
 regions_local = f"{WORK_DIR}/input/regions.geojson"
@@ -139,7 +139,7 @@ sampled_local = f"{WORK_DIR}/input/polygons_sampled.geojson"
 gdf_sampled.to_file(sampled_local, driver="GeoJSON")
 
 
-# Build tasks -------------------------------------------
+# Build tasks -------------------------------------
 
 def grid_row_to_blob(row) -> str:
     delivery = row["delivery_location"].rstrip("/")
@@ -173,7 +173,7 @@ for i, poly_row in gdf_sampled.iterrows():
 print(f"Tasks: {len(tasks)} built, {no_grid_count} polygons had no covering grid cell")
 
 
-# UID derivation ---------------------------------------
+# UID derivation ------------------------------
 # geohashing the centriod
 # Example: lat=39.47, lon=-105.21  ->  9xj0tck3mm3c
 
@@ -210,7 +210,7 @@ def make_tile_uid(lat: float, lon: float, precision: int = 12) -> str:
             bit_idx = 0
     return "".join(result)
 
-# Resume support ----------------------------------------------------------
+# Resume support ------------------------------------------------
 
 metadata_blob_path = f"{METADATA_PREFIX}metadata.csv"
 metadata_blob      = bucket.blob(metadata_blob_path)
@@ -234,8 +234,7 @@ if metadata_blob.exists():
 else:
     print("No existing metadata found - starting fresh")
 
-# Centroids are not known until a tile is opened, so all tasks are queued and
-# the duplicate check happens in the result loop once we have the actual coords.
+# Centroids are not known until a tile is opened, so all tasks are queued and te duplicate check happens in the result loop once we have the actual coords.
 tasks_to_run = tasks
 
 print(f"{len(done_centroids)} tiles already in metadata, {len(tasks_to_run)} tasks queued")
@@ -267,7 +266,7 @@ def get_containing_window(src, poly_bounds_native, tile_size=512):
     return Window(col_off, row_off, tile_size, tile_size)
 
 
-# Worker ------------------------------------------------------------------
+# Worker ---------------------------------------------------------
 
 def worker_init(sampled_polygon_path: str):
     global _gcs_bucket, _project_to_wgs84
@@ -298,8 +297,7 @@ def process_single_tile(task: dict, work_dir: str):
                 return None
 
             try:
-                bgr      = src.read(indexes=[1, 2, 3], window=win)
-                rgb_data = bgr[[2, 1, 0], :, :]
+                rgb_data = src.read(indexes=[1, 2, 3], window=win)
             except Exception:
                 return None
 
