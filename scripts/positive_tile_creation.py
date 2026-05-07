@@ -1,3 +1,23 @@
+"""
+Positive Training Tile Creation Script
+
+Outputs: - RGB tiles in gs://{BUCKET}/{RGB_PREFIX} as 3-band GeoTIFFs
+         - Label tiles in gs://{BUCKET}/{LABELS_PREFIX} as single-band GeoTIFFs
+         - metadata.csv in gs://{BUCKET}/{METADATA_PREFIX} with columns: Tile_ID, centroid_lat, centroid_lon, TrainClass, RegionName, UIDs
+
+More info on metadata columns and downstream use can be foudn in the data.md documentation file.
+
+Output CRS is 3857 but centrioids in metadata are in WGS84 (4326) for easier use with geohash UIDs and region lookup.       
+
+Geohashing is used to create compact, reversible UIDs for each tile based on the centroid lat/lon. This allows for
+a more flexible addition of more data without UID mapping file.
+
+
+Notes: Planet imagery tiles do not follow the typical convention of RGB ordered as 1-R 2-G 3-B; instead they are stored as BGR. 
+This script reads the original order and writes out standard RGB order for the output tiles.
+"""
+
+
 import os
 import sys
 import numpy as np
@@ -86,7 +106,7 @@ if not all_tile_blobs:
     sys.exit(0)
 
 
-# -- UID derivation ----------------------------------------------------------
+# UID derivation ------------------------------------------------------
 # Tile_ID is a 12-character geohash of the tile centroid (lat, lon).
 # Geohash is a compact base-32 encoding that gives ~37 mm precision at
 # 12 characters and is fully reversible to lat/lon without the CSV.
@@ -127,7 +147,7 @@ def make_tile_uid(lat: float, lon: float, precision: int = 12) -> str:
             bit_idx = 0
     return "".join(result)
 
-# -- Resume support ----------------------------------------------------------
+# Resume support -----------------------------
 
 metadata_blob_path = f"{METADATA_PREFIX}metadata.csv"
 metadata_blob      = bucket.blob(metadata_blob_path)
@@ -143,8 +163,8 @@ if metadata_blob.exists():
     # duplicate key, matching the precision encoded in the UID.
     done_centroids = set(
         zip(
-            existing_df["centroid_lat"].round(4),
-            existing_df["centroid_lon"].round(4),
+            existing_df["centroid_lat"].round(6),
+            existing_df["centroid_lon"].round(6),
         )
     )
     print(f"Found existing metadata: {len(existing_df)} rows, {len(done_centroids)} centroids done")
@@ -161,7 +181,7 @@ if not tiles_to_process:
     sys.exit(0)
 
 
-# -- Worker ------------------------------------------------------------------
+# -- Worker -------------------------------------------------
 
 def worker_init(positive_path, ignore_path):
     global gdf_positive, gdf_ignore
@@ -221,8 +241,12 @@ def process_single_tile(blob_path, bucket_name, work_dir):
             centroid_lon, centroid_lat = tile_centroid_wgs84.x, tile_centroid_wgs84.y
 
         base_profile = dict(
-            driver="GTiff", width=tile_width, height=tile_height,
-            crs=tile_crs, transform=tile_transform, compress="LZW",
+            driver="GTiff", width=tile_width, 
+            height=tile_height,
+            crs=tile_crs, 
+            transform=tile_transform, 
+            compress="LZW",
+            photometric="RGB"
         )
         if tile_nodata is not None:
             base_profile["nodata"] = tile_nodata
@@ -244,7 +268,7 @@ def process_single_tile(blob_path, bucket_name, work_dir):
             os.remove(local_input)
 
 
-# -- Run ---------------------------------------------------------------------
+# Run --------------------------------------------
 
 print(f"Processing {len(tiles_to_process)} tiles with {MAX_WORKERS} workers\n")
 
@@ -307,7 +331,7 @@ with concurrent.futures.ProcessPoolExecutor(
             pbar.update(1)
 
 
-# -- Write metadata ----------------------------------------------------------
+# Write metadata ----------------------------------------------------------
 
 if metadata_rows:
     new_df    = pd.DataFrame(metadata_rows, columns=METADATA_COLUMNS)
@@ -323,7 +347,7 @@ if metadata_rows:
 
     bucket.blob(metadata_blob_path).upload_from_filename(local_csv)
     os.remove(local_csv)
-    print(f"Metadata: {len(combined)} rows → gs://{BUCKET}/{metadata_blob_path}")
+    print(f"Metadata: {len(combined)} rows > gs://{BUCKET}/{metadata_blob_path}")
 else:
     print("No successful tiles — metadata CSV not written")
 

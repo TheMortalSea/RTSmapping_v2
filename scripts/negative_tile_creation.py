@@ -1,4 +1,19 @@
-# PLANET IS BGR not RGB — bands are 1=Blue, 2=Green, 3=Red
+"""
+Negative Training Tile Creation Script
+
+Outputs: - RGB tiles in gs://{BUCKET}/{RGB_PREFIX} as 3-band GeoTIFFs
+         - Label tiles in gs://{BUCKET}/{LABELS_PREFIX} as single-band GeoTIFFs
+         - metadata.csv in gs://{BUCKET}/{METADATA_PREFIX} with columns: "Tile_ID, centroid_lat, centroid_lon, TrainClass, RegionName, UIDs
+
+Output CRS is 3857 from the original tiles
+
+Geohashing is used to create compact, reversible UIDs for each tile based on the centroid lat/lon. This allows for
+a more flexible addition of more data without UID mapping file.
+
+
+Notes: Planet imagery tiles do not follow the typical convention of RGB ordered as 1-R 2-G 3-B; instead they are stored as BGR. 
+This script reads the original order and writes out standard RGB order for the output tiles.
+"""
 
 import os
 import sys
@@ -36,7 +51,7 @@ _target      = os.environ.get("TARGET_TILES")
 TARGET_TILES = int(_target) if _target else None
 
 TILE_SIZE        = 512
-WORKING_CRS      = "EPSG:6933"
+WORKING_CRS      = "EPSG:6933" # This is for more accurate centriod placement for ecoregions
 RGB_PREFIX       = f"{DATA_ROOT}/PLANET-RGB/"
 METADATA_PREFIX  = f"{DATA_ROOT}/"
 METADATA_COLUMNS = ["Tile_ID", "centroid_lat", "centroid_lon", "TrainClass", "RegionName", "UIDs"]
@@ -52,7 +67,7 @@ client = storage.Client()
 bucket = client.bucket(BUCKET)
 
 
-# -- Load datasets -----------------------------------------------------------
+# Load datasets ------------------------------------------------
 
 polygon_local = f"{WORK_DIR}/input/polygons.geojson"
 regions_local = f"{WORK_DIR}/input/regions.geojson"
@@ -79,7 +94,7 @@ gdf_grid = gpd.read_file(grid_local).to_crs(WORKING_CRS)
 print(f"Loaded — polygons: {len(gdf_polygons)}, regions: {len(gdf_regions)}, grid: {len(gdf_grid)}")
 
 
-# -- Assign ecoregions -------------------------------------------------------
+# Assign ecoregions --------------------------------------------
 
 poly_centroids = gdf_polygons.copy()
 poly_centroids["geometry"] = gdf_polygons.geometry.centroid
@@ -91,7 +106,7 @@ joined = gpd.sjoin(
 )
 gdf_polygons["ECO_NAME"] = joined["ECO_NAME"].values
 
-missing = gdf_polygons["ECO_NAME"].isna()
+smissing = gdf_polygons["ECO_NAME"].isna()
 if missing.any():
     region_tree = STRtree(gdf_regions_work.geometry.centroid.values)
     for idx in gdf_polygons[missing].index:
@@ -100,7 +115,7 @@ if missing.any():
     print(f"  {missing.sum()} polygons assigned via nearest centroid")
 
 
-# -- Stratified sampling -----------------------------------------------------
+# Stratified sampling -----------------------------------------
 
 eco_groups   = gdf_polygons.groupby("ECO_NAME")
 n_ecoregions = len(eco_groups)
@@ -124,7 +139,7 @@ sampled_local = f"{WORK_DIR}/input/polygons_sampled.geojson"
 gdf_sampled.to_file(sampled_local, driver="GeoJSON")
 
 
-# -- Build tasks -------------------------------------------------------------
+# Build tasks -------------------------------------------
 
 def grid_row_to_blob(row) -> str:
     delivery = row["delivery_location"].rstrip("/")
@@ -142,7 +157,7 @@ for i, poly_row in gdf_sampled.iterrows():
     covering = [j for j in candidate_idxs if gdf_grid.iloc[j].geometry.contains(centroid)]
 
     if not covering and candidate_idxs:
-        covering = [min(candidate_idxs, key=lambda j: gdf_grid.iloc[j].geometry.distance(centroid))]
+        covering = [min(candidate_idxs, key=lambda j: gdf_grid.iloc[j].geometry.distance(centroid))] 
 
     if not covering:
         no_grid_count += 1
@@ -158,12 +173,8 @@ for i, poly_row in gdf_sampled.iterrows():
 print(f"Tasks: {len(tasks)} built, {no_grid_count} polygons had no covering grid cell")
 
 
-# -- UID derivation ----------------------------------------------------------
-# Tile_ID is a 12-character geohash of the tile centroid (lat, lon).
-# Geohash is a compact base-32 encoding that gives ~37 mm precision at
-# 12 characters and is fully reversible to lat/lon without the CSV.
-# Standard alphabet: 0-9 b-z (excluding a, i, l, o to avoid confusion).
-#
+# UID derivation ---------------------------------------
+# geohashing the centriod
 # Example: lat=39.47, lon=-105.21  ->  9xj0tck3mm3c
 
 _GEOHASH_BASE32 = "0123456789bcdefghjkmnpqrstuvwxyz"
@@ -199,7 +210,7 @@ def make_tile_uid(lat: float, lon: float, precision: int = 12) -> str:
             bit_idx = 0
     return "".join(result)
 
-# -- Resume support ----------------------------------------------------------
+# Resume support ----------------------------------------------------------
 
 metadata_blob_path = f"{METADATA_PREFIX}metadata.csv"
 metadata_blob      = bucket.blob(metadata_blob_path)
@@ -215,8 +226,8 @@ if metadata_blob.exists():
     # duplicate key, matching the precision encoded in the UID.
     done_centroids = set(
         zip(
-            existing_df["centroid_lat"].round(4),
-            existing_df["centroid_lon"].round(4),
+            existing_df["centroid_lat"].round(6),
+            existing_df["centroid_lon"].round(6),
         )
     )
     print(f"Found existing metadata: {len(existing_df)} rows, {len(done_centroids)} centroids done")
@@ -234,7 +245,7 @@ if not tasks_to_run:
     sys.exit(0)
 
 
-# -- Windowing ---------------------------------------------------------------
+# Windowing ---------------------------------------------------------------
 
 def get_containing_window(src, poly_bounds_native, tile_size=512):
     minx, miny, maxx, maxy = poly_bounds_native
@@ -256,14 +267,13 @@ def get_containing_window(src, poly_bounds_native, tile_size=512):
     return Window(col_off, row_off, tile_size, tile_size)
 
 
-# -- Worker ------------------------------------------------------------------
+# Worker ------------------------------------------------------------------
 
 def worker_init(sampled_polygon_path: str):
     global _gcs_bucket, _project_to_wgs84
 
     _gcs_client  = storage.Client()
     _gcs_bucket  = _gcs_client.bucket(BUCKET)
-    _project_to_wgs84 = pyproj.Transformer.from_crs(3857, 4326, always_xy=True).transform
 
 
 def process_single_tile(task: dict, work_dir: str):
@@ -296,15 +306,25 @@ def process_single_tile(task: dict, work_dir: str):
             if src.nodata is not None and (rgb_data == src.nodata).all():
                 return None
 
-            chip_tf    = rasterio.windows.transform(win, src.transform)
-            tile_bbox  = box(*rasterio.transform.array_bounds(win.height, win.width, chip_tf))
-            centroid   = shapely_transform(_project_to_wgs84, tile_bbox.centroid)
+            chip_tf   = rasterio.windows.transform(win, src.transform)
+            tile_bbox = box(*rasterio.transform.array_bounds(win.height, win.width, chip_tf))
+
+            # Build transformer from actual raster CRS, not assumed 3857
+            project_to_wgs84 = pyproj.Transformer.from_crs(
+                src.crs.to_epsg(), 4326, always_xy=True
+            ).transform
+            centroid  = shapely_transform(project_to_wgs84, tile_bbox.centroid)
             native_crs = src.crs
 
         profile = dict(
-            driver="GTiff", count=3, dtype=rgb_data.dtype,
+            driver="GTiff", 
+            count=3, 
+            dtype=rgb_data.dtype,
             width=TILE_SIZE, height=TILE_SIZE,
-            crs=native_crs, transform=chip_tf, compress="LZW",
+            crs=native_crs, 
+            transform=chip_tf, 
+            compress="LZW",
+            photometric="RGB",
         )
         with rasterio.open(local_rgb_out, "w", **profile) as dst:
             dst.write(rgb_data)
@@ -319,7 +339,7 @@ def process_single_tile(task: dict, work_dir: str):
             os.remove(local_input)
 
 
-# -- Ecoregion lookup (main process) -----------------------------------------
+# Ecoregion lookup (main process) -----------------------------------------
 
 _region_tree = STRtree(gdf_regions_work.geometry.centroid.values)
 
@@ -329,7 +349,7 @@ def find_nearest_region(centroid_lon: float, centroid_lat: float) -> str:
     return gdf_regions_work.iloc[_region_tree.nearest(pt_work)]["ECO_NAME"]
 
 
-# -- Run ---------------------------------------------------------------------
+# Run ---------------------------------------------------------------------
 
 print(f"\nProcessing {len(tasks_to_run)} polygons with {MAX_WORKERS} workers...\n")
 
@@ -379,7 +399,7 @@ with concurrent.futures.ProcessPoolExecutor(
 
                         done_centroids.add(centroid_key)
                         success_count += 1
-                        tqdm.write(f"✓ {uid_str}  {task['blob_path'].split("/")[-1]}")
+                        tqdm.write(f"{uid_str}  {task['blob_path'].split("/")[-1]}")
                 else:
                     skip_count += 1
                     tqdm.write(f" skipped  {task['blob_path'].split("/")[-1]}")
@@ -391,7 +411,7 @@ with concurrent.futures.ProcessPoolExecutor(
             pbar.update(1)
 
 
-# -- Write metadata ----------------------------------------------------------
+# Write metadata ----------------------------------------------------------
 
 if metadata_rows:
     new_df    = pd.DataFrame(metadata_rows, columns=METADATA_COLUMNS)
@@ -407,7 +427,7 @@ if metadata_rows:
 
     bucket.blob(metadata_blob_path).upload_from_filename(local_csv)
     os.remove(local_csv)
-    print(f"Metadata: {len(combined)} rows → gs://{BUCKET}/{metadata_blob_path}")
+    print(f"Metadata: {len(combined)} rows > gs://{BUCKET}/{metadata_blob_path}")
 else:
     print("No successful tiles — metadata not written.")
 
