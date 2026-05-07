@@ -106,7 +106,7 @@ joined = gpd.sjoin(
 )
 gdf_polygons["ECO_NAME"] = joined["ECO_NAME"].values
 
-smissing = gdf_polygons["ECO_NAME"].isna()
+missing = gdf_polygons["ECO_NAME"].isna()
 if missing.any():
     region_tree = STRtree(gdf_regions_work.geometry.centroid.values)
     for idx in gdf_polygons[missing].index:
