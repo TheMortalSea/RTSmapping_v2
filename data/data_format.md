@@ -6,8 +6,8 @@ All project outputs must follow these format conventions:
 
 | Data Type | Format | Extension | Compression | Notes |
 |-----------|--------|-----------|-------------|-------|
-| Training images (RGB) | GeoTIFF | `.tif` | LZW | 512×512, EPSG:3413 |
-| Training images (EXTRA) | GeoTIFF | `.tif` | LZW | 512×512, 4 channels |
+| Training images (RGB) | GeoTIFF | `.tif` | LZW | 512×512, EPSG:3857 |
+| Training images (EXTRA) | GeoTIFF | `.tif` | LZW | 512×512, N channels (N chosen per experiment; stacked order must match `configs/*.yaml §channels.extra`) |
 | Training labels | GeoTIFF | `.tif` | LZW | uint8, values {0, 1, 255} |
 | Prediction tiles | COG | `.tif` | Deflate | float32 probability |
 | Regional mosaics | COG | `.tif` | Deflate | With overviews |
@@ -18,11 +18,11 @@ All project outputs must follow these format conventions:
 
 | Data Type | Format | Extension | CRS | Notes |
 |-----------|--------|-----------|-----|-------|
-| RTS polygons (working) | GeoPackage | `.gpkg` | EPSG:3413 | Primary working format, indexed |
-| RTS polygons (archive) | GeoParquet | `.parquet` | EPSG:3413 | Long-term storage, analytics |
+| RTS polygons (working) | GeoPackage | `.gpkg` | EPSG:3857 | Primary working format, indexed |
+| RTS polygons (archive) | GeoParquet | `.parquet` | EPSG:3857 | Long-term storage, analytics |
 | RTS polygons (sharing) | GeoJSON | `.geojson` | EPSG:4326 | Small subsets only (<1000 features) |
-| Training AOIs | GeoPackage | `.gpkg` | EPSG:3413 | Region boundaries |
-| Spatial blocks | GeoPackage | `.gpkg` | EPSG:3413 | Train/val/test splits |
+| Training AOIs | GeoPackage | `.gpkg` | EPSG:3857 | Region boundaries |
+| Spatial blocks | GeoPackage | `.gpkg` | EPSG:3857 | Train/val/test splits |
 
 ### Metadata & Configuration
 
@@ -50,7 +50,7 @@ All project outputs must follow these format conventions:
 | Rasters | Always COG for outputs; GeoTIFF acceptable for intermediate/training data |
 | Vectors (large) | GeoPackage for working, GeoParquet for archive |
 | Vectors (small/web) | GeoJSON only for sharing/visualization, must reproject to EPSG:4326 |
-| CRS | EPSG:3413 throughout pipeline; convert to EPSG:4326 only for GeoJSON export |
+| CRS | EPSG:3857 throughout pipeline; convert to EPSG:4326 only for GeoJSON export |
 | Compression | Deflate for COGs, LZW for training GeoTIFFs |
 | Metadata | YAML for config (human-editable), JSON for computed outputs |
 
