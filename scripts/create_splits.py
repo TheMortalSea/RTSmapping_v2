@@ -55,7 +55,7 @@ def load_region_ecoregions(geojson_path: str | Path) -> dict[str, str]:
         return {}
 
     gdf = gpd.read_file(geojson_path)
-    name_col = _first_present(gdf, ["RegionName", "region_name", "name", "NAME"])
+    name_col = _first_present(gdf, ["RegionName", "region_name", "name", "ECO_NAME"])
     eco_col = _first_present(gdf, ["Ecoregion", "ecoregion", "ECO_NAME"])
     if name_col is None:
         raise ValueError(f"{geojson_path}: no RegionName-like column found")
