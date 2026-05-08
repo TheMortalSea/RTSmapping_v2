@@ -28,7 +28,7 @@ def load_metadata(path: str | Path) -> pd.DataFrame:
     missing = [c for c in REQUIRED_METADATA_COLUMNS if c not in df.columns]
     if missing:
         raise ValueError(f"metadata.csv missing required columns: {missing}")
-    bad_class = set(df["TrainClass"].unique()) - {"Positive", "Negative"}
+    bad_class = set(df["TrainClass"].unique()) - {"positive", "negative"}
     if bad_class:
         raise ValueError(f"TrainClass must be Positive or Negative; saw {bad_class}")
     df["UIDs"] = df["UIDs"].fillna("")
