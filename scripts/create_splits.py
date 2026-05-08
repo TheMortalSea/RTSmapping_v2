@@ -76,8 +76,8 @@ def region_stats(metadata: pd.DataFrame) -> pd.DataFrame:
     """Aggregate metadata.csv → per-region (positives, negatives, total)."""
     g = (
         metadata.assign(
-            is_pos=(metadata["TrainClass"] == "Positive").astype(int),
-            is_neg=(metadata["TrainClass"] == "Negative").astype(int),
+            is_pos=(metadata["TrainClass"] == "positive").astype(int),
+            is_neg=(metadata["TrainClass"] == "negative").astype(int),
         )
         .groupby("RegionName", as_index=False)
         .agg(positive=("is_pos", "sum"), negative=("is_neg", "sum"))

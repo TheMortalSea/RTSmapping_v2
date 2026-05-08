@@ -11,7 +11,7 @@ import pandas as pd
 import yaml
 
 REQUIRED_METADATA_COLUMNS = [
-    "Tile_id",
+    "Tile_ID",
     "centroid_lat",
     "centroid_lon",
     "TrainClass",
