@@ -1,32 +1,27 @@
 """
-Training Tile Validation Script
 Validates output of positive_tile_creation.py and negative_tile_creation.py.
 
 Checks:
-  1. CRS consistency across all RGB and label tiles
-  2. Band order and count (RGB = 3 bands, label = 1 band)
-  3. Band descriptions match expected (Red/Green/Blue)
-  4. Centroid lat/lon are valid WGS84 coordinates
-  5. Centroid lat/lon precision consistency (rounded to 6dp)
-  6. Duplicate Tile_IDs in metadata
-  7. Duplicate centroid (lat, lon) pairs
-  8. UID (Tile_ID) re-derivable from centroid coordinates
-  9. RGB tile pixel values are non-zero / non-nodata
- 10. Label tiles contain only valid values (0, 1, 255)
- 11. RGB and label tile existence parity (every positive tile should have a label)
- 12. Metadata TrainClass values are in expected set
- 13. Tile spatial dimensions match expected TILE_SIZE
+  1.  CRS consistency across all RGB and label tiles
+  2.  Band order and count (RGB = 3 bands, label = 1 band)
+  3.  Band descriptions match expected (Red/Green/Blue)
+  4.  Centroid lat/lon are valid WGS84 coordinates
+  5.  Centroid lat/lon precision consistency (rounded to 6dp)
+  6.  Duplicate Tile_IDs in metadata
+  7.  Duplicate centroid (lat, lon) pairs
+  8.  UID (Tile_ID) re-derivable from centroid coordinates
+  9.  RGB tile pixel values are non-zero / non-nodata
+  10. Label tiles contain only valid values (0, 1, 255)
+  11. RGB and label tile existence parity (every positive tile should have a label)
+  12. Metadata TrainClass values are in expected set
+  13. Tile spatial dimensions match expected TILE_SIZE
 
-Usage (set env vars or edit CONSTANTS below):
-
-  export BUCKET="abrupt_thaw"
-  export DATA_ROOT="RTS_MODEL_V2/DATA/TRAINING_DATA"
-  export WORK_DIR="/content/work"
-  python validate_training_tiles.py
-
-Optional:
-  export SAMPLE_TILES=50       # validate a random sample instead of all tiles
-  export SKIP_PIXEL_CHECK=1    # skip downloading tiles (metadata-only checks)
+Environment variables:
+  BUCKET      GCS bucket name (required)
+  DATA_ROOT   Path to training data root (required)
+  WORK_DIR    Local working directory (required)
+  SAMPLE_TILES  Validate a random sample of N tiles instead of all (optional)
+  SKIP_PIXEL_CHECK  Skip tile download checks entirely (optional)
 """
 
 import os
@@ -48,7 +43,7 @@ except ImportError:
     print("Not running in Colab — using default GCS credentials (ADC).")
 
 
-# Constants ──────────────────────────────────────────────────────────────────
+#Constants 
 
 def require_env(name):
     val = os.environ.get(name)
@@ -57,30 +52,30 @@ def require_env(name):
         sys.exit(1)
     return val
 
-BUCKET          = require_env("BUCKET")
-DATA_ROOT       = require_env("DATA_ROOT").rstrip("/")
-WORK_DIR        = require_env("WORK_DIR")
+BUCKET        = require_env("BUCKET")
+DATA_ROOT     = require_env("DATA_ROOT").rstrip("/")
+WORK_DIR      = require_env("WORK_DIR")
 
-RGB_PREFIX      = f"{DATA_ROOT}/PLANET-RGB/"
-LABELS_PREFIX   = f"{DATA_ROOT}/labels/"
-METADATA_PATH   = f"{DATA_ROOT}/metadata.csv"
+RGB_PREFIX    = f"{DATA_ROOT}/PLANET-RGB/"
+LABELS_PREFIX = f"{DATA_ROOT}/labels/"
+METADATA_PATH = f"{DATA_ROOT}/metadata.csv"
 
-TILE_SIZE       = 512
-EXPECTED_CRS    = "EPSG:3857"          # expected output CRS for tiles
-CENTROID_CRS    = "EPSG:4326"          # expected CRS for metadata lat/lon
-VALID_CLASSES   = {"positive", "negative"}
-VALID_LABEL_VALS= {0, 1, 255}
+TILE_SIZE          = 512
+EXPECTED_CRS       = "EPSG:3857"
+CENTROID_CRS       = "EPSG:4326"
+VALID_CLASSES      = {"positive", "negative"}
+VALID_LABEL_VALS   = {0, 1, 255}
 
-_sample_env     = os.environ.get("SAMPLE_TILES")
-SAMPLE_TILES    = int(_sample_env) if _sample_env else None
-SKIP_PIXEL      = bool(os.environ.get("SKIP_PIXEL_CHECK"))
+_sample_env  = os.environ.get("SAMPLE_TILES")
+SAMPLE_TILES = int(_sample_env) if _sample_env else None
+SKIP_PIXEL   = bool(os.environ.get("SKIP_PIXEL_CHECK"))
 
 os.makedirs(f"{WORK_DIR}/val_tmp", exist_ok=True)
 
 client = storage.Client()
 bucket = client.bucket(BUCKET)
 
-issues   = []   # (severity, check, message)
+issues   = []
 warnings = []
 
 
@@ -96,10 +91,10 @@ def ok(check, msg):
     print(f"  OK    [{check}] {msg}")
 
 def section(title):
-    print(f"  {title}")
+    print(f"\n  {title}")
 
 
-# Geohash re-derivation (copied verbatim from pipeline) ───────────────────
+# Geohash (copied verbatim from pipeline) 
 
 _GEOHASH_BASE32 = "0123456789bcdefghjkmnpqrstuvwxyz"
 
@@ -135,7 +130,7 @@ def make_tile_uid(lat: float, lon: float, precision: int = 12) -> str:
     return "".join(result)
 
 
-# CHECK 1 — Metadata file existence and basic structure
+# Check 1: Metadata file 
 
 section("1. Metadata file")
 
@@ -162,7 +157,7 @@ print(f"\n  TrainClass counts:\n{df['TrainClass'].value_counts().to_string()}")
 print(f"\n  UIDs value counts (top 5):\n{df['UIDs'].value_counts().head().to_string()}")
 
 
-# CHECK 2 — Duplicate Tile_IDs
+# Check 2: Duplicate Tile_IDs
 
 section("2. Duplicate Tile_IDs")
 
@@ -173,7 +168,8 @@ if len(dup_ids):
 else:
     ok("no_dup_tile_ids", "No duplicate Tile_IDs")
 
-# CHECK 3 — Duplicate centroids
+
+# Check 3: Duplicate centroids 
 
 section("3. Duplicate centroid (lat, lon)")
 
@@ -187,7 +183,8 @@ if len(dup_centroids):
 else:
     ok("no_dup_centroids", "No duplicate centroids")
 
-# CHECK 4 — Centroid coordinate validity (WGS84 bounds)
+
+#Check 4: Centroid coordinate validit
 
 section(f"4. Centroid coordinate validity (expected CRS: {CENTROID_CRS})")
 
@@ -206,7 +203,7 @@ if len(lon_bad):
 else:
     ok("centroid_lon_range", f"All centroid_lon in [-180, 180] — consistent with {CENTROID_CRS}")
 
-# Arctic / subarctic plausibility check (RTS are typically > 50°N)
+# RTS sites are typically > 50°N
 south_of_50 = df[df["centroid_lat"] < 50]
 if len(south_of_50):
     warn("centroid_lat_plausibility",
@@ -216,7 +213,8 @@ if len(south_of_50):
 else:
     ok("centroid_lat_plausibility", "All centroids north of 50°N — plausible for RTS")
 
-# CHECK 5 — UID re-derivation
+
+# Check 5: UID re-derivation 
 
 section("5. UID (Tile_ID) re-derivable from centroid")
 
@@ -225,10 +223,10 @@ for _, row in df.iterrows():
     expected = make_tile_uid(round(row["centroid_lat"], 6), round(row["centroid_lon"], 6))
     if expected != row["Tile_ID"]:
         uid_mismatches.append({
-            "Tile_ID":   row["Tile_ID"],
-            "expected":  expected,
-            "lat":       row["centroid_lat"],
-            "lon":       row["centroid_lon"],
+            "Tile_ID":  row["Tile_ID"],
+            "expected": expected,
+            "lat":      row["centroid_lat"],
+            "lon":      row["centroid_lon"],
         })
 
 if uid_mismatches:
@@ -237,7 +235,8 @@ if uid_mismatches:
 else:
     ok("uid_rederivation", "All Tile_IDs match geohash(centroid_lat, centroid_lon)")
 
-# CHECK 6 — TrainClass values
+
+# Check 6: TrainClass values
 
 section("6. TrainClass values")
 
@@ -247,7 +246,8 @@ if unexpected_classes:
 else:
     ok("train_class_values", f"All TrainClass values in {VALID_CLASSES}")
 
-# CHECK 7 — GCS tile existence and label parity
+
+# Check 7: GCS tile existence and label matching
 
 section("7. GCS tile existence and RGB / label parity")
 
@@ -256,15 +256,14 @@ rgb_blobs   = {b.name.split("/")[-1].replace(".tif", "")
 label_blobs = {b.name.split("/")[-1].replace(".tif", "")
                for b in bucket.list_blobs(prefix=LABELS_PREFIX) if b.name.endswith(".tif")}
 
-meta_ids    = set(df["Tile_ID"].astype(str))
-pos_ids     = set(df[df["TrainClass"] == "positive"]["Tile_ID"].astype(str))
-neg_ids     = set(df[df["TrainClass"] == "negative"]["Tile_ID"].astype(str))
+meta_ids = set(df["Tile_ID"].astype(str))
+pos_ids  = set(df[df["TrainClass"] == "positive"]["Tile_ID"].astype(str))
+neg_ids  = set(df[df["TrainClass"] == "negative"]["Tile_ID"].astype(str))
 
 print(f"  RGB tiles in GCS:   {len(rgb_blobs)}")
 print(f"  Label tiles in GCS: {len(label_blobs)}")
 print(f"  Metadata rows:      {len(meta_ids)}  (pos={len(pos_ids)}, neg={len(neg_ids)})")
 
-# RGB parity
 in_meta_not_rgb = meta_ids - rgb_blobs
 in_rgb_not_meta = rgb_blobs - meta_ids
 
@@ -278,9 +277,9 @@ if in_rgb_not_meta:
     warn("rgb_orphan", f"{len(in_rgb_not_meta)} RGB tiles in GCS have no metadata row")
     print("  Examples:", list(in_rgb_not_meta)[:10])
 else:
-    ok("rgb_orphan", "No orphan RGB tiles (all GCS tiles accounted for in metadata)")
+    ok("rgb_orphan", "No orphan RGB tiles")
 
-# Label parity (only required for positives)
+# Labels required for positives only
 pos_missing_label = pos_ids - label_blobs
 neg_with_label    = neg_ids & label_blobs
 
@@ -295,7 +294,9 @@ if neg_with_label:
 else:
     ok("label_unexpected_negative", "No negative tiles have label tiles (expected)")
 
-# CHECK 8 — Tile CRS, band order, dimensions, pixel values  (sampled)
+
+# Check 8: Tile CRS, bands, dimensions, pixel values 
+
 section(f"8. Tile CRS, bands, dimensions, pixel values  [SKIP_PIXEL={SKIP_PIXEL}]")
 
 if SKIP_PIXEL:
@@ -308,12 +309,12 @@ else:
     else:
         print(f"  Checking ALL {len(ids_to_check)} tiles — set SAMPLE_TILES=N to sample")
 
-    crs_seen_rgb    = defaultdict(int)
-    crs_seen_label  = defaultdict(int)
-    band_errors     = []
-    dim_errors      = []
-    nodata_errors   = []
-    label_val_errors= []
+    crs_seen_rgb         = defaultdict(int)
+    crs_seen_label       = defaultdict(int)
+    band_errors          = []
+    dim_errors           = []
+    nodata_errors        = []
+    label_val_errors     = []
     label_crs_mismatches = []
 
     for tile_id in ids_to_check:
@@ -329,22 +330,17 @@ else:
                 crs_str = src.crs.to_string() if src.crs else "None"
                 crs_seen_rgb[crs_str] += 1
 
-                # Band count
                 if src.count != 3:
                     band_errors.append((tile_id, "rgb", f"count={src.count}, expected 3"))
 
-                # Band descriptions
                 descs = [src.descriptions[i] or "" for i in range(src.count)]
-                expected_descs = ["Red", "Green", "Blue"]
-                if descs != expected_descs:
+                if descs != ["Red", "Green", "Blue"]:
                     band_errors.append((tile_id, "rgb_desc",
-                                        f"descriptions={descs}, expected {expected_descs}"))
+                                        f"descriptions={descs}, expected ['Red', 'Green', 'Blue']"))
 
-                # Dimensions
                 if src.width != TILE_SIZE or src.height != TILE_SIZE:
                     dim_errors.append((tile_id, f"{src.width}x{src.height}"))
 
-                # Pixel values — check not all nodata / zero
                 data = src.read()
                 if src.nodata is not None and (data == src.nodata).all():
                     nodata_errors.append((tile_id, "rgb", "all nodata"))
@@ -359,7 +355,7 @@ else:
             fail("tile_read", f"RGB tile {tile_id}: {e}")
             traceback.print_exc()
 
-        # Label tile (only if positive and label exists)
+        # Label checks (positives only)
         train_class = df.loc[df["Tile_ID"] == tile_id, "TrainClass"].values
         if len(train_class) and train_class[0] == "positive" and tile_id in label_blobs:
             try:
@@ -372,29 +368,25 @@ else:
                     if lsrc.count != 1:
                         band_errors.append((tile_id, "label", f"count={lsrc.count}, expected 1"))
 
-                    ldata = lsrc.read(1)
-                    unique_vals = set(np.unique(ldata).tolist())
+                    unique_vals  = set(np.unique(lsrc.read(1)).tolist())
                     invalid_vals = unique_vals - VALID_LABEL_VALS
                     if invalid_vals:
                         label_val_errors.append((tile_id, invalid_vals))
 
-                    # CRS match between RGB and label
                     if lsrc.crs != rgb_crs:
-                        label_crs_mismatches.append(
-                            (tile_id, f"rgb={rgb_crs}, label={lsrc.crs}")
-                        )
+                        label_crs_mismatches.append((tile_id, f"rgb={rgb_crs}, label={lsrc.crs}"))
 
                 os.remove(local_label)
 
             except Exception as e:
                 fail("label_read", f"Label tile {tile_id}: {e}")
 
-    #Report tile-level findings ──────────────────────────────────
+    # Report 
 
     print(f"\n  CRS distribution — RGB tiles:")
     for crs_str, cnt in sorted(crs_seen_rgb.items(), key=lambda x: -x[1]):
-        marker = "✓" if EXPECTED_CRS in crs_str else "✗"
-        print(f"    {marker} {crs_str}: {cnt} tiles")
+        marker = "ok" if EXPECTED_CRS in crs_str else "!!"
+        print(f"    [{marker}] {crs_str}: {cnt} tiles")
 
     if len(crs_seen_rgb) == 1 and EXPECTED_CRS in next(iter(crs_seen_rgb)):
         ok("rgb_crs_consistent", f"All RGB tiles use {EXPECTED_CRS}")
@@ -408,8 +400,8 @@ else:
     if crs_seen_label:
         print(f"\n  CRS distribution — label tiles:")
         for crs_str, cnt in sorted(crs_seen_label.items(), key=lambda x: -x[1]):
-            marker = "✓" if EXPECTED_CRS in crs_str else "✗"
-            print(f"    {marker} {crs_str}: {cnt} tiles")
+            marker = "ok" if EXPECTED_CRS in crs_str else "!!"
+            print(f"    [{marker}] {crs_str}: {cnt} tiles")
 
         if len(crs_seen_label) == 1 and EXPECTED_CRS in next(iter(crs_seen_label)):
             ok("label_crs_consistent", f"All label tiles use {EXPECTED_CRS}")
@@ -455,7 +447,8 @@ else:
     else:
         ok("label_values", f"All label tiles contain only valid values {VALID_LABEL_VALS}")
 
-# SUMMARY
+
+# Summary
 
 section("SUMMARY")
 
@@ -465,14 +458,14 @@ n_warn = len(warnings)
 if issues:
     print(f"\n  {n_fail} FAILURE(S):\n")
     for _, check, msg in issues:
-        print(f"    ✗ [{check}] {msg}")
+        print(f"    FAIL [{check}] {msg}")
 else:
     print("\n  No failures.")
 
 if warnings:
     print(f"\n  {n_warn} WARNING(S):\n")
     for _, check, msg in warnings:
-        print(f"    ⚠ [{check}] {msg}")
+        print(f"    WARN [{check}] {msg}")
 else:
     print("  No warnings.")
 
@@ -480,8 +473,8 @@ print()
 if n_fail == 0:
     print("  All checks passed.")
 elif n_fail <= 2:
-    print(f"  ⚠️  {n_fail} check(s) failed — review before training.")
+    print(f"  {n_fail} check(s) failed -- review before training.")
 else:
-    print(f" {n_fail} check(s) failed — pipeline output needs attention.")
+    print(f"  {n_fail} check(s) failed —-  pipeline output needs attention.")
 
 print()

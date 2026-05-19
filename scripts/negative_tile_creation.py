@@ -9,10 +9,6 @@ Output CRS is 3857 from the original tiles
 
 Geohashing is used to create compact, reversible UIDs for each tile based on the centroid lat/lon. This allows for
 a more flexible addition of more data without UID mapping file.
-
-
-Notes: Planet imagery tiles do not follow the typical convention of RGB ordered as 1-R 2-G 3-B; instead they are stored as BGR. 
-This script reads the original order and writes out standard RGB order for the output tiles.
 """
 
 import os
@@ -173,7 +169,7 @@ for i, poly_row in gdf_sampled.iterrows():
 print(f"Tasks: {len(tasks)} built, {no_grid_count} polygons had no covering grid cell")
 
 
-# UID derivation ------------------------------
+# UID derivation -----------------------
 # geohashing the centriod
 # Example: lat=39.47, lon=-105.21  ->  9xj0tck3mm3c
 
@@ -210,7 +206,7 @@ def make_tile_uid(lat: float, lon: float, precision: int = 12) -> str:
             bit_idx = 0
     return "".join(result)
 
-# Resume support ------------------------------------------------
+# Resume support ---------------------------
 
 metadata_blob_path = f"{METADATA_PREFIX}metadata.csv"
 metadata_blob      = bucket.blob(metadata_blob_path)
@@ -244,7 +240,7 @@ if not tasks_to_run:
     sys.exit(0)
 
 
-# Windowing ---------------------------------------------------------------
+# Windowing -------------------------------------------------
 
 def get_containing_window(src, poly_bounds_native, tile_size=512):
     minx, miny, maxx, maxy = poly_bounds_native
@@ -266,7 +262,7 @@ def get_containing_window(src, poly_bounds_native, tile_size=512):
     return Window(col_off, row_off, tile_size, tile_size)
 
 
-# Worker ---------------------------------------------------------
+# Worker ----------------------------------------
 
 def worker_init(sampled_polygon_path: str):
     global _gcs_bucket, _project_to_wgs84
@@ -337,7 +333,7 @@ def process_single_tile(task: dict, work_dir: str):
             os.remove(local_input)
 
 
-# Ecoregion lookup (main process) -----------------------------------------
+# Ecoregion lookup (main process) -----------------------------
 
 _region_tree = STRtree(gdf_regions_work.geometry.centroid.values)
 
@@ -347,7 +343,7 @@ def find_nearest_region(centroid_lon: float, centroid_lat: float) -> str:
     return gdf_regions_work.iloc[_region_tree.nearest(pt_work)]["ECO_NAME"]
 
 
-# Run ---------------------------------------------------------------------
+# Run ---------------------------------------------------
 
 print(f"\nProcessing {len(tasks_to_run)} polygons with {MAX_WORKERS} workers...\n")
 
@@ -409,7 +405,7 @@ with concurrent.futures.ProcessPoolExecutor(
             pbar.update(1)
 
 
-# Write metadata ----------------------------------------------------------
+# Write metadata -------------------------------------------------
 
 if metadata_rows:
     new_df    = pd.DataFrame(metadata_rows, columns=METADATA_COLUMNS)

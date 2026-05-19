@@ -11,10 +11,6 @@ Output CRS is 3857 but centrioids in metadata are in WGS84 (4326) for easier use
 
 Geohashing is used to create compact, reversible UIDs for each tile based on the centroid lat/lon. This allows for
 a more flexible addition of more data without UID mapping file.
-
-
-Notes: Planet imagery tiles do not follow the typical convention of RGB ordered as 1-R 2-G 3-B; instead they are stored as BGR. 
-This script reads the original order and writes out standard RGB order for the output tiles.
 """
 
 
