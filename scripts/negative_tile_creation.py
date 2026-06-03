@@ -135,16 +135,6 @@ if metadata_blob.exists():
 else:
     print("No existing metadata found - starting fresh")
 
-# Centroids are not known until a tile is opened, so all tasks are queued and te duplicate check happens in the result loop once we have the actual coords.
-tasks_to_run = tasks
-
-print(f"{len(done_centroids)} tiles already in metadata, {len(tasks_to_run)} tasks queued")
-
-if not tasks_to_run:
-    print("Nothing to do.")
-    sys.exit(0)
-
-
 # Stratified sampling -----------------------------------------
 
 # Adjusts target to account for tiles already written
@@ -204,6 +194,16 @@ for i, poly_row in gdf_sampled.iterrows():
     })
 
 print(f"Tasks: {len(tasks)} built, {no_grid_count} polygons had no covering grid cell")
+
+#Queuing process ----------------------
+# Centroids are not known until a tile is opened, so all tasks are queued and te duplicate check happens in the result loop once we have the actual coords.
+tasks_to_run = tasks
+
+print(f"{len(done_centroids)} tiles already in metadata, {len(tasks_to_run)} tasks queued")
+
+if not tasks_to_run:
+    print("Nothing to do.")
+    sys.exit(0)
 
 
 # UID derivation -----------------------
