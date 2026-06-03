@@ -267,11 +267,10 @@ def get_containing_window(src, poly_bounds_native, tile_size=512):
 
 # Worker ----------------------------------------
 
-def worker_init(sampled_polygon_path: str):
-    global _gcs_bucket, _project_to_wgs84
-
-    _gcs_client  = storage.Client()
-    _gcs_bucket  = _gcs_client.bucket(BUCKET)
+def worker_init():
+    global _gcs_bucket
+    _gcs_client = storage.Client()
+    _gcs_bucket = _gcs_client.bucket(BUCKET)
 
 
 def process_single_tile(task: dict, work_dir: str):
