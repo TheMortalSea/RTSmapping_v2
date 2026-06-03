@@ -111,6 +111,40 @@ if missing.any():
     print(f"  {missing.sum()} polygons assigned via nearest centroid")
 
 
+# Resume support ---------------------------
+
+metadata_blob_path = f"{METADATA_PREFIX}metadata.csv"
+metadata_blob      = bucket.blob(metadata_blob_path)
+existing_df        = None
+done_centroids     = set()
+
+if metadata_blob.exists():
+    existing_local = f"{WORK_DIR}/input/metadata_existing.csv"
+    metadata_blob.download_to_filename(existing_local)
+    existing_df = pd.read_csv(existing_local, dtype={"Tile_ID": str})
+
+    # Each tile centroid is unique - use (lat, lon) rounded to 4dp as the
+    # duplicate key, matching the precision encoded in the UID.
+    done_centroids = set(
+        zip(
+            existing_df["centroid_lat"].round(6),
+            existing_df["centroid_lon"].round(6),
+        )
+    )
+    print(f"Found existing metadata: {len(existing_df)} rows, {len(done_centroids)} centroids done")
+else:
+    print("No existing metadata found - starting fresh")
+
+# Centroids are not known until a tile is opened, so all tasks are queued and te duplicate check happens in the result loop once we have the actual coords.
+tasks_to_run = tasks
+
+print(f"{len(done_centroids)} tiles already in metadata, {len(tasks_to_run)} tasks queued")
+
+if not tasks_to_run:
+    print("Nothing to do.")
+    sys.exit(0)
+
+
 # Stratified sampling -----------------------------------------
 
 # Adjusts target to account for tiles already written
@@ -208,40 +242,6 @@ def make_tile_uid(lat: float, lon: float, precision: int = 12) -> str:
             ch      = 0
             bit_idx = 0
     return "".join(result)
-
-# Resume support ---------------------------
-
-metadata_blob_path = f"{METADATA_PREFIX}metadata.csv"
-metadata_blob      = bucket.blob(metadata_blob_path)
-existing_df        = None
-done_centroids     = set()
-
-if metadata_blob.exists():
-    existing_local = f"{WORK_DIR}/input/metadata_existing.csv"
-    metadata_blob.download_to_filename(existing_local)
-    existing_df = pd.read_csv(existing_local, dtype={"Tile_ID": str})
-
-    # Each tile centroid is unique - use (lat, lon) rounded to 4dp as the
-    # duplicate key, matching the precision encoded in the UID.
-    done_centroids = set(
-        zip(
-            existing_df["centroid_lat"].round(6),
-            existing_df["centroid_lon"].round(6),
-        )
-    )
-    print(f"Found existing metadata: {len(existing_df)} rows, {len(done_centroids)} centroids done")
-else:
-    print("No existing metadata found - starting fresh")
-
-# Centroids are not known until a tile is opened, so all tasks are queued and te duplicate check happens in the result loop once we have the actual coords.
-tasks_to_run = tasks
-
-print(f"{len(done_centroids)} tiles already in metadata, {len(tasks_to_run)} tasks queued")
-
-if not tasks_to_run:
-    print("Nothing to do.")
-    sys.exit(0)
-
 
 # Windowing -------------------------------------------------
 
@@ -359,7 +359,6 @@ metadata_rows = []
 with concurrent.futures.ProcessPoolExecutor(
     max_workers=MAX_WORKERS,
     initializer=worker_init,
-    initargs=(sampled_local,),
 ) as executor:
 
     future_to_task = {
