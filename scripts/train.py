@@ -41,6 +41,7 @@ import mlflow
 import numpy as np
 import pandas as pd
 import torch
+import yaml
 from torch.utils.data import DataLoader
 
 # Make sibling top-level packages importable when run as a script.
@@ -503,7 +504,29 @@ def _validate(
 
 
 def _select_preview_tiles(cfg: dict, metadata: pd.DataFrame, val_ids: list[str]) -> list[str]:
-    """Return the fixed 3+3 preview tile IDs (pass-1 heuristic)."""
+    """Return the preview tile IDs.
+
+    Prefers an explicit curated list from ``cfg["metrics"]["preview_tile_config"]``
+    (a YAML with ``positive``/``negative`` UID lists) so previews are identical
+    across experiments and seeds — fix the input, vary the model. Tiles absent
+    from this run's val split are skipped with a warning. Falls back to the
+    seeded pass-1 heuristic when no config is given or none of its tiles are in val.
+    """
+    preview_cfg_path = cfg.get("metrics", {}).get("preview_tile_config")
+    if preview_cfg_path and Path(preview_cfg_path).exists():
+        with open(preview_cfg_path) as f:
+            spec = yaml.safe_load(f) or {}
+        wanted = [str(t) for t in (spec.get("positive", []) + spec.get("negative", []))]
+        val_set = set(val_ids)
+        selected = [t for t in wanted if t in val_set]
+        missing = [t for t in wanted if t not in val_set]
+        if missing:
+            logger.warning("Preview tiles not in val split (skipped): %s", missing)
+        if selected:
+            logger.info("Using %d fixed preview tiles from %s", len(selected), preview_cfg_path)
+            return selected
+        logger.warning("No preview tiles from %s are in val; falling back to heuristic",
+                       preview_cfg_path)
     picked = viz.pick_preview_tiles_pass1(
         metadata.set_index("Tile_ID"),
         val_ids,
@@ -605,10 +628,42 @@ def _render_and_log_figures(
 # ---------------------------------------------------------------------------
 
 
+def _print_artifact_summary(cfg: dict, out_dir: Path, run_id: str) -> None:
+    """Print a structured artifact location summary at the end of every run.
+
+    This is the standard artifact-summary rule: every training run always emits
+    this block so results and checkpoints are trivially findable without opening
+    MLflow.
+    """
+    tracking_uri = cfg["mlflow"]["tracking_uri"]
+    exp_name = cfg["mlflow"]["experiment_name"]
+    run_name = cfg["mlflow"].get("run_name", "unknown")
+    ckpt_dir = out_dir / "checkpoints"
+    sep = "=" * 62
+    lines = [
+        "",
+        sep,
+        "  ARTIFACT SUMMARY",
+        sep,
+        f"  Run name      : {run_name}",
+        f"  MLflow run ID : {run_id}",
+        f"  Tracking URI  : {tracking_uri}",
+        f"  Experiment    : {exp_name}",
+        f"  Output dir    : {out_dir.resolve()}",
+        f"  Checkpoints   : {ckpt_dir.resolve()}",
+        f"  Best ckpt     : {(ckpt_dir / 'best_deployment.pth').resolve()}",
+        f"  Norm stats    : {cfg['data']['normalization_stats_path']}",
+        f"  Config used   : {cfg.get('_config_path', 'unknown')}",
+        sep,
+    ]
+    logger.info("\n".join(lines))
+
+
 def main() -> int:
     args = _parse_args()
     cfg = load_config(args.config)
     _apply_overrides(cfg, args.override)
+    cfg["_config_path"] = str(args.config)
 
     # Output directory.
     run_name = cfg["mlflow"].get("run_name", "run")
@@ -694,8 +749,9 @@ def main() -> int:
         logger.info("Resumed from %s at epoch %d (ema=%s)",
                     args.resume, start_epoch, ema is not None)
 
-    # Pre-warm positive tiles once (epoch 1 only).
-    if start_epoch == 1:
+    # Pre-warm positive tiles once (epoch 1 only) — only when gcsfuse is active.
+    # Without gcsfuse the reads hit GCS directly with no caching benefit; skip.
+    if start_epoch == 1 and cfg["training"].get("prewarm", False):
         _prewarm_positive_tiles(data["train_ds"])
 
     exposure_counter: dict[str, int] = {}
@@ -711,8 +767,11 @@ def main() -> int:
             # Unfreeze transition.
             if epoch == freeze_epochs + 1 and ema is None:
                 freeze_mod.unfreeze_backbone(model)
-                ema = ema_mod.EMAModel(model, decay=float(cfg["ema"]["decay"]))
-                logger.info("Unfroze backbone; EMA initialised (decay=%g)", ema.decay)
+                if cfg["ema"].get("enabled", True):
+                    ema = ema_mod.EMAModel(model, decay=float(cfg["ema"]["decay"]))
+                    logger.info("Unfroze backbone; EMA initialised (decay=%g)", ema.decay)
+                else:
+                    logger.info("Unfroze backbone; EMA disabled")
 
             # Per-epoch LR update (skipped for range-test mode where LR moves per-step).
             if not is_range_test:
@@ -850,7 +909,9 @@ def main() -> int:
             nan_events=nan_events,
             tmp_dir=out_dir,
         )
+        run_id = mlflow.active_run().info.run_id if mlflow.active_run() else "unknown"
         mlflow.end_run()
+        _print_artifact_summary(cfg, out_dir, run_id)
         logger.info("Done in %.1fs", duration)
 
     return 0
@@ -893,7 +954,7 @@ def _resume_from(
     next_epoch = saved_epoch + 1
 
     ema: ema_mod.EMAModel | None = None
-    if saved_epoch > freeze_epochs and sd.get("ema_state_dict") is not None:
+    if saved_epoch > freeze_epochs and sd.get("ema_state_dict") is not None and cfg["ema"].get("enabled", True):
         # Reconstruct EMA so validation/best-checkpoint comparisons stay on
         # EMA weights instead of silently using live weights.
         ema = ema_mod.EMAModel(model, decay=float(cfg["ema"]["decay"]))
