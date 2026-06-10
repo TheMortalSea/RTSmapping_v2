@@ -268,7 +268,7 @@ def get_containing_window(src, poly_bounds_native, tile_size=512):
 # Worker ----------------------------------------
 
 def worker_init():
-    global _gcs_bucket
+    global _gcs_client, _gcs_bucket
     _gcs_client = storage.Client()
     _gcs_bucket = _gcs_client.bucket(BUCKET)
 
@@ -399,7 +399,9 @@ with concurrent.futures.ProcessPoolExecutor(
 
             except Exception as exc:
                 error_count += 1
-
+                if error_count <= 5:  # print first few to avoid spam
+                    print(f"ERROR on {task.get('blob_path', '?')}: {type(exc).__name__}: {exc}")
+                    
             pbar.update(1)
 
 # Write metadata -------------------------------------------------

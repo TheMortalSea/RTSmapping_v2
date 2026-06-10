@@ -3,11 +3,11 @@ Positive Training Tile Creation Script
 
 Outputs: - RGB tiles in gs://{BUCKET}/{RGB_PREFIX} as 3-band GeoTIFFs
          - Label tiles in gs://{BUCKET}/{LABELS_PREFIX} as single-band GeoTIFFs
-         - metadata.csv in gs://{BUCKET}/{METADATA_PREFIX} with columns: Tile_ID, centroid_lat, centroid_lon, TrainClass, RegionName, UIDs
+         - metadata.csv in gs://{BUCKET}/{METADATA_PREFIX} with columns: Tile_ID, centroid_lat, centroid_lon, TrainClass, RegionName, UIDs, Version
 
-More info on metadata columns and downstream use can be foudn in the data.md documentation file.
+More info on metadata columns and downstream use can be found in the data.md documentation file.
 
-Output CRS is 3857 but centrioids in metadata are in WGS84 (4326) for easier use with geohash UIDs and region lookup.       
+Output CRS is 3857 but centroids in metadata are in WGS84 (4326) for easier use with geohash UIDs and region lookup.
 
 Geohashing is used to create compact, reversible UIDs for each tile based on the centroid lat/lon. This allows for
 a more flexible addition of more data without UID mapping file.
@@ -42,8 +42,10 @@ DATA_ROOT             = require_env("DATA_ROOT")
 POSITIVE_GEOJSON_BLOB = require_env("POSITIVE_GEOJSON")
 IGNORE_GEOJSON_BLOB   = require_env("IGNORE_GEOJSON")
 METADATA_SUBREGIONS   = require_env("METADATA_SUBREGIONS")
+TILE_BOUNDARIES_BLOB  = require_env("TILE_BOUNDARIES_GEOJSON")  # GeoJSON with tile boundaries; must have 'train_selected' attribute
 WORK_DIR              = require_env("WORK_DIR")
 MAX_WORKERS           = int(require_env("MAX_WORKERS"))
+METADATA_VERSION      = require_env("METADATA_VERSION")         # Version string e.g. "1.0", "2.0" — written to metadata Version column
 
 _test_limit = os.environ.get("TEST_LIMIT")
 TEST_LIMIT = int(_test_limit) if _test_limit else None
@@ -51,7 +53,7 @@ TEST_LIMIT = int(_test_limit) if _test_limit else None
 RGB_PREFIX       = f"{DATA_ROOT}PLANET-RGB/"
 LABELS_PREFIX    = f"{DATA_ROOT}labels/"
 METADATA_PREFIX  = f"{DATA_ROOT}"
-METADATA_COLUMNS = ["Tile_ID", "centroid_lat", "centroid_lon", "TrainClass", "RegionName", "UIDs"]
+METADATA_COLUMNS = ["Tile_ID", "centroid_lat", "centroid_lon", "TrainClass", "RegionName", "UIDs", "Version"]
 
 EQUAL_AREA_CRS = "EPSG:6933"
 
@@ -63,17 +65,55 @@ os.makedirs(f"{WORK_DIR}/output", exist_ok=True)
 client = storage.Client()
 bucket = client.bucket(BUCKET)
 
-positive_local = f"{WORK_DIR}/input/positive.geojson"
-ignore_local   = f"{WORK_DIR}/input/ignore.geojson"
-regions_local  = f"{WORK_DIR}/input/regions.geojson"
+positive_local        = f"{WORK_DIR}/input/positive.geojson"
+ignore_local          = f"{WORK_DIR}/input/ignore.geojson"
+regions_local         = f"{WORK_DIR}/input/regions.geojson"
+tile_boundaries_local = f"{WORK_DIR}/input/tile_boundaries.geojson"
 
 bucket.blob(POSITIVE_GEOJSON_BLOB).download_to_filename(positive_local)
 bucket.blob(IGNORE_GEOJSON_BLOB).download_to_filename(ignore_local)
 bucket.blob(METADATA_SUBREGIONS).download_to_filename(regions_local)
+bucket.blob(TILE_BOUNDARIES_BLOB).download_to_filename(tile_boundaries_local)
 
 gdf_positive = gpd.read_file(positive_local)
 gdf_ignore   = gpd.read_file(ignore_local)
 gdf_regions  = gpd.read_file(regions_local)
+
+# --- Tile boundary filtering ------------------------------------------------
+# Load tile boundaries and keep only those selected for training.
+# Expects a 'train_selected' attribute; rows where train_selected == "yes"
+# are kept. The resulting set of geometries is used to filter input blobs
+# by spatial match against each tile's centroid.
+
+gdf_tile_boundaries = gpd.read_file(tile_boundaries_local)
+
+if "train_selected" not in gdf_tile_boundaries.columns:
+    print(
+        f"ERROR: 'train_selected' column not found in tile boundaries GeoJSON. "
+        f"Available columns: {list(gdf_tile_boundaries.columns)}"
+    )
+    sys.exit(1)
+
+gdf_selected_tiles = gdf_tile_boundaries[
+    gdf_tile_boundaries["train_selected"].str.strip().str.lower() == "yes"
+].copy()
+
+if gdf_selected_tiles.empty:
+    print("ERROR: No tiles with train_selected == 'yes' found in tile boundaries GeoJSON.")
+    sys.exit(1)
+
+print(f"Tile boundaries loaded: {len(gdf_selected_tiles)} tiles with train_selected == 'yes'")
+
+# Build a projected version for centroid-in-polygon lookup
+gdf_selected_tiles_4326 = gdf_selected_tiles.to_crs("EPSG:4326")
+
+
+def is_tile_selected(centroid_lon: float, centroid_lat: float) -> bool:
+    """Return True if the tile centroid falls within any train_selected boundary."""
+    pt = Point(centroid_lon, centroid_lat)
+    return gdf_selected_tiles_4326.geometry.contains(pt).any()
+
+# ---------------------------------------------------------------------------
 
 if "ECO_NAME" not in gdf_regions.columns:
     print(f"ERROR: 'ECO_NAME' column not found in regions GeoJSON. Available: {list(gdf_regions.columns)}")
@@ -177,7 +217,7 @@ if not tiles_to_process:
     sys.exit(0)
 
 
-# -- Worker -------------------------------------------------
+# Worker -------------------------------------------------
 
 def worker_init(positive_path, ignore_path):
     global gdf_positive, gdf_ignore
@@ -236,10 +276,10 @@ def process_single_tile(blob_path, bucket_name, work_dir):
             centroid_lon, centroid_lat = tile_centroid_wgs84.x, tile_centroid_wgs84.y
 
         base_profile = dict(
-            driver="GTiff", width=tile_width, 
+            driver="GTiff", width=tile_width,
             height=tile_height,
-            crs=tile_crs, 
-            transform=tile_transform, 
+            crs=tile_crs,
+            transform=tile_transform,
             compress="LZW",
             photometric="RGB"
         )
@@ -297,6 +337,14 @@ with concurrent.futures.ProcessPoolExecutor(
                         tqdm.write(f" already done  {blob_path.split('/')[-1]}  (centroid match)")
                         os.remove(local_rgb)
                         os.remove(local_label)
+
+                    elif not is_tile_selected(centroid_key[1], centroid_key[0]):
+                        # Centroid does not fall within any train_selected boundary — skip
+                        skip_count += 1
+                        tqdm.write(f" skipped (not train_selected)  {blob_path.split('/')[-1]}")
+                        os.remove(local_rgb)
+                        os.remove(local_label)
+
                     else:
                         uid_str = make_tile_uid(centroid_key[0], centroid_key[1])
 
@@ -314,6 +362,7 @@ with concurrent.futures.ProcessPoolExecutor(
                             "TrainClass":   "positive",
                             "RegionName":   region_name,
                             "UIDs":         9999,
+                            "Version":      METADATA_VERSION,
                         })
 
                         done_centroids.add(centroid_key)
@@ -333,6 +382,9 @@ if metadata_rows:
     local_csv = f"{WORK_DIR}/output/metadata.csv"
 
     if existing_df is not None:
+        # Ensure legacy rows without a Version column get a null filled in
+        if "Version" not in existing_df.columns:
+            existing_df["Version"] = pd.NA
         combined = pd.concat([existing_df, new_df], ignore_index=True)
     else:
         combined = new_df
