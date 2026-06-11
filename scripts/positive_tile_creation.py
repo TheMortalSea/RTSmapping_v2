@@ -146,13 +146,14 @@ def find_nearest_region(centroid_lon: float, centroid_lat: float) -> str:
 tasks          = []
 bad_name_count = 0
 
-for _, row in gdf_selected.iterrows():
+for i, (_, row) in enumerate(gdf_selected.iterrows()):
     blob_path = name_to_blob(row["Name"])
     if blob_path is None:
         bad_name_count += 1
         print(f"WARNING: could not parse col/row from Name '{row['Name']}' — skipping")
         continue
     tasks.append({
+        "task_id":        i,
         "footprint_geom": row.geometry,
         "blob_path":      blob_path,
     })
@@ -241,11 +242,12 @@ def worker_init(positive_path, ignore_path, bucket_name):
 def process_single_tile(task: dict, work_dir: str, footprint_crs_epsg: int):
     footprint_geom = task["footprint_geom"]
     blob_path      = task["blob_path"]
+    task_id        = task["task_id"]
 
     base_name       = blob_path.split("/")[-1].replace(".tif", "")
-    local_input     = f"{work_dir}/input/{base_name}.tif"
-    local_rgb_out   = f"{work_dir}/output/rgb_{base_name}.tif"
-    local_label_out = f"{work_dir}/output/label_{base_name}.tif"
+    local_input     = f"{work_dir}/input/{task_id}_{base_name}.tif"
+    local_rgb_out   = f"{work_dir}/output/rgb_{task_id}_{base_name}.tif"
+    local_label_out = f"{work_dir}/output/label_{task_id}_{base_name}.tif"
 
     try:
         _gcs_bucket.blob(blob_path).download_to_filename(local_input)
