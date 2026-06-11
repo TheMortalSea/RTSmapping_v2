@@ -1,35 +1,42 @@
 """
 Tile validation suite for positive_tile_creation.py / negative_tile_creation.py output.
 
-Structured as a class-based test runner with pass/fail/warn assertions.
 Run directly:  python validate_tiles.py
 
-Checks:
-  1.  Metadata file exists and has required columns
-  2.  Duplicate Tile_IDs
-  3.  Duplicate centroid (lat, lon) pairs
-  4.  Centroid coordinate validity (WGS84 range)
-  5.  UID (Tile_ID) re-derivable from centroid
-  6.  TrainClass values are in expected set
-  7.  GCS tile existence and RGB / label parity
-  8.  CRS consistency across all RGB and label tiles
-  9.  Band count (RGB=3, label=1)
-  10. Band descriptions match expected ['Red', 'Green', 'Blue']
-  11. Band ORDER heuristic — detects likely BGR/GRB/etc. permutations
-      by comparing per-band mean pixel values against expected spectral
-      fingerprints for natural-colour imagery of Arctic/subarctic terrain
-  12. Tile spatial dimensions match TILE_SIZE
-  13. RGB pixel values are non-zero / non-nodata
-  14. Label tiles contain only valid values (0, 1, 255)
+Checks are grouped:
+
+  Metadata checks (all tiles)
+    - metadata file exists / required columns
+    - duplicate Tile_IDs
+    - duplicate centroid (lat, lon) pairs
+    - centroid coordinate validity (WGS84 range + plausibility)
+    - UID (Tile_ID) re-derivable from centroid
+    - TrainClass values in expected set
+
+  GCS existence checks (split positive / negative)
+    - every metadata Tile_ID has an RGB tile in GCS
+    - positive tiles have a matching label tile
+    - negative tiles do NOT have a label tile (warn if they do)
+    - orphan tiles in GCS with no metadata row
+
+  Corruption scan (optional, full or sampled)
+    - every RGB/label tile can be opened by rasterio
+    - tile dimensions match TILE_SIZE
+    - band count correct (RGB=3, label=1)
+    - tile is not entirely nodata / all-zero
+    - label tiles contain only valid values (0, 1, 255)
+    - CRS consistency across all checked tiles
+
+  Tile viewer
+    - shows a sample of positive and negative tiles (RGB + label overlay)
 
 Environment variables:
   BUCKET            GCS bucket name                           (required)
   DATA_ROOT         Path to training data root                (required)
   WORK_DIR          Local working directory                   (required)
-  SAMPLE_TILES      Validate a random sample of N tiles       (optional)
-  SKIP_PIXEL_CHECK  Skip all tile download checks             (optional)
+  SAMPLE_TILES      Validate a random sample of N tiles per class (optional, default = all)
+  SKIP_PIXEL_CHECK  Skip the corruption scan entirely         (optional)
   VIEW_TILES        Show N tiles in viewer at the end         (optional, default 6)
-  VIEW_POSITIVES    Prefer positive tiles in viewer           (optional, default 1)
 """
 
 import os
@@ -42,7 +49,7 @@ import pandas as pd
 import numpy as np
 import rasterio
 import matplotlib
-matplotlib.use("Agg")          # headless-safe; swap to TkAgg / inline as needed
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 from google.cloud import storage
@@ -50,15 +57,16 @@ from google.cloud import storage
 try:
     from google.colab import auth
     auth.authenticate_user()
-    # Switch to inline rendering in Colab
-    import importlib
     matplotlib.use("inline")
     print("Authenticated via Colab.")
 except (ImportError, Exception):
     print("Not running in Colab — using default GCS credentials (ADC).")
 
 
+# ---------------------------------------------------------------------------
 # Environment
+# ---------------------------------------------------------------------------
+
 def _require_env(name: str) -> str:
     val = os.environ.get(name)
     if val is None:
@@ -85,9 +93,8 @@ _sample_env  = os.environ.get("SAMPLE_TILES")
 SAMPLE_TILES = int(_sample_env) if _sample_env else None
 SKIP_PIXEL   = bool(os.environ.get("SKIP_PIXEL_CHECK"))
 
-_view_env   = os.environ.get("VIEW_TILES")
-VIEW_TILES  = int(_view_env) if _view_env else 6
-VIEW_POS    = bool(int(os.environ.get("VIEW_POSITIVES", "1")))
+_view_env  = os.environ.get("VIEW_TILES")
+VIEW_TILES = int(_view_env) if _view_env else 6
 
 os.makedirs(f"{WORK_DIR}/val_tmp", exist_ok=True)
 
@@ -95,7 +102,9 @@ client = storage.Client()
 bucket = client.bucket(BUCKET)
 
 
+# ---------------------------------------------------------------------------
 # Geohash
+# ---------------------------------------------------------------------------
 
 _GEOHASH_BASE32 = "0123456789bcdefghjkmnpqrstuvwxyz"
 
@@ -133,69 +142,8 @@ def make_tile_uid(lat: float, lon: float, precision: int = 12) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Band-order heuristic
-# ---------------------------------------------------------------------------
-# Natural-colour satellite imagery of Arctic/subarctic terrain (tundra, snow,
-# water, bare ground) has a consistent spectral fingerprint:
-#
-#   Red band   — highest mean overall in vegetated/bare scenes; strongly
-#                elevated over snow because snow is near-neutral bright.
-#   Green band — middle value; always between red and blue for healthy veg.
-#   Blue band  — lowest mean in vegetated scenes (chlorophyll absorption);
-#                elevated relative to red only over deep water.
-#
-# Strategy: for each tile, rank the three band means (0=lowest, 2=highest).
-# For correct RGB the rank order should be B < G < R  (ranks 0,1,2).
-# We also test for the two most common mis-orderings:
-#   BGR  → bands stored as [Blue, Green, Red]
-#   BRG  → bands stored as [Blue, Red,   Green]
-#
-# A single tile is ambiguous (e.g. all-snow tiles are near-neutral), so we
-# accumulate per-tile rank vectors across the sample and flag the tile if
-# its rank pattern is inconsistent with the population majority *and* the
-# deviation is consistent with a known swap pattern.
-
-# Expected rank for correct RGB: band index 0 (R) has highest mean → rank 2
-#                                  band index 1 (G) has middle mean → rank 1
-#                                  band index 2 (B) has lowest mean → rank 0
-EXPECTED_RANK = (2, 1, 0)   # (rank_of_band0, rank_of_band1, rank_of_band2)
-
-# Known swap signatures and their human-readable description
-SWAP_SIGNATURES = {
-    (0, 1, 2): "BGR  (bands appear to be stored Blue→Green→Red)",
-    (2, 0, 1): "BRG  (bands appear to be stored Blue→Red→Green)",
-    (1, 2, 0): "GBR  (bands appear to be stored Green→Blue→Red)",
-    (0, 2, 1): "GRB  (bands appear to be stored Green→Red→Blue)",
-    (1, 0, 2): "RBG  (bands appear to be stored Red→Blue→Green)",
-}
-
-# Tiles whose per-band means are all within this fraction of each other are
-# near-neutral (snow/cloud/water) and not informative for the heuristic.
-NEUTRAL_THRESHOLD = 0.10   # 10 % relative spread
-
-
-def _band_order_verdict(means: tuple) -> str | None:
-    """
-    Given (mean_band1, mean_band2, mean_band3), return a string describing a
-    suspected swap, or None if the tile looks correctly ordered or is neutral.
-    """
-    r, g, b = means
-    spread = max(means) - min(means)
-    if max(means) == 0 or spread / max(means) < NEUTRAL_THRESHOLD:
-        return None   # tile is too neutral to judge
-
-    # Rank each band (argsort of means → lowest=0, highest=2)
-    order = tuple(int(x) for x in np.argsort(means))   # which band has rank 0,1,2
-    # Convert to "rank of each band position"
-    rank_of = tuple(int(x) for x in np.argsort(order))
-
-    if rank_of == EXPECTED_RANK:
-        return None   # looks correct
-
-    return SWAP_SIGNATURES.get(rank_of, f"unknown permutation ranks={rank_of}")
-
-
 # Test runner
+# ---------------------------------------------------------------------------
 
 class TileValidationSuite:
     """
@@ -204,15 +152,16 @@ class TileValidationSuite:
     """
 
     def __init__(self):
-        self.failures: list[tuple[str, str]] = []   # (check_id, message)
+        self.failures: list[tuple[str, str]] = []
         self.warnings: list[tuple[str, str]] = []
         self._df: pd.DataFrame | None = None
         self._rgb_blobs: set[str]   = set()
         self._label_blobs: set[str] = set()
-        # Tiles downloaded during pixel checks, kept for viewer
-        self._viewed_tiles: list[dict] = []
+        self._viewed_tiles: dict[str, dict] = {}
 
+    # ------------------------------------------------------------------
     # Assertion helpers
+    # ------------------------------------------------------------------
 
     def _fail(self, check: str, msg: str):
         self.failures.append((check, msg))
@@ -234,10 +183,12 @@ class TileValidationSuite:
     def _assert_empty(self, collection, check: str, fail_msg: str, ok_msg: str):
         self._assert_true(len(collection) == 0, check, fail_msg, ok_msg)
 
-    # Individual test methods
+    # ==================================================================
+    # METADATA CHECKS  (all tiles)
+    # ==================================================================
 
     def test_metadata_exists(self) -> bool:
-        """Check 1a — metadata file is present and loadable."""
+        """Metadata file is present and loadable."""
         print("\n  1. Metadata file")
         meta_blob = bucket.blob(METADATA_PATH)
         if not meta_blob.exists():
@@ -253,7 +204,7 @@ class TileValidationSuite:
         return True
 
     def test_metadata_columns(self):
-        """Check 1b — required columns are present."""
+        """Required columns are present."""
         required = ["Tile_ID", "centroid_lat", "centroid_lon",
                     "TrainClass", "RegionName", "UIDs"]
         missing  = [c for c in required if c not in self._df.columns]
@@ -263,12 +214,10 @@ class TileValidationSuite:
             f"All required columns present: {required}",
         )
 
-        print(f"\n  Column dtypes:\n{self._df.dtypes.to_string()}")
         print(f"\n  TrainClass counts:\n{self._df['TrainClass'].value_counts().to_string()}")
-        print(f"\n  UIDs value counts (top 5):\n{self._df['UIDs'].value_counts().head().to_string()}")
 
     def test_no_duplicate_tile_ids(self):
-        """Check 2 — no duplicate Tile_IDs in metadata."""
+        """No duplicate Tile_IDs in metadata."""
         print("\n  2. Duplicate Tile_IDs")
         dups = self._df[self._df.duplicated("Tile_ID", keep=False)]
         if len(dups):
@@ -280,7 +229,7 @@ class TileValidationSuite:
             self._ok("no_dup_tile_ids", "No duplicate Tile_IDs")
 
     def test_no_duplicate_centroids(self):
-        """Check 3 — no duplicate (lat, lon) pairs (rounded to 6 dp)."""
+        """No duplicate (lat, lon) pairs (rounded to 6 dp)."""
         print("\n  3. Duplicate centroid (lat, lon)")
         df = self._df
         df["_lat6"] = df["centroid_lat"].round(6)
@@ -294,7 +243,7 @@ class TileValidationSuite:
             self._ok("no_dup_centroids", "No duplicate centroids")
 
     def test_centroid_validity(self):
-        """Check 4 — centroid coordinates are valid WGS84."""
+        """Centroid coordinates are valid WGS84 and plausible for RTS work."""
         print(f"\n  4. Centroid coordinate validity (expected CRS: {CENTROID_CRS})")
         df = self._df
         lat_bad = df[(df["centroid_lat"] < -90) | (df["centroid_lat"] > 90)]
@@ -324,7 +273,7 @@ class TileValidationSuite:
                      "All centroids north of 50°N — plausible for RTS")
 
     def test_uid_rederivation(self):
-        """Check 5 — Tile_ID matches geohash(centroid_lat, centroid_lon)."""
+        """Tile_ID matches geohash(centroid_lat, centroid_lon)."""
         print("\n  5. UID re-derivation from centroid")
         mismatches = []
         for _, row in self._df.iterrows():
@@ -346,7 +295,7 @@ class TileValidationSuite:
                      "All Tile_IDs match geohash(centroid_lat, centroid_lon)")
 
     def test_train_class_values(self):
-        """Check 6 — TrainClass values are in the expected set."""
+        """TrainClass values are in the expected set."""
         print("\n  6. TrainClass values")
         unexpected = set(self._df["TrainClass"].unique()) - VALID_CLASSES
         self._assert_empty(
@@ -355,9 +304,14 @@ class TileValidationSuite:
             f"All TrainClass values in {VALID_CLASSES}",
         )
 
+    # ==================================================================
+    # GCS EXISTENCE CHECKS  (split positive / negative)
+    # ==================================================================
+
     def test_gcs_tile_existence(self):
-        """Check 7 — RGB and label tiles exist in GCS; parity between metadata and GCS."""
-        print("\n  7. GCS tile existence and RGB / label parity")
+        """RGB and label tiles exist in GCS; parity between metadata and GCS,
+        evaluated separately for positive and negative tiles."""
+        print("\n  7. GCS tile existence")
         self._rgb_blobs = {
             b.name.split("/")[-1].replace(".tif", "")
             for b in bucket.list_blobs(prefix=RGB_PREFIX)
@@ -378,15 +332,18 @@ class TileValidationSuite:
         print(f"  Metadata rows:      {len(meta_ids)}  "
               f"(pos={len(pos_ids)}, neg={len(neg_ids)})")
 
-        in_meta_not_rgb = meta_ids - self._rgb_blobs
-        in_rgb_not_meta = self._rgb_blobs - meta_ids
+        # --- RGB existence, split by class ---
+        for cls_name, ids in (("positive", pos_ids), ("negative", neg_ids)):
+            missing = ids - self._rgb_blobs
+            self._assert_empty(
+                missing, f"rgb_exists_{cls_name}",
+                f"{len(missing)} {cls_name} Tile_IDs have no RGB tile in GCS — "
+                f"examples: {list(missing)[:5]}",
+                f"All {cls_name} Tile_IDs ({len(ids)}) have a corresponding RGB tile",
+            )
 
-        self._assert_empty(
-            in_meta_not_rgb, "rgb_exists",
-            f"{len(in_meta_not_rgb)} Tile_IDs in metadata have no RGB tile in GCS — "
-            f"examples: {list(in_meta_not_rgb)[:5]}",
-            "All metadata Tile_IDs have a corresponding RGB tile",
-        )
+        # --- orphan RGB tiles (no metadata row) ---
+        in_rgb_not_meta = self._rgb_blobs - meta_ids
         if in_rgb_not_meta:
             self._warn("rgb_orphan",
                        f"{len(in_rgb_not_meta)} RGB tiles in GCS have no metadata row — "
@@ -394,372 +351,281 @@ class TileValidationSuite:
         else:
             self._ok("rgb_orphan", "No orphan RGB tiles")
 
+        # --- label existence: positives must have one, negatives must not ---
         pos_missing_label = pos_ids - self._label_blobs
-        neg_with_label    = neg_ids & self._label_blobs
-
         self._assert_empty(
             pos_missing_label, "label_exists_positive",
             f"{len(pos_missing_label)} positive tiles have no label in GCS — "
             f"examples: {list(pos_missing_label)[:5]}",
-            "All positive tiles have a corresponding label tile",
+            f"All positive tiles ({len(pos_ids)}) have a corresponding label tile",
         )
+
+        neg_with_label = neg_ids & self._label_blobs
         if neg_with_label:
             self._warn("label_unexpected_negative",
-                       f"{len(neg_with_label)} negative tiles unexpectedly have a label tile")
+                       f"{len(neg_with_label)} negative tiles unexpectedly have a label tile — "
+                       f"examples: {list(neg_with_label)[:5]}")
         else:
             self._ok("label_unexpected_negative",
                      "No negative tiles have label tiles (expected)")
 
-    def test_tile_raster_properties(self):
-        """
-        Checks 8-14 — CRS, band count, band descriptions, band ORDER heuristic,
-        tile dimensions, nodata, label pixel values.
+        # --- orphan label tiles ---
+        in_label_not_pos = self._label_blobs - pos_ids
+        if in_label_not_pos:
+            self._warn("label_orphan",
+                       f"{len(in_label_not_pos)} label tiles in GCS don't correspond to a "
+                       f"positive metadata row — examples: {list(in_label_not_pos)[:5]}")
+        else:
+            self._ok("label_orphan", "No orphan label tiles")
 
-        Downloads tiles (full set or SAMPLE_TILES sample) and inspects each one.
+    # ==================================================================
+    # CORRUPTION SCAN  (full or sampled, split positive / negative)
+    # ==================================================================
+
+    def _scan_one_tile(self, tile_id, path, expect_bands, kind, crs_seen, errors):
         """
-        print(f"\n  8-14. Raster properties  [SKIP_PIXEL={SKIP_PIXEL}]")
+        Open one raster and run the basic integrity checks.
+        kind: 'rgb' or 'label'
+        Returns the opened array (or None on failure).
+        """
+        local_path = f"{WORK_DIR}/val_tmp/{kind}_{tile_id}.tif"
+        try:
+            bucket.blob(path).download_to_filename(local_path)
+            with rasterio.open(local_path) as src:
+                crs_str = src.crs.to_string() if src.crs else "None"
+                crs_seen[crs_str] += 1
+
+                if src.count != expect_bands:
+                    errors["band_count"].append(
+                        (tile_id, f"{kind} count={src.count}, expected {expect_bands}"))
+
+                if src.width != TILE_SIZE or src.height != TILE_SIZE:
+                    errors["dimensions"].append(
+                        (tile_id, f"{kind} {src.width}×{src.height}"))
+
+                arr = src.read()
+
+                if src.nodata is not None and (arr == src.nodata).all():
+                    errors["nodata"].append((tile_id, kind, "all nodata"))
+                elif (arr == 0).all():
+                    errors["nodata"].append((tile_id, kind, "all zeros"))
+
+                if kind == "label":
+                    unique_vals = set(np.unique(arr).tolist())
+                    invalid = unique_vals - VALID_LABEL_VALS
+                    if invalid:
+                        errors["label_values"].append((tile_id, invalid))
+
+            return local_path
+        except Exception as exc:
+            errors["read_errors"].append((tile_id, kind, str(exc)))
+            return None
+
+    def test_corruption_scan(self):
+        """
+        Open every (or a sample of) RGB/label tile with rasterio and check:
+          - file opens without error
+          - dimensions == TILE_SIZE
+          - band count correct
+          - not entirely nodata/zero
+          - label values valid
+          - CRS consistent across tiles
+
+        Run separately for positive and negative tiles.
+        """
+        print(f"\n  8. Corruption scan  [SKIP_PIXEL_CHECK={SKIP_PIXEL}]")
 
         if SKIP_PIXEL:
-            self._warn("pixel_checks",
-                       "SKIP_PIXEL_CHECK=1 — skipping all tile download checks")
+            self._warn("corruption_scan",
+                       "SKIP_PIXEL_CHECK=1 — skipping corruption scan")
             return
 
-        meta_ids     = set(self._df["Tile_ID"].astype(str))
-        ids_to_check = list(meta_ids & self._rgb_blobs)
-        if SAMPLE_TILES:
-            ids_to_check = random.sample(ids_to_check,
-                                         min(SAMPLE_TILES, len(ids_to_check)))
-            print(f"  Sampling {len(ids_to_check)} tiles "
-                  f"(SAMPLE_TILES={SAMPLE_TILES})")
-        else:
-            print(f"  Checking ALL {len(ids_to_check)} tiles "
-                  f"— set SAMPLE_TILES=N to sample")
+        meta_ids = set(self._df["Tile_ID"].astype(str))
+        pos_ids  = sorted(meta_ids & self._rgb_blobs &
+                          set(self._df[self._df["TrainClass"] == "positive"]["Tile_ID"].astype(str)))
+        neg_ids  = sorted(meta_ids & self._rgb_blobs &
+                          set(self._df[self._df["TrainClass"] == "negative"]["Tile_ID"].astype(str)))
 
-        crs_seen_rgb         = defaultdict(int)
-        crs_seen_label       = defaultdict(int)
-        band_count_errors    = []
-        band_desc_errors     = []
-        band_order_errors    = []   # NEW — suspected swap
-        band_order_neutral   = []   # tiles too neutral to judge (informational)
-        dim_errors           = []
-        nodata_errors        = []
-        label_val_errors     = []
-        label_crs_mismatches = []
+        for cls_name, ids in (("positive", pos_ids), ("negative", neg_ids)):
+            ids_to_check = ids
+            if SAMPLE_TILES:
+                ids_to_check = random.sample(ids, min(SAMPLE_TILES, len(ids)))
+                print(f"\n  -- {cls_name}: sampling {len(ids_to_check)} of {len(ids)} tiles "
+                      f"(SAMPLE_TILES={SAMPLE_TILES})")
+            else:
+                print(f"\n  -- {cls_name}: checking ALL {len(ids_to_check)} tiles "
+                      f"— set SAMPLE_TILES=N to sample")
 
-        # Collect tiles for the viewer
-        pos_ids = set(self._df[self._df["TrainClass"] == "positive"]["Tile_ID"])
-        viewer_candidates: dict[str, dict] = {}   # tile_id → {rgb, label, cls}
+            crs_seen_rgb   = defaultdict(int)
+            crs_seen_label = defaultdict(int)
+            errors = defaultdict(list)
 
-        for tile_id in ids_to_check:
-            rgb_path   = f"{RGB_PREFIX}{tile_id}.tif"
-            label_path = f"{LABELS_PREFIX}{tile_id}.tif"
-            local_rgb   = f"{WORK_DIR}/val_tmp/rgb_{tile_id}.tif"
-            local_label = f"{WORK_DIR}/val_tmp/lbl_{tile_id}.tif"
-            tile_class  = self._df.loc[
-                self._df["Tile_ID"] == tile_id, "TrainClass"
-            ].values
-            tile_class  = tile_class[0] if len(tile_class) else "unknown"
+            for tile_id in ids_to_check:
+                local_rgb = self._scan_one_tile(
+                    tile_id, f"{RGB_PREFIX}{tile_id}.tif",
+                    expect_bands=3, kind="rgb",
+                    crs_seen=crs_seen_rgb, errors=errors,
+                )
 
-            rgb_data  = None
-            label_arr = None
-            rgb_crs   = None
+                local_label = None
+                if cls_name == "positive" and tile_id in self._label_blobs:
+                    local_label = self._scan_one_tile(
+                        tile_id, f"{LABELS_PREFIX}{tile_id}.tif",
+                        expect_bands=1, kind="label",
+                        crs_seen=crs_seen_label, errors=errors,
+                    )
 
-            # ---- RGB tile ------------------------------------------------
-            try:
-                bucket.blob(rgb_path).download_to_filename(local_rgb)
-
-                with rasterio.open(local_rgb) as src:
-                    crs_str = src.crs.to_string() if src.crs else "None"
-                    crs_seen_rgb[crs_str] += 1
-                    rgb_crs = src.crs
-
-                    # Band count
-                    if src.count != 3:
-                        band_count_errors.append(
-                            (tile_id, f"count={src.count}, expected 3"))
-
-                    # Band descriptions
-                    descs = [src.descriptions[i] or "" for i in range(src.count)]
-                    if descs != ["Red", "Green", "Blue"]:
-                        band_desc_errors.append(
-                            (tile_id, f"descriptions={descs}, "
-                                      f"expected ['Red','Green','Blue']"))
-
-                    # Dimensions
-                    if src.width != TILE_SIZE or src.height != TILE_SIZE:
-                        dim_errors.append(
-                            (tile_id, f"{src.width}×{src.height}"))
-
-                    # Read pixel data (float to avoid overflow in mean)
-                    rgb_data = src.read().astype(np.float32)
-
-                    # Nodata
-                    if src.nodata is not None and (rgb_data == src.nodata).all():
-                        nodata_errors.append((tile_id, "rgb", "all nodata"))
-                    elif (rgb_data == 0).all():
-                        nodata_errors.append((tile_id, "rgb", "all zeros"))
-                    else:
-                        # Band-order heuristic (only on non-nodata tiles)
-                        if src.count == 3:
-                            means  = tuple(float(rgb_data[i].mean())
-                                           for i in range(3))
-                            verdict = _band_order_verdict(means)
-                            if verdict is None:
-                                spread = max(means) - min(means)
-                                if max(means) > 0 and \
-                                        spread / max(means) < NEUTRAL_THRESHOLD:
-                                    band_order_neutral.append(tile_id)
-                                # else: looks correctly ordered
-                            else:
-                                band_order_errors.append(
-                                    (tile_id,
-                                     f"means R={means[0]:.1f} G={means[1]:.1f} "
-                                     f"B={means[2]:.1f} → {verdict}"))
-
-                # Keep file if we need it for the viewer; otherwise clean up
-                viewer_candidates[tile_id] = {
+                # keep for viewer
+                self._viewed_tiles[tile_id] = {
                     "local_rgb": local_rgb,
-                    "local_label": None,
-                    "tile_class": tile_class,
+                    "local_label": local_label,
+                    "tile_class": cls_name,
                 }
 
-            except Exception as exc:
-                self._fail("tile_read", f"RGB tile {tile_id}: {exc}")
-                traceback.print_exc()
+            # ---- report this class's results ----
+            prefix = f"{cls_name}"
 
-            # ---- Label tile (positives only) -----------------------------
-            is_positive = tile_class == "positive"
-            if is_positive and tile_id in self._label_blobs:
-                try:
-                    bucket.blob(label_path).download_to_filename(local_label)
+            self._assert_empty(
+                errors["read_errors"], f"{prefix}_readable",
+                f"{len(errors['read_errors'])} {cls_name} tiles failed to open "
+                f"(possibly corrupted)",
+                f"All checked {cls_name} tiles opened successfully",
+            )
+            for tid, kind, detail in errors["read_errors"][:10]:
+                print(f"    {tid} [{kind}]: {detail}")
 
-                    with rasterio.open(local_label) as lsrc:
-                        lcrs_str = lsrc.crs.to_string() if lsrc.crs else "None"
-                        crs_seen_label[lcrs_str] += 1
+            self._assert_empty(
+                errors["band_count"], f"{prefix}_band_count",
+                f"{len(errors['band_count'])} {cls_name} tiles have wrong band count",
+                f"All checked {cls_name} tiles have correct band count",
+            )
+            for tid, detail in errors["band_count"][:10]:
+                print(f"    {tid}: {detail}")
 
-                        if lsrc.count != 1:
-                            band_count_errors.append(
-                                (tile_id, f"label count={lsrc.count}, expected 1"))
+            self._assert_empty(
+                errors["dimensions"], f"{prefix}_dimensions",
+                f"{len(errors['dimensions'])} {cls_name} tiles are not {TILE_SIZE}×{TILE_SIZE}",
+                f"All checked {cls_name} tiles are {TILE_SIZE}×{TILE_SIZE}",
+            )
+            for tid, detail in errors["dimensions"][:10]:
+                print(f"    {tid}: {detail}")
 
-                        label_arr   = lsrc.read(1)
-                        unique_vals = set(np.unique(label_arr).tolist())
-                        invalid     = unique_vals - VALID_LABEL_VALS
-                        if invalid:
-                            label_val_errors.append((tile_id, invalid))
+            self._assert_empty(
+                errors["nodata"], f"{prefix}_nodata",
+                f"{len(errors['nodata'])} {cls_name} tiles are entirely nodata or zero",
+                f"No {cls_name} tiles are entirely nodata or zero",
+            )
+            for tid, kind, detail in errors["nodata"][:10]:
+                print(f"    {tid} [{kind}]: {detail}")
 
-                        if rgb_crs and lsrc.crs != rgb_crs:
-                            label_crs_mismatches.append(
-                                (tile_id,
-                                 f"rgb={rgb_crs}, label={lsrc.crs}"))
+            if cls_name == "positive":
+                self._assert_empty(
+                    errors["label_values"], f"{prefix}_label_values",
+                    f"{len(errors['label_values'])} label tiles contain unexpected pixel values",
+                    f"All checked label tiles contain only valid values {VALID_LABEL_VALS}",
+                )
+                for tid, vals in errors["label_values"][:10]:
+                    print(f"    {tid}: invalid values = {vals}")
 
-                    viewer_candidates[tile_id]["local_label"] = local_label
-
-                except Exception as exc:
-                    self._fail("label_read", f"Label tile {tile_id}: {exc}")
-
-        # ------------------------------------------------------------------
-        # Report results
-        # ------------------------------------------------------------------
-
-        # CRS — RGB
-        print(f"\n  CRS distribution — RGB tiles:")
-        for crs_str, cnt in sorted(crs_seen_rgb.items(), key=lambda x: -x[1]):
-            marker = "ok" if EXPECTED_CRS in crs_str else "!!"
-            print(f"    [{marker}] {crs_str}: {cnt} tiles")
-
-        if len(crs_seen_rgb) == 1 and EXPECTED_CRS in next(iter(crs_seen_rgb)):
-            self._ok("rgb_crs_consistent", f"All RGB tiles use {EXPECTED_CRS}")
-        elif len(crs_seen_rgb) == 1:
-            self._warn("rgb_crs_expected",
-                       f"All RGB tiles use a single CRS "
-                       f"({next(iter(crs_seen_rgb))}) but expected {EXPECTED_CRS}")
-        else:
-            self._fail("rgb_crs_consistent",
-                       f"RGB tiles have {len(crs_seen_rgb)} different CRS values — "
-                       "mixed CRS will break downstream training")
-
-        # CRS — label
-        if crs_seen_label:
-            print(f"\n  CRS distribution — label tiles:")
-            for crs_str, cnt in sorted(crs_seen_label.items(), key=lambda x: -x[1]):
+            # CRS consistency (RGB)
+            print(f"\n  CRS distribution — {cls_name} RGB tiles:")
+            for crs_str, cnt in sorted(crs_seen_rgb.items(), key=lambda x: -x[1]):
                 marker = "ok" if EXPECTED_CRS in crs_str else "!!"
                 print(f"    [{marker}] {crs_str}: {cnt} tiles")
 
-            if len(crs_seen_label) == 1 and EXPECTED_CRS in next(iter(crs_seen_label)):
-                self._ok("label_crs_consistent",
-                         f"All label tiles use {EXPECTED_CRS}")
-            elif len(crs_seen_label) == 1:
-                self._warn("label_crs_expected",
-                           f"All label tiles use a single CRS "
-                           f"({next(iter(crs_seen_label))}) but expected {EXPECTED_CRS}")
-            else:
-                self._fail("label_crs_consistent",
-                           f"Label tiles have {len(crs_seen_label)} different CRS values")
+            if len(crs_seen_rgb) == 1 and EXPECTED_CRS in next(iter(crs_seen_rgb)):
+                self._ok(f"{prefix}_rgb_crs_consistent",
+                         f"All {cls_name} RGB tiles use {EXPECTED_CRS}")
+            elif len(crs_seen_rgb) == 1:
+                self._warn(f"{prefix}_rgb_crs_expected",
+                           f"All {cls_name} RGB tiles use a single CRS "
+                           f"({next(iter(crs_seen_rgb))}) but expected {EXPECTED_CRS}")
+            elif len(crs_seen_rgb) > 1:
+                self._fail(f"{prefix}_rgb_crs_consistent",
+                           f"{cls_name} RGB tiles have {len(crs_seen_rgb)} different "
+                           f"CRS values — mixed CRS will break downstream training")
 
-        if label_crs_mismatches:
-            self._fail("rgb_label_crs_match",
-                       f"{len(label_crs_mismatches)} tile pairs have mismatched "
-                       f"RGB/label CRS")
-            for tid, detail in label_crs_mismatches[:10]:
-                print(f"    {tid}: {detail}")
-        elif crs_seen_label:
-            self._ok("rgb_label_crs_match",
-                     "RGB and label CRS match for all checked tile pairs")
+            # CRS consistency (label)
+            if crs_seen_label:
+                print(f"\n  CRS distribution — {cls_name} label tiles:")
+                for crs_str, cnt in sorted(crs_seen_label.items(), key=lambda x: -x[1]):
+                    marker = "ok" if EXPECTED_CRS in crs_str else "!!"
+                    print(f"    [{marker}] {crs_str}: {cnt} tiles")
 
-        # Band count
-        self._assert_empty(
-            band_count_errors, "band_count",
-            f"{len(band_count_errors)} band count errors",
-            "All checked tiles have correct band count",
-        )
-        for tid, detail in band_count_errors[:10]:
-            print(f"    {tid}: {detail}")
+                if len(crs_seen_label) == 1 and EXPECTED_CRS in next(iter(crs_seen_label)):
+                    self._ok(f"{prefix}_label_crs_consistent",
+                             f"All {cls_name} label tiles use {EXPECTED_CRS}")
+                elif len(crs_seen_label) == 1:
+                    self._warn(f"{prefix}_label_crs_expected",
+                               f"All {cls_name} label tiles use a single CRS "
+                               f"({next(iter(crs_seen_label))}) but expected {EXPECTED_CRS}")
+                else:
+                    self._fail(f"{prefix}_label_crs_consistent",
+                               f"{cls_name} label tiles have {len(crs_seen_label)} "
+                               f"different CRS values")
 
-        # Band descriptions
-        self._assert_empty(
-            band_desc_errors, "band_descriptions",
-            f"{len(band_desc_errors)} tiles have wrong band descriptions "
-            "(stored metadata, not actual spectral order — see band_order check)",
-            "All tiles have band descriptions = ['Red', 'Green', 'Blue']",
-        )
-        for tid, detail in band_desc_errors[:10]:
-            print(f"    {tid}: {detail}")
-
-        # Band ORDER heuristic  ← new check
-        print()
-        if band_order_neutral:
-            self._warn(
-                "band_order_neutral",
-                f"{len(band_order_neutral)} tiles were too spectrally neutral "
-                f"(near-uniform brightness, likely snow/cloud) to judge band order — "
-                f"result is inconclusive for those tiles",
-            )
-
-        if band_order_errors:
-            self._fail(
-                "band_order",
-                f"{len(band_order_errors)} tiles appear to have INCORRECT band order "
-                f"based on per-band mean spectral statistics. "
-                f"Correct order is Red > Green > Blue for natural-colour Arctic terrain. "
-                f"Affected tiles (first 20):",
-            )
-            for tid, detail in band_order_errors[:20]:
-                print(f"    {tid}: {detail}")
-            print(
-                "\n  NOTE: This heuristic compares per-band mean pixel values. "
-                "A high false-positive rate on near-neutral tiles (snow, water) is "
-                "expected — cross-check with the 'band_order_neutral' warning. "
-                "For confirmed mis-ordered tiles, re-export or transpose band order "
-                "before training."
-            )
-        else:
-            self._ok(
-                "band_order",
-                f"Band spectral statistics are consistent with R>G>B natural-colour "
-                f"order for all non-neutral tiles checked",
-            )
-
-        # Dimensions
-        self._assert_empty(
-            dim_errors, "tile_dimensions",
-            f"{len(dim_errors)} tiles are not {TILE_SIZE}×{TILE_SIZE}",
-            f"All checked tiles are {TILE_SIZE}×{TILE_SIZE}",
-        )
-        for tid, dims in dim_errors[:10]:
-            print(f"    {tid}: {dims}")
-
-        # Nodata
-        self._assert_empty(
-            nodata_errors, "nodata_check",
-            f"{len(nodata_errors)} tiles are entirely nodata or zero",
-            "No tiles are entirely nodata or zero",
-        )
-        for tid, kind, detail in nodata_errors[:10]:
-            print(f"    {tid} [{kind}]: {detail}")
-
-        # Label values
-        self._assert_empty(
-            label_val_errors, "label_values",
-            f"{len(label_val_errors)} label tiles contain unexpected pixel values",
-            f"All label tiles contain only valid values {VALID_LABEL_VALS}",
-        )
-        for tid, vals in label_val_errors[:10]:
-            print(f"    {tid}: invalid values = {vals}")
-
-        # Store viewer candidates for later
-        self._viewed_tiles = viewer_candidates
-
-    # ------------------------------------------------------------------
-    # Tile viewer
-    # ------------------------------------------------------------------
+    # ==================================================================
+    # TILE VIEWER
+    # ==================================================================
 
     def show_tile_viewer(self):
         """
-        Display up to VIEW_TILES tiles at the end of the run.
+        Display up to VIEW_TILES tiles, split between positive and negative.
 
-        Layout:
-          - Positive tiles  → RGB panel + label overlay side by side
-          - Negative tiles  → RGB panel only
+          - Positive tiles → RGB panel + label overlay side by side
+          - Negative tiles → RGB panel only
         """
-        if not self._viewed_tiles:
-            print("\n  No tiles available for viewer (pixel checks were skipped).")
+        usable = {
+            tid: v for tid, v in self._viewed_tiles.items()
+            if v.get("local_rgb") is not None
+        }
+        if not usable:
+            print("\n  No tiles available for viewer (corruption scan was skipped "
+                  "or all tiles failed to open).")
             return
 
-        all_ids   = list(self._viewed_tiles.keys())
-        pos_ids   = [t for t in all_ids
-                     if self._viewed_tiles[t]["tile_class"] == "positive"]
-        neg_ids   = [t for t in all_ids
-                     if self._viewed_tiles[t]["tile_class"] == "negative"]
+        pos_ids = [t for t, v in usable.items() if v["tile_class"] == "positive"]
+        neg_ids = [t for t, v in usable.items() if v["tile_class"] == "negative"]
 
-        # Build selection: prefer positives if VIEW_POS flag is set
-        selected: list[str] = []
-        if VIEW_POS:
-            n_pos = min(len(pos_ids), max(1, VIEW_TILES // 2))
-            n_neg = min(len(neg_ids), VIEW_TILES - n_pos)
-        else:
-            n_pos = 0
-            n_neg = min(len(neg_ids), VIEW_TILES)
+        n_pos = min(len(pos_ids), max(1, VIEW_TILES // 2)) if pos_ids else 0
+        n_neg = min(len(neg_ids), VIEW_TILES - n_pos)
 
-        selected += random.sample(pos_ids, n_pos) if n_pos else []
-        selected += random.sample(neg_ids, n_neg) if n_neg else []
-        selected  = selected[:VIEW_TILES]
+        selected = (random.sample(pos_ids, n_pos) if n_pos else []) + \
+                   (random.sample(neg_ids, n_neg) if n_neg else [])
+        selected = selected[:VIEW_TILES]
 
         if not selected:
             print("\n  No tiles to display.")
             return
 
-        # Each positive needs 2 columns; each negative needs 1
-        col_counts = [2 if self._viewed_tiles[t]["tile_class"] == "positive"
-                      else 1 for t in selected]
-        total_cols = sum(col_counts)
-        n_rows     = len(selected)
+        n_rows  = len(selected)
+        n_cols  = 2  # RGB + label overlay (label panel hidden for negatives)
 
         fig, axes = plt.subplots(
-            n_rows, max(total_cols // n_rows, 2),
-            figsize=(5 * max(total_cols // n_rows, 2), 5 * n_rows),
+            n_rows, n_cols,
+            figsize=(5 * n_cols, 5 * n_rows),
             squeeze=False,
         )
         fig.suptitle(
-            f"Tile viewer  —  {n_pos} positive / {n_neg} negative  "
+            f"Tile viewer — {n_pos} positive / {n_neg} negative "
             f"(random sample from validation set)",
             fontsize=13, y=1.01,
         )
 
-        LABEL_CMAP  = {0: (0.1, 0.1, 0.1, 0.0),   # background — transparent
-                       1: (1.0, 0.2, 0.2, 0.6),    # RTS — red, semi-transparent
-                       255: (1.0, 1.0, 0.0, 0.4)}  # ignore — yellow
+        LABEL_CMAP = {0: (0.1, 0.1, 0.1, 0.0),
+                      1: (1.0, 0.2, 0.2, 0.6),
+                      255: (1.0, 1.0, 0.0, 0.4)}
 
         for row_idx, tile_id in enumerate(selected):
-            entry      = self._viewed_tiles[tile_id]
+            entry      = usable[tile_id]
             tile_class = entry["tile_class"]
             ax_rgb     = axes[row_idx][0]
-            ax_lbl     = axes[row_idx][1] if tile_class == "positive" else None
+            ax_lbl     = axes[row_idx][1]
 
-            # RGB panel
+            rgb_img = None
             try:
                 with rasterio.open(entry["local_rgb"]) as src:
                     arr = src.read([1, 2, 3]).astype(np.float32)
-                # Stretch to 2-98th percentile for display
                 lo, hi = np.percentile(arr, 2), np.percentile(arr, 98)
                 arr     = np.clip((arr - lo) / max(hi - lo, 1e-6), 0, 1)
                 rgb_img = np.moveaxis(arr, 0, -1)
@@ -772,25 +638,21 @@ class TileValidationSuite:
                             ha="center", va="center", fontsize=7, color="red")
                 ax_rgb.axis("off")
 
-            # Label overlay panel (positives only)
-            if ax_lbl is not None and entry.get("local_label"):
+            if tile_class == "positive" and entry.get("local_label") and rgb_img is not None:
                 try:
                     with rasterio.open(entry["local_label"]) as lsrc:
                         lbl = lsrc.read(1)
 
                     rgba = np.zeros((*lbl.shape, 4), dtype=np.float32)
                     for val, colour in LABEL_CMAP.items():
-                        mask = lbl == val
-                        rgba[mask] = colour
+                        rgba[lbl == val] = colour
 
-                    ax_lbl.imshow(rgb_img)        # RGB as base
-                    ax_lbl.imshow(rgba)            # label as overlay
+                    ax_lbl.imshow(rgb_img)
+                    ax_lbl.imshow(rgba)
                     ax_lbl.set_title(
-                        f"{tile_id}\nRGB + label  "
-                        f"(RTS pixels: {(lbl == 1).sum():,})",
+                        f"{tile_id}\nRGB + label  (RTS pixels: {(lbl == 1).sum():,})",
                         fontsize=8,
                     )
-
                     legend_patches = [
                         mpatches.Patch(color=(1.0, 0.2, 0.2, 0.6), label="RTS (1)"),
                         mpatches.Patch(color=(1.0, 1.0, 0.0, 0.6), label="Ignore (255)"),
@@ -804,13 +666,9 @@ class TileValidationSuite:
                     ax_lbl.text(0.5, 0.5, str(exc), transform=ax_lbl.transAxes,
                                 ha="center", va="center", fontsize=7, color="red")
                     ax_lbl.axis("off")
-            elif ax_lbl is not None:
+            else:
                 ax_lbl.axis("off")
                 ax_lbl.set_title("no label tile", fontsize=8)
-
-            # Hide unused axes in this row
-            for col_idx in range(2, axes.shape[1]):
-                axes[row_idx][col_idx].axis("off")
 
         plt.tight_layout()
         viewer_path = f"{WORK_DIR}/tile_viewer.png"
@@ -819,7 +677,7 @@ class TileValidationSuite:
         try:
             plt.show()
         except Exception:
-            pass   # headless environment
+            pass
 
     # ------------------------------------------------------------------
     # Cleanup
@@ -828,14 +686,16 @@ class TileValidationSuite:
     def _cleanup_tmp(self):
         """Remove downloaded temp tiles (except those needed by viewer)."""
         tmp_dir = f"{WORK_DIR}/val_tmp"
+        keep_paths = set()
+        for v in self._viewed_tiles.values():
+            if v.get("local_rgb"):
+                keep_paths.add(v["local_rgb"])
+            if v.get("local_label"):
+                keep_paths.add(v["local_label"])
+
         for fname in os.listdir(tmp_dir):
             fpath = os.path.join(tmp_dir, fname)
-            # Keep tiles that are still needed for the viewer
-            keep = any(
-                (v.get("local_rgb") == fpath or v.get("local_label") == fpath)
-                for v in self._viewed_tiles.values()
-            )
-            if not keep:
+            if fpath not in keep_paths and fname != "metadata.csv":
                 try:
                     os.remove(fpath)
                 except OSError:
@@ -869,23 +729,24 @@ class TileValidationSuite:
 
         print()
         if n_fail == 0:
-            print("  ✓  All checks passed.")
-        elif n_fail <= 2:
-            print(f"  ✗  {n_fail} check(s) failed — review before training.")
+            print("  All checks passed.")
         else:
-            print(f"  ✗  {n_fail} check(s) failed — pipeline output needs attention.")
+            print(f"  {n_fail} check(s) failed — review before training.")
         print()
 
+    # ------------------------------------------------------------------
     # Main
+    # ------------------------------------------------------------------
+
     def run(self):
         print("=" * 60)
         print("  Tile Validation Suite")
         print("=" * 60)
 
-        # Metadata checks
         if not self.test_metadata_exists():
             self.print_summary()
             return
+
         self.test_metadata_columns()
         self.test_no_duplicate_tile_ids()
         self.test_no_duplicate_centroids()
@@ -893,17 +754,14 @@ class TileValidationSuite:
         self.test_uid_rederivation()
         self.test_train_class_values()
 
-        # GCS existence checks
         self.test_gcs_tile_existence()
 
-        # Per-tile raster checks
-        self.test_tile_raster_properties()
+        self.test_corruption_scan()
 
         self._cleanup_tmp()
 
-        # Tile viewer
         if VIEW_TILES > 0:
-            print(f"\n  Tile viewer  ({VIEW_TILES} tiles, prefer_positives={VIEW_POS})")
+            print(f"\n  Tile viewer ({VIEW_TILES} tiles)")
             self.show_tile_viewer()
 
         self.print_summary()
@@ -911,6 +769,7 @@ class TileValidationSuite:
 
 # ---------------------------------------------------------------------------
 # Entry point
+# ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
     suite = TileValidationSuite()
