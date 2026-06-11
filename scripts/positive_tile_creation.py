@@ -267,29 +267,12 @@ def process_single_tile(task: dict, work_dir: str, footprint_crs_epsg: int):
             if win.width < 1 or win.height < 1:
                 return None
 
-            # Band ordering: respect colour interpretation if present
-            color_interp = [src.colorinterp[i] for i in range(src.count)]
-            ci           = rasterio.enums.ColorInterp
-            band_map     = {ci.red: None, ci.green: None, ci.blue: None}
-            for idx, interp in enumerate(color_interp, start=1):
-                if interp in band_map:
-                    band_map[interp] = idx
-
-            if all(v is not None for v in band_map.values()):
-                r_idx, g_idx, b_idx = band_map[ci.red], band_map[ci.green], band_map[ci.blue]
-            else:
-                r_idx, g_idx, b_idx = 1, 2, 3
-
             try:
                 rgb_data = src.read(
-                    indexes=[r_idx, g_idx, b_idx],
+                    out_shape=(src.count, TILE_SIZE, TILE_SIZE),
                     window=win,
-                    out_shape=(3, TILE_SIZE, TILE_SIZE),
                 )
             except Exception:
-                return None
-
-            if src.nodata is not None and (rgb_data == src.nodata).all():
                 return None
 
             chip_tf     = rasterio.windows.transform(win, src.transform)
@@ -347,12 +330,13 @@ def process_single_tile(task: dict, work_dir: str, footprint_crs_epsg: int):
 
         with rasterio.open(
             local_rgb_out, "w",
-            **{**base_profile, "dtype": rgb_data.dtype, "count": 3, "photometric": "RGB"}
+            **{**base_profile, "dtype": rgb_data.dtype, "count": src.count}
         ) as dst:
             dst.write(rgb_data)
-            dst.set_band_description(1, "Red")
-            dst.set_band_description(2, "Green")
-            dst.set_band_description(3, "Blue")
+            dst.colorinterp = src.colorinterp
+            for i, desc in enumerate(src.descriptions, start=1):
+                if desc:
+                    dst.set_band_description(i, desc)
 
         with rasterio.open(
             local_label_out, "w",
