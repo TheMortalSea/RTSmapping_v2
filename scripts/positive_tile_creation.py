@@ -279,6 +279,9 @@ def process_single_tile(task: dict, work_dir: str, footprint_crs_epsg: int):
             tile_bbox   = box(*rasterio.transform.array_bounds(TILE_SIZE, TILE_SIZE, chip_tf))
             native_crs  = src.crs
             tile_nodata = src.nodata
+            src_count        = src.count
+            src_colorinterp  = src.colorinterp
+            src_descriptions = src.descriptions
 
         # --- Label rasterization ---
         def subset_to_chip(gdf):
@@ -330,11 +333,11 @@ def process_single_tile(task: dict, work_dir: str, footprint_crs_epsg: int):
 
         with rasterio.open(
             local_rgb_out, "w",
-            **{**base_profile, "dtype": rgb_data.dtype, "count": src.count}
+            **{**base_profile, "dtype": rgb_data.dtype, "count": src_count}
         ) as dst:
             dst.write(rgb_data)
-            dst.colorinterp = src.colorinterp
-            for i, desc in enumerate(src.descriptions, start=1):
+            dst.colorinterp = src_colorinterp
+            for i, desc in enumerate(src_descriptions, start=1):
                 if desc:
                     dst.set_band_description(i, desc)
 
