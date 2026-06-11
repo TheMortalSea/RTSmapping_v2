@@ -271,7 +271,8 @@ def process_single_tile(task: dict, work_dir: str, footprint_crs_epsg: int):
 
             try:
                 rgb_data = src.read(
-                    out_shape=(src.count, TILE_SIZE, TILE_SIZE),
+                    indexes=(1, 2, 3),
+                    out_shape=(3, TILE_SIZE, TILE_SIZE),
                     window=win,
                 )
             except Exception:
@@ -281,9 +282,9 @@ def process_single_tile(task: dict, work_dir: str, footprint_crs_epsg: int):
             tile_bbox   = box(*rasterio.transform.array_bounds(TILE_SIZE, TILE_SIZE, chip_tf))
             native_crs  = src.crs
             tile_nodata = src.nodata
-            src_count        = src.count
-            src_colorinterp  = src.colorinterp
-            src_descriptions = src.descriptions
+            src_count        = 3
+            src_colorinterp  = src.colorinterp[:3]
+            src_descriptions = src.descriptions[:3]
 
         # --- Label rasterization ---
         def subset_to_chip(gdf):
