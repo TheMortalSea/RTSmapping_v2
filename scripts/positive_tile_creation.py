@@ -5,17 +5,19 @@ Outputs: - RGB tiles in gs://{BUCKET}/{RGB_PREFIX} as 3-band GeoTIFFs
          - Label tiles in gs://{BUCKET}/{LABELS_PREFIX} as single-band GeoTIFFs
          - metadata.csv in gs://{BUCKET}/{METADATA_PREFIX} with columns: Tile_ID, centroid_lat, centroid_lon, TrainClass, RegionName, UIDs, Version
 
-The tile boundaries GeoJSON is the Planet basemap grid. Rows where train_selected == 1
-define both the spatial footprint of each output tile and the GCS location of the source
-quad imagery (via delivery_location, basemap_name, grid_column, grid_row columns) —
-the same structure used by the negative pipeline.
+More info on metadata columns and downstream use can be found in the data.md documentation file.
 
-Output dimensions are always 512x512 pixels, matching the footprint extent exactly.
+Imagery source: Planet basemap quad tiles. The blob path for each tile is constructed from
+INPUT_PREFIX and MOSAIC_NAME env vars plus the col/row parsed from the tile boundary's Name
+column (e.g. tile_91_1573_c1_r6 -> {INPUT_PREFIX}/91/1573/{MOSAIC_NAME}_91-1573_quad.tif).
+
+Output dimensions are always 512x512 pixels matching the footprint extent.
 Centroids in metadata are in WGS84 (4326).
 """
 
 import os
 import sys
+import re
 import numpy as np
 import rasterio
 from rasterio.features import rasterize
@@ -44,7 +46,9 @@ DATA_ROOT             = require_env("DATA_ROOT")
 POSITIVE_GEOJSON_BLOB = require_env("POSITIVE_GEOJSON")
 IGNORE_GEOJSON_BLOB   = require_env("IGNORE_GEOJSON")
 METADATA_SUBREGIONS   = require_env("METADATA_SUBREGIONS")
-TILE_BOUNDARIES_BLOB  = require_env("TILE_BOUNDARIES_GEOJSON")  # Planet grid GeoJSON; rows are quad footprints
+TILE_BOUNDARIES_BLOB  = require_env("TILE_BOUNDARIES_GEOJSON")  # Planet grid GeoJSON with train_selected, Name, geometry
+INPUT_PREFIX          = require_env("INPUT_PREFIX").rstrip("/")  # e.g. abrupt_thaw/planet_basemaps/global_quarterly/2024/q3
+MOSAIC_NAME           = require_env("MOSAIC_NAME")               # e.g. global_quarterly_2024q3_mosaic
 WORK_DIR              = require_env("WORK_DIR")
 MAX_WORKERS           = int(require_env("MAX_WORKERS"))
 METADATA_VERSION      = require_env("METADATA_VERSION")
@@ -83,14 +87,11 @@ gdf_positive = gpd.read_file(positive_local)
 gdf_ignore   = gpd.read_file(ignore_local)
 gdf_regions  = gpd.read_file(regions_local)
 
-# Load Planet grid / tile boundaries ------------------------------------
-# The grid GeoJSON doubles as the tile boundaries file. Each row is one quad
-# footprint. Columns used: train_selected, delivery_location, basemap_name,
-# grid_column, grid_row, geometry.
+# --- Load tile boundaries --------------------------------------------------
 
 gdf_grid = gpd.read_file(tile_boundaries_local)
 
-for col in ("train_selected", "delivery_location", "basemap_name", "grid_column", "grid_row"):
+for col in ("train_selected", "Name"):
     if col not in gdf_grid.columns:
         print(f"ERROR: '{col}' column not found in tile boundaries GeoJSON. "
               f"Available columns: {list(gdf_grid.columns)}")
@@ -109,14 +110,22 @@ if TEST_LIMIT:
     print(f"TEST_LIMIT={TEST_LIMIT}: using first {TEST_LIMIT} selected tiles")
 
 
-def grid_row_to_blob(row) -> str:
-    """Construct GCS blob path from grid row — identical to negative pipeline."""
-    delivery = row["delivery_location"].rstrip("/")
-    filename = f"{row['basemap_name']}_{row['grid_column']}-{row['grid_row']}_quad.tif"
-    return f"{delivery}/{filename}"
+# --- Blob path construction ------------------------------------------------
+# Name format: tile_{col}_{row}_c{n}_r{n}  e.g. tile_91_1573_c1_r6
+# Produces:    {INPUT_PREFIX}/{col}/{row}/{MOSAIC_NAME}_{col}-{row}_quad.tif
+
+_NAME_RE = re.compile(r"^tile_(\d+)_(\d+)_")
+
+def name_to_blob(name: str) -> str | None:
+    m = _NAME_RE.match(name)
+    if not m:
+        return None
+    col, row = m.group(1), m.group(2)
+    filename = f"{MOSAIC_NAME}_{col}-{row}_quad.tif"
+    return f"{INPUT_PREFIX}/{col}/{row}/{filename}"
 
 
-# Ecoregions ------------------------------------------------------------
+# --- Ecoregions ------------------------------------------------------------
 
 if "ECO_NAME" not in gdf_regions.columns:
     print(f"ERROR: 'ECO_NAME' column not found in regions GeoJSON. Available: {list(gdf_regions.columns)}")
@@ -132,21 +141,29 @@ def find_nearest_region(centroid_lon: float, centroid_lat: float) -> str:
     return gdf_regions_work.iloc[_region_tree.nearest(pt_work)]["ECO_NAME"]
 
 
-# Build tasks -----------------------------------------------------------
-# One task per selected quad row. The blob path and footprint geometry come
-# directly from the grid row — no secondary spatial lookup needed.
+# --- Build tasks -----------------------------------------------------------
 
-tasks = []
+tasks          = []
+bad_name_count = 0
+
 for _, row in gdf_selected.iterrows():
+    blob_path = name_to_blob(row["Name"])
+    if blob_path is None:
+        bad_name_count += 1
+        print(f"WARNING: could not parse col/row from Name '{row['Name']}' — skipping")
+        continue
     tasks.append({
-        "footprint_geom": row.geometry,          # native grid CRS
-        "blob_path":      grid_row_to_blob(row),
+        "footprint_geom": row.geometry,
+        "blob_path":      blob_path,
     })
+
+if bad_name_count:
+    print(f"WARNING: {bad_name_count} tiles skipped due to unparseable Name values")
 
 print(f"Tasks built: {len(tasks)}")
 
 
-# Resume support --------------------------------------------------------
+# --- Resume support --------------------------------------------------------
 
 metadata_blob_path = f"{METADATA_PREFIX}{METADATA_FILENAME}"
 metadata_blob      = bucket.blob(metadata_blob_path)
@@ -175,7 +192,7 @@ if not tasks_to_run:
     sys.exit(0)
 
 
-# UID derivation --------------------------------------------------------
+# --- UID derivation --------------------------------------------------------
 
 _GEOHASH_BASE32 = "0123456789bcdefghjkmnpqrstuvwxyz"
 
@@ -211,7 +228,7 @@ def make_tile_uid(lat: float, lon: float, precision: int = 12) -> str:
     return "".join(result)
 
 
-# Worker -----------------------------------------
+# --- Worker ----------------------------------------------------------------
 
 def worker_init(positive_path, ignore_path, bucket_name):
     global _gdf_positive, _gdf_ignore, _gcs_client, _gcs_bucket
@@ -221,7 +238,7 @@ def worker_init(positive_path, ignore_path, bucket_name):
     _gcs_bucket   = _gcs_client.bucket(bucket_name)
 
 
-def process_single_tile(task: dict, work_dir: str):
+def process_single_tile(task: dict, work_dir: str, footprint_crs_epsg: int):
     footprint_geom = task["footprint_geom"]
     blob_path      = task["blob_path"]
 
@@ -234,22 +251,15 @@ def process_single_tile(task: dict, work_dir: str):
         _gcs_bucket.blob(blob_path).download_to_filename(local_input)
 
         with rasterio.open(local_input) as src:
-            # Reproject footprint to the quad's native CRS
-            project_to_native = pyproj.Transformer.from_crs(
-                footprint_geom.crs if hasattr(footprint_geom, "crs") else 4326,
-                src.crs.to_epsg(),
-                always_xy=True,
-            ).transform
-
-            # gdf_selected retains its original CRS; reproject to src CRS
-            transformer = pyproj.Transformer.from_crs(
-                gdf_selected.crs.to_epsg(), src.crs.to_epsg(), always_xy=True
+            # Reproject footprint to quad's native CRS
+            transformer      = pyproj.Transformer.from_crs(
+                footprint_crs_epsg, src.crs.to_epsg(), always_xy=True
             ).transform
             footprint_native = shapely_transform(transformer, footprint_geom)
 
             minx, miny, maxx, maxy = footprint_native.bounds
 
-            # Window derived from exact footprint bounds
+            # Window from exact footprint bounds
             win = from_bounds(minx, miny, maxx, maxy, src.transform)
             # Clamp to valid raster extent (guards against sub-pixel float drift)
             win = win.intersection(rasterio.windows.Window(0, 0, src.width, src.height))
@@ -259,8 +269,8 @@ def process_single_tile(task: dict, work_dir: str):
 
             # Band ordering: respect colour interpretation if present
             color_interp = [src.colorinterp[i] for i in range(src.count)]
-            ci = rasterio.enums.ColorInterp
-            band_map = {ci.red: None, ci.green: None, ci.blue: None}
+            ci           = rasterio.enums.ColorInterp
+            band_map     = {ci.red: None, ci.green: None, ci.blue: None}
             for idx, interp in enumerate(color_interp, start=1):
                 if interp in band_map:
                     band_map[interp] = idx
@@ -282,12 +292,12 @@ def process_single_tile(task: dict, work_dir: str):
             if src.nodata is not None and (rgb_data == src.nodata).all():
                 return None
 
-            chip_tf    = rasterio.windows.transform(win, src.transform)
-            tile_bbox  = box(*rasterio.transform.array_bounds(TILE_SIZE, TILE_SIZE, chip_tf))
-            native_crs = src.crs
+            chip_tf     = rasterio.windows.transform(win, src.transform)
+            tile_bbox   = box(*rasterio.transform.array_bounds(TILE_SIZE, TILE_SIZE, chip_tf))
+            native_crs  = src.crs
             tile_nodata = src.nodata
 
-        # Label rasterization
+        # --- Label rasterization ---
         def subset_to_chip(gdf):
             if gdf.crs != native_crs:
                 gdf = gdf.to_crs(native_crs)
@@ -358,8 +368,9 @@ def process_single_tile(task: dict, work_dir: str):
             os.remove(local_input)
 
 
-# Run -------------------------------------------------------------------
+# --- Run -------------------------------------------------------------------
 
+footprint_crs_epsg = gdf_selected.crs.to_epsg()
 print(f"Processing {len(tasks_to_run)} tiles with {MAX_WORKERS} workers\n")
 
 success_count   = 0
@@ -375,7 +386,7 @@ with concurrent.futures.ProcessPoolExecutor(
 ) as executor:
 
     future_to_task = {
-        executor.submit(process_single_tile, task, WORK_DIR): task
+        executor.submit(process_single_tile, task, WORK_DIR, footprint_crs_epsg): task
         for task in tasks_to_run
     }
 
@@ -426,7 +437,7 @@ with concurrent.futures.ProcessPoolExecutor(
             pbar.update(1)
 
 
-# Write metadata --------------------------------------------------------
+# --- Write metadata --------------------------------------------------------
 
 if metadata_rows:
     new_df    = pd.DataFrame(metadata_rows, columns=METADATA_COLUMNS)
