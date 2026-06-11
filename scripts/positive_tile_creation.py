@@ -96,7 +96,7 @@ if "train_selected" not in gdf_tile_boundaries.columns:
     sys.exit(1)
 
 gdf_selected_tiles = gdf_tile_boundaries[
-    gdf_tile_boundaries["train_selected"].str.strip().str.lower() == "yes"
+    gdf_tile_boundaries["train_selected"] == 1
 ].copy()
 
 if gdf_selected_tiles.empty:
