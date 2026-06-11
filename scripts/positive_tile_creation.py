@@ -244,7 +244,25 @@ def process_single_tile(blob_path, bucket_name, work_dir):
             tile_crs       = src.crs
             tile_transform = src.transform
             tile_nodata    = src.nodata
-            rgb_data = src.read(indexes=[1, 2, 3])
+
+            # fixing the random color order nonsense from original tile data
+            color_interp = [src.colorinterp[i] for i in range(src.count)]
+            ci = rasterio.enums.ColorInterp
+
+            band_map = {ci.red: None, ci.green: None, ci.blue: None}
+            for idx, interp in enumerate(color_interp, start=1):
+                if interp in band_map:
+                    band_map[interp] = idx
+
+            if all(v is not None for v in band_map.values()):
+                r_idx = band_map[ci.red]
+                g_idx = band_map[ci.green]
+                b_idx = band_map[ci.blue]
+            else:
+                # No color interpretation metadata — fall back to positional [1,2,3]
+                r_idx, g_idx, b_idx = 1, 2, 3
+
+            rgb_data = src.read(indexes=[r_idx, g_idx, b_idx])
 
             tile_bounds = rasterio.transform.array_bounds(tile_height, tile_width, tile_transform)
             tile_bbox   = box(*tile_bounds)
@@ -402,3 +420,22 @@ else:
 print(f"\n{success_count} written, {skip_count} skipped, {error_count} errors")
 print(f"RGB:      gs://{BUCKET}/{RGB_PREFIX}")
 print(f"Labels:   gs://{BUCKET}/{LABELS_PREFIX}")
+
+if metadata_rows or existing_df is not None:
+    summary_df = combined if metadata_rows else existing_df.reindex(columns=METADATA_COLUMNS)
+    
+    print("\n-Metadata CSV head (5 rows)-")
+    print(summary_df.head().to_string(index=False))
+
+    print("\n-TrainClass counts-")
+    counts = summary_df["TrainClass"].value_counts()
+    for cls, n in counts.items():
+        print(f"  {cls:<12} {n:>6} tiles")
+    print(f"  {'TOTAL':<12} {len(summary_df):>6} tiles")
+
+    print("\n-RegionName counts-")
+    region_counts = summary_df["RegionName"].value_counts()
+    for region, n in region_counts.items():
+        print(f"  {region:<40} {n:>6} tiles")
+else:
+    print("\nNo metadata to summarise. Metadata file may be missing or not saved correctly")
