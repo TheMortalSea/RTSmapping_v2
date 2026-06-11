@@ -45,7 +45,8 @@ METADATA_SUBREGIONS   = require_env("METADATA_SUBREGIONS")
 TILE_BOUNDARIES_BLOB  = require_env("TILE_BOUNDARIES_GEOJSON")  # GeoJSON with tile boundaries; must have 'train_selected' attribute
 WORK_DIR              = require_env("WORK_DIR")
 MAX_WORKERS           = int(require_env("MAX_WORKERS"))
-METADATA_VERSION      = require_env("METADATA_VERSION")         # Version string e.g. "1.0", "2.0" — written to metadata Version column
+METADATA_VERSION      = require_env("METADATA_VERSION")         # Version string e.g. "1.0", "2.0" -- written to metadata Version column
+METADATA_FILENAME     = os.environ.get("METADATA_FILENAME", "metadata.csv")  # Filename for the metadata CSV within DATA_ROOT. Defaults to "metadata.csv".
 
 _test_limit = os.environ.get("TEST_LIMIT")
 TEST_LIMIT = int(_test_limit) if _test_limit else None
@@ -185,7 +186,7 @@ def make_tile_uid(lat: float, lon: float, precision: int = 12) -> str:
 
 # Resume support -----------------------------
 
-metadata_blob_path = f"{METADATA_PREFIX}metadata.csv"
+metadata_blob_path = f"{METADATA_PREFIX}{METADATA_FILENAME}"
 metadata_blob      = bucket.blob(metadata_blob_path)
 existing_df        = None
 done_centroids     = set()
