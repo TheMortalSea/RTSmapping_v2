@@ -383,8 +383,6 @@ stop_processing = False
 def target_reached():
     return TARGET_TILES is not None and len(done_centroids) >= TARGET_TILES
 
-# We use a try/finally block to guarantee that even if we break out early,
-# GDAL and Python are forced to clear their network caches immediately.
 try:
     with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
         future_to_task = {
@@ -392,71 +390,87 @@ try:
             for task_group in tasks_to_run
         }
 
-        with tqdm(total=len(tasks_to_run), desc="quads", unit="quad") as pbar:
-            for future in concurrent.futures.as_completed(future_to_task):
-                task_group = future_to_task[future]
-                
-                if stop_processing:
-                    future.cancel()
-                    pbar.update(1)
-                    continue
+        for future in concurrent.futures.as_completed(future_to_task):
+            task_group = future_to_task[future]
+            
+            if stop_processing:
+                future.cancel()
+                continue
 
-                try:
-                    chip_results = future.result()  # list of (path, lat, lon)
+            try:
+                chip_results = future.result()  # list of (path, lat, lon)
 
-                    if not chip_results:
-                        skip_count += len(task_group["polygons"])
-                    else:
-                        for local_rgb, centroid_lat, centroid_lon in chip_results:
-                            centroid_key = (round(centroid_lat, 6), round(centroid_lon, 6))
+                if not chip_results:
+                    skip_count += len(task_group["polygons"])
+                else:
+                    for local_rgb, centroid_lat, centroid_lon in chip_results:
+                        centroid_key = (round(centroid_lat, 6), round(centroid_lon, 6))
 
-                            if target_reached():
-                                stop_processing = True
-                                if os.path.exists(local_rgb):
-                                    os.remove(local_rgb)
-                                continue
-
-                            if centroid_key in done_centroids:
-                                duplicate_count += 1
-                                if os.path.exists(local_rgb):
-                                    os.remove(local_rgb)
-                                continue
-
-                            uid_str = make_tile_uid(centroid_key[0], centroid_key[1])
-
-                            # Upload to GCS
-                            bucket.blob(f"{RGB_PREFIX}{uid_str}.tif").upload_from_filename(local_rgb)
+                        if target_reached():
+                            stop_processing = True
                             if os.path.exists(local_rgb):
                                 os.remove(local_rgb)
+                            continue
 
-                            metadata_rows.append({
-                                "Tile_ID":      uid_str,
-                                "centroid_lat": centroid_key[0],
-                                "centroid_lon": centroid_key[1],
-                                "TrainClass":   "negative",
-                                "RegionName":   find_nearest_region(centroid_lon, centroid_lat),
-                                "UIDs":         9999,
-                                "Version":      METADATA_VERSION,
-                            })
+                        if centroid_key in done_centroids:
+                            duplicate_count += 1
+                            if os.path.exists(local_rgb):
+                                os.remove(local_rgb)
+                            continue
 
-                            done_centroids.add(centroid_key)
-                            success_count += 1
+                        uid_str = make_tile_uid(centroid_key[0], centroid_key[1])
 
-                            if target_reached():
-                                stop_processing = True
+                        # Upload to GCS
+                        bucket.blob(f"{RGB_PREFIX}{uid_str}.tif").upload_from_filename(local_rgb)
+                        if os.path.exists(local_rgb):
+                            os.remove(local_rgb)
 
-                except Exception as exc:
-                    error_count += 1
-                    if error_count <= 5:
-                        tqdm.write(f"ERROR on {task_group.get('blob_path', '?')}: {type(exc).__name__}: {exc}")
+                        metadata_rows.append({
+                            "Tile_ID":      uid_str,
+                            "centroid_lat": centroid_key[0],
+                            "centroid_lon": centroid_key[1],
+                            "TrainClass":   "negative",
+                            "RegionName":   find_nearest_region(centroid_lon, centroid_lat),
+                            "UIDs":         9999,
+                            "Version":      METADATA_VERSION,
+                        })
 
-                pbar.update(1)
-                
-                # CRITICAL: If target hit, shutdown the executor immediately without waiting
-                if stop_processing:
-                    executor.shutdown(wait=False, cancel_futures=True)
-                    break
+                        done_centroids.add(centroid_key)
+                        success_count += 1
+                        
+                        # Quick print to console so you know it's working without tqdm
+                        print(f" -> Processed tile {success_count}/{TARGET_TILES or 'all'}: {uid_str}")
 
+                        if target_reached():
+                            stop_processing = True
+
+            except Exception as exc:
+                error_count += 1
+                if error_count <= 5:
+                    print(f"ERROR on {task_group.get('blob_path', '?')}: {type(exc).__name__}: {exc}")
+            
+            # If target hit, kill the executor immediately without waiting for other threads
+            if stop_processing:
+                print("Target reached. Terminating thread pool...")
+                executor.shutdown(wait=False, cancel_futures=True)
+                break
+
+finally:
+    # Force GDAL network cache cleanup
+    print("Forcing GDAL network cache cleanup...")
+    try:
+        import rasterio._env
+        rasterio._env.GDALConfigEnv().clear()
+    except Exception:
+        pass
+    
+    # Clean up stranded files
+    import glob
+    for stranded_file in glob.glob(f"{WORK_DIR}/output/rgb_*.tif"):
+        try:
+            os.remove(stranded_file)
+        except Exception:
+            pass
 finally:
     # ── FORCE GDAL NETWORK CLEANUP ──────────────────────────────────────────
     # This prevents rasterio/GDAL from hanging on open /vsigs connection pools
