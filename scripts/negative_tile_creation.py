@@ -22,7 +22,6 @@ from shapely.strtree import STRtree
 from google.colab import auth
 from google.cloud import storage
 import concurrent.futures
-# from tqdm import tqdm
 from tqdm.notebook import tqdm
 import pandas as pd
 import pyproj
@@ -279,83 +278,74 @@ def get_containing_window(src, poly_bounds_native, tile_size=512):
 
 
 # Worker ----------------------------------------
-
-def worker_init():
-    global _gcs_client, _gcs_bucket
-    _gcs_client = storage.Client()
-    _gcs_bucket = _gcs_client.bucket(BUCKET)
-
+# No worker_init needed — threads share the main process and its GCS client.
+# Each worker opens the quad directly via /vsigs (GDAL GCS virtual filesystem),
+# fetching only the byte ranges needed for each 512x512 window rather than
+# downloading the entire file.
 
 def process_quad_group(task_group: dict, work_dir: str):
     """
-    Download one quad GeoTIFF and extract a chip for every polygon that falls
-    within it. Returns a list of (local_rgb_path, centroid_lat, centroid_lon)
-    tuples — one entry per successfully extracted chip.
+    Open one quad GeoTIFF via /vsigs range reads and extract a chip for every
+    polygon that falls within it. Returns a list of
+    (local_rgb_path, centroid_lat, centroid_lon) tuples.
+    No local download or cleanup needed.
     """
     blob_path = task_group["blob_path"]
     polygons  = task_group["polygons"]
 
-    base_name   = blob_path.split("/")[-1].replace(".tif", "")
-    local_input = f"{work_dir}/input/{base_name}.tif"
+    base_name = blob_path.split("/")[-1].replace(".tif", "")
+    vsi_path  = f"/vsigs/{BUCKET}/{blob_path}"
 
     results = []
 
-    try:
-        # ── Single download for the whole group ──────────────────────────────
-        _gcs_bucket.blob(blob_path).download_to_filename(local_input)
+    with rasterio.open(vsi_path) as src:
+        # Build per-CRS transformers once per open, reused across polygons
+        project_to_native = pyproj.Transformer.from_crs(
+            WORKING_CRS, src.crs.to_epsg(), always_xy=True
+        ).transform
+        project_to_wgs84 = pyproj.Transformer.from_crs(
+            src.crs.to_epsg(), 4326, always_xy=True
+        ).transform
 
-        with rasterio.open(local_input) as src:
-            # Build per-CRS transformers once per open, reused across polygons
-            project_to_native = pyproj.Transformer.from_crs(
-                WORKING_CRS, src.crs.to_epsg(), always_xy=True
-            ).transform
-            project_to_wgs84 = pyproj.Transformer.from_crs(
-                src.crs.to_epsg(), 4326, always_xy=True
-            ).transform
+        for poly_task in polygons:
+            poly_geom = poly_task["polygon_geom"]
 
-            for poly_task in polygons:
-                poly_geom = poly_task["polygon_geom"]
+            poly_native = shapely_transform(project_to_native, poly_geom)
+            win = get_containing_window(src, poly_native.bounds, TILE_SIZE)
+            if win is None:
+                continue
 
-                poly_native = shapely_transform(project_to_native, poly_geom)
-                win = get_containing_window(src, poly_native.bounds, TILE_SIZE)
-                if win is None:
-                    continue
+            try:
+                rgb_data = src.read(indexes=[1, 2, 3], window=win)
+            except Exception:
+                continue
 
-                try:
-                    rgb_data = src.read(indexes=[1, 2, 3], window=win)
-                except Exception:
-                    continue
+            if src.nodata is not None and (rgb_data == src.nodata).all():
+                continue
 
-                if src.nodata is not None and (rgb_data == src.nodata).all():
-                    continue
+            chip_tf   = rasterio.windows.transform(win, src.transform)
+            tile_bbox = box(*rasterio.transform.array_bounds(win.height, win.width, chip_tf))
+            centroid  = shapely_transform(project_to_wgs84, tile_bbox.centroid)
 
-                chip_tf   = rasterio.windows.transform(win, src.transform)
-                tile_bbox = box(*rasterio.transform.array_bounds(win.height, win.width, chip_tf))
-                centroid  = shapely_transform(project_to_wgs84, tile_bbox.centroid)
+            # Write chip to a unique local path
+            local_rgb_out = f"{work_dir}/output/rgb_{base_name}_{len(results)}.tif"
+            profile = dict(
+                driver="GTiff",
+                count=3,
+                dtype=rgb_data.dtype,
+                width=TILE_SIZE, height=TILE_SIZE,
+                crs=src.crs,
+                transform=chip_tf,
+                compress="LZW",
+                photometric="RGB",
+            )
+            with rasterio.open(local_rgb_out, "w", **profile) as dst:
+                dst.write(rgb_data)
+                dst.set_band_description(1, "Red")
+                dst.set_band_description(2, "Green")
+                dst.set_band_description(3, "Blue")
 
-                # Write chip to a unique local path
-                local_rgb_out = f"{work_dir}/output/rgb_{base_name}_{len(results)}.tif"
-                profile = dict(
-                    driver="GTiff",
-                    count=3,
-                    dtype=rgb_data.dtype,
-                    width=TILE_SIZE, height=TILE_SIZE,
-                    crs=src.crs,
-                    transform=chip_tf,
-                    compress="LZW",
-                    photometric="RGB",
-                )
-                with rasterio.open(local_rgb_out, "w", **profile) as dst:
-                    dst.write(rgb_data)
-                    dst.set_band_description(1, "Red")
-                    dst.set_band_description(2, "Green")
-                    dst.set_band_description(3, "Blue")
-
-                results.append((local_rgb_out, centroid.y, centroid.x))
-
-    finally:
-        if os.path.exists(local_input):
-            os.remove(local_input)
+            results.append((local_rgb_out, centroid.y, centroid.x))
 
     return results
 
@@ -388,10 +378,7 @@ duplicate_count = 0
 metadata_rows   = []
 stop_processing = False
 
-with concurrent.futures.ProcessPoolExecutor(
-    max_workers=MAX_WORKERS,
-    initializer=worker_init,
-) as executor:
+with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
 
     future_to_task = {
         executor.submit(process_quad_group, task_group, WORK_DIR): task_group
@@ -445,7 +432,7 @@ with concurrent.futures.ProcessPoolExecutor(
             except Exception as exc:
                 error_count += 1
                 if error_count <= 5:
-                    print(f"ERROR on {task_group.get('blob_path', '?')}: {type(exc).__name__}: {exc}")
+                    tqdm.write(f"ERROR on {task_group.get('blob_path', '?')}: {type(exc).__name__}: {exc}")
 
             pbar.update(1)
 
