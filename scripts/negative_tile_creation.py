@@ -283,12 +283,10 @@ def get_containing_window(src, poly_bounds_native, tile_size=512):
 # fetching only the byte ranges needed for each 512x512 window rather than
 # downloading the entire file.
 
-def process_quad_group(task_group: dict, work_dir: str):
+def process_quad_group(task_group: dict, work_dir: str, current_count_fn):
     """
     Open one quad GeoTIFF via /vsigs range reads and extract a chip for every
-    polygon that falls within it. Returns a list of
-    (local_rgb_path, centroid_lat, centroid_lon) tuples.
-    No local download or cleanup needed.
+    polygon that falls within it. Returns a list of tuples.
     """
     blob_path = task_group["blob_path"]
     polygons  = task_group["polygons"]
@@ -299,7 +297,6 @@ def process_quad_group(task_group: dict, work_dir: str):
     results = []
 
     with rasterio.open(vsi_path) as src:
-        # Build per-CRS transformers once per open, reused across polygons
         project_to_native = pyproj.Transformer.from_crs(
             WORKING_CRS, src.crs.to_epsg(), always_xy=True
         ).transform
@@ -308,6 +305,11 @@ def process_quad_group(task_group: dict, work_dir: str):
         ).transform
 
         for poly_task in polygons:
+            # CRITICAL OPTIMIZATION: Stop generating files immediately if the 
+            # main thread has already reached the target tile cap.
+            if current_count_fn():
+                break
+
             poly_geom = poly_task["polygon_geom"]
 
             poly_native = shapely_transform(project_to_native, poly_geom)
@@ -378,21 +380,29 @@ duplicate_count = 0
 metadata_rows   = []
 stop_processing = False
 
+# Helper function passed to workers to check if we should abort further tile creation
+def target_reached():
+    if TARGET_TILES and len(done_centroids) >= TARGET_TILES:
+        return True
+    return False
+
 with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
 
+    # Pass the target_reached function to the worker
     future_to_task = {
-        executor.submit(process_quad_group, task_group, WORK_DIR): task_group
+        executor.submit(process_quad_group, task_group, WORK_DIR, target_reached): task_group
         for task_group in tasks_to_run
     }
 
     with tqdm(total=len(tasks_to_run), desc="quads", unit="quad") as pbar:
         for future in concurrent.futures.as_completed(future_to_task):
+            task_group = future_to_task[future]
+            
             if stop_processing:
                 future.cancel()
                 pbar.update(1)
                 continue
 
-            task_group = future_to_task[future]
             try:
                 chip_results = future.result()  # list of (path, lat, lon)
 
@@ -401,6 +411,12 @@ with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
                 else:
                     for local_rgb, centroid_lat, centroid_lon in chip_results:
                         centroid_key = (round(centroid_lat, 6), round(centroid_lon, 6))
+
+                        # Double check target hasn't been hit by another thread mid-loop
+                        if TARGET_TILES and len(done_centroids) >= TARGET_TILES:
+                            stop_processing = True
+                            os.remove(local_rgb)
+                            continue
 
                         if centroid_key in done_centroids:
                             duplicate_count += 1
@@ -427,7 +443,6 @@ with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
 
                         if TARGET_TILES and len(done_centroids) >= TARGET_TILES:
                             stop_processing = True
-                            break
 
             except Exception as exc:
                 error_count += 1
