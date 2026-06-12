@@ -135,9 +135,11 @@ if metadata_blob.exists():
 else:
     print("No existing metadata found - starting fresh")
 
-# Stratified sampling -----------------------------------------
+# Build sample set ---------------------------------------------
+# No stratified sampling — use all available negative polygons. If a
+# TARGET_TILES is set, we still queue everything (cheap to build tasks)
+# and simply stop writing once the target is reached during the run.
 
-# Adjusts target to account for tiles already written
 remaining_target = (TARGET_TILES - len(done_centroids)) if TARGET_TILES else None
 if TARGET_TILES:
     print(f"TARGET_TILES={TARGET_TILES}, already done={len(done_centroids)}, remaining={remaining_target}")
@@ -146,21 +148,7 @@ if remaining_target is not None and remaining_target <= 0:
     print("Target already reached — nothing to do.")
     sys.exit(0)
 
-eco_groups   = gdf_polygons.groupby("ECO_NAME")
-n_ecoregions = len(eco_groups)
-per_region   = max(1, remaining_target // n_ecoregions) if remaining_target else None
-
-sampled_parts = []
-for _, group in eco_groups:
-    if per_region is None or len(group) <= per_region:
-        sampled_parts.append(group)
-    else:
-        sampled_parts.append(group.sample(n=per_region, random_state=42))
-
-gdf_sampled = pd.concat(sampled_parts).reset_index(drop=True)
-
-if remaining_target and len(gdf_sampled) > remaining_target:
-    gdf_sampled = gdf_sampled.sample(n=remaining_target, random_state=42).reset_index(drop=True)
+gdf_sampled = gdf_polygons.reset_index(drop=True)
 
 # Build tasks -------------------------------------
 
@@ -244,18 +232,17 @@ def make_tile_uid(lat: float, lon: float, precision: int = 12) -> str:
     return "".join(result)
 
 # Windowing -------------------------------------------------
+# Center the tile window on the polygon centroid. We no longer require the
+# polygon's bounding box to fit within the tile — we just want a tile that
+# is centered on (and contains, where possible) the polygon's centroid.
 
 def get_containing_window(src, poly_bounds_native, tile_size=512):
     minx, miny, maxx, maxy = poly_bounds_native
 
-    tl_row, tl_col = rowcol(src.transform, minx, maxy)
-    br_row, br_col = rowcol(src.transform, maxx, miny)
-    if abs(br_col - tl_col) > tile_size or abs(br_row - tl_row) > tile_size:
-        return None
     if src.width < tile_size or src.height < tile_size:
         return None
 
-    cx, cy           = (minx + maxx) / 2, (miny + maxy) / 2
+    cx, cy = (minx + maxx) / 2, (miny + maxy) / 2
     center_row, center_col = rowcol(src.transform, cx, cy)
 
     half    = tile_size // 2
@@ -394,6 +381,11 @@ with concurrent.futures.ProcessPoolExecutor(
 
                         done_centroids.add(centroid_key)
                         success_count += 1
+
+                        if TARGET_TILES and len(done_centroids) >= TARGET_TILES:
+                            for f in future_to_task:
+                                f.cancel()
+                            break
                 else:
                     skip_count += 1
 
