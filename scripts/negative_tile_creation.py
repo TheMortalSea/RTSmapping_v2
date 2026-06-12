@@ -368,7 +368,6 @@ def find_nearest_region(centroid_lon: float, centroid_lat: float) -> str:
     )
     return gdf_regions_work.iloc[_region_tree.nearest(pt_work)]["ECO_NAME"]
 
-
 # Run ---------------------------------------------------
 
 print(f"\nProcessing {len(tasks_to_run)} quad groups ({total_polygons} polygons) with {MAX_WORKERS} workers...\n")
@@ -471,23 +470,7 @@ finally:
             os.remove(stranded_file)
         except Exception:
             pass
-finally:
-    # ── FORCE GDAL NETWORK CLEANUP ──────────────────────────────────────────
-    # This prevents rasterio/GDAL from hanging on open /vsigs connection pools
-    print("Forcing GDAL network cache cleanup...")
-    try:
-        import rasterio._env
-        rasterio._env.GDALConfigEnv().clear()
-    except Exception:
-        pass
-    
-    # Clean up any stranded local files left behind by interrupted threads
-    import glob
-    for stranded_file in glob.glob(f"{WORK_DIR}/output/rgb_*.tif"):
-        try:
-            os.remove(stranded_file)
-        except Exception:
-            pass
+        
 # Write metadata -------------------------------------------------
 
 if metadata_rows:
