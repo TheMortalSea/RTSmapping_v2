@@ -2,8 +2,7 @@
 Negative Training Tile Creation Script
 
 Outputs: - RGB tiles in gs://{BUCKET}/{RGB_PREFIX} as 3-band GeoTIFFs
-         - Label tiles in gs://{BUCKET}/{LABELS_PREFIX} as single-band GeoTIFFs
-         - metadata.csv in gs://{BUCKET}/{METADATA_PREFIX} with columns: "Tile_ID, centroid_lat, centroid_lon, TrainClass, RegionName, UIDs
+         - metadata.csv in gs://{BUCKET}/{METADATA_PREFIX} with columns: Tile_ID, centroid_lat, centroid_lon, TrainClass, RegionName, UIDs, Version
 
 Output CRS is 3857 from the original tiles
 
@@ -26,6 +25,7 @@ import concurrent.futures
 from tqdm import tqdm
 import pandas as pd
 import pyproj
+from itertools import groupby
 
 
 def require_env(name):
@@ -42,15 +42,16 @@ DATA_ROOT            = require_env("DATA_ROOT")
 METADATA_SUBREGIONS  = require_env("METADATA_SUBREGIONS")
 WORK_DIR             = require_env("WORK_DIR")
 MAX_WORKERS          = int(require_env("MAX_WORKERS"))
+METADATA_VERSION     = require_env("METADATA_VERSION")
 
 _target      = os.environ.get("TARGET_TILES")
 TARGET_TILES = int(_target) if _target else None
 
 TILE_SIZE        = 512
-WORKING_CRS      = "EPSG:6933" # This is for more accurate centriod placement for ecoregions
+WORKING_CRS      = "EPSG:6933" # This is for more accurate centroid placement for ecoregions
 RGB_PREFIX       = f"{DATA_ROOT}/PLANET-RGB/"
 METADATA_PREFIX  = f"{DATA_ROOT}/"
-METADATA_COLUMNS = ["Tile_ID", "centroid_lat", "centroid_lon", "TrainClass", "RegionName", "UIDs"]
+METADATA_COLUMNS = ["Tile_ID", "centroid_lat", "centroid_lon", "TrainClass", "RegionName", "UIDs", "Version"]
 
 print(f"BUCKET: {BUCKET} | workers: {MAX_WORKERS} | target: {TARGET_TILES or 'all'}")
 
@@ -168,7 +169,7 @@ for i, poly_row in gdf_sampled.iterrows():
     covering = [j for j in candidate_idxs if gdf_grid.iloc[j].geometry.contains(centroid)]
 
     if not covering and candidate_idxs:
-        covering = [min(candidate_idxs, key=lambda j: gdf_grid.iloc[j].geometry.distance(centroid))] 
+        covering = [min(candidate_idxs, key=lambda j: gdf_grid.iloc[j].geometry.distance(centroid))]
 
     if not covering:
         no_grid_count += 1
@@ -183,11 +184,35 @@ for i, poly_row in gdf_sampled.iterrows():
 
 print(f"Tasks: {len(tasks)} built, {no_grid_count} polygons had no covering grid cell")
 
-#Queuing process ----------------------
-# Centroids are not known until a tile is opened, so all tasks are queued and te duplicate check happens in the result loop once we have the actual coords.
-tasks_to_run = tasks
+# ── Optimization 1: group tasks by blob_path ──────────────────────────────────
+# Multiple negative polygons often fall within the same quad. Grouping them
+# lets each worker download the source GeoTIFF exactly once and loop over all
+# polygons for that quad in a single rasterio.open() call, eliminating
+# redundant GCS downloads.
 
-print(f"{len(done_centroids)} tiles already in metadata, {len(tasks_to_run)} tasks queued")
+tasks_sorted  = sorted(tasks, key=lambda t: t["blob_path"])
+grouped_tasks = [
+    {"blob_path": bp, "polygons": [t for t in group]}
+    for bp, group in groupby(tasks_sorted, key=lambda t: t["blob_path"])
+]
+
+unique_blobs   = len(grouped_tasks)
+total_polygons = len(tasks)
+print(
+    f"Grouped {total_polygons} polygon tasks into {unique_blobs} unique quads "
+    f"({total_polygons / unique_blobs:.1f} polygons/quad on average)"
+)
+
+# Resume: filter out entire quad groups where every polygon centroid is already
+# done. Groups that are only partially done are kept — the per-centroid check
+# inside the worker handles skipping individual duplicates.
+tasks_to_run = [
+    g for g in grouped_tasks
+    # keep if at least one polygon in the group might be new
+    if True  # centroid coords are unknown until the raster is opened; defer to worker
+]
+
+print(f"{len(done_centroids)} tiles already in metadata, {len(tasks_to_run)} quad groups queued")
 
 if not tasks_to_run:
     print("Nothing to do.")
@@ -195,7 +220,7 @@ if not tasks_to_run:
 
 
 # UID derivation -----------------------
-# geohashing the centriod
+# geohashing the centroid
 # Example: lat=39.47, lon=-105.21  ->  9xj0tck3mm3c
 
 _GEOHASH_BASE32 = "0123456789bcdefghjkmnpqrstuvwxyz"
@@ -260,87 +285,107 @@ def worker_init():
     _gcs_bucket = _gcs_client.bucket(BUCKET)
 
 
-def process_single_tile(task: dict, work_dir: str):
-    poly_geom = task["polygon_geom"]
-    blob_path = task["blob_path"]
+def process_quad_group(task_group: dict, work_dir: str):
+    """
+    Download one quad GeoTIFF and extract a chip for every polygon that falls
+    within it. Returns a list of (local_rgb_path, centroid_lat, centroid_lon)
+    tuples — one entry per successfully extracted chip.
+    """
+    blob_path = task_group["blob_path"]
+    polygons  = task_group["polygons"]
 
-    base_name     = blob_path.split("/")[-1].replace(".tif", "")
-    local_input   = f"{work_dir}/input/{base_name}.tif"
-    local_rgb_out = f"{work_dir}/output/rgb_{base_name}.tif"
+    base_name   = blob_path.split("/")[-1].replace(".tif", "")
+    local_input = f"{work_dir}/input/{base_name}.tif"
+
+    results = []
 
     try:
+        # ── Single download for the whole group ──────────────────────────────
         _gcs_bucket.blob(blob_path).download_to_filename(local_input)
 
         with rasterio.open(local_input) as src:
+            # Build per-CRS transformers once per open, reused across polygons
             project_to_native = pyproj.Transformer.from_crs(
                 WORKING_CRS, src.crs.to_epsg(), always_xy=True
             ).transform
-            poly_native = shapely_transform(project_to_native, poly_geom)
-
-            win = get_containing_window(src, poly_native.bounds, TILE_SIZE)
-            if win is None:
-                return None
-
-            try:
-                rgb_data = src.read(indexes=[1, 2, 3], window=win)
-            except Exception:
-                return None
-
-            if src.nodata is not None and (rgb_data == src.nodata).all():
-                return None
-
-            chip_tf   = rasterio.windows.transform(win, src.transform)
-            tile_bbox = box(*rasterio.transform.array_bounds(win.height, win.width, chip_tf))
-
-            # Build transformer from actual raster CRS, not assumed 3857
             project_to_wgs84 = pyproj.Transformer.from_crs(
                 src.crs.to_epsg(), 4326, always_xy=True
             ).transform
-            centroid  = shapely_transform(project_to_wgs84, tile_bbox.centroid)
-            native_crs = src.crs
 
-        profile = dict(
-            driver="GTiff", 
-            count=3, 
-            dtype=rgb_data.dtype,
-            width=TILE_SIZE, height=TILE_SIZE,
-            crs=native_crs, 
-            transform=chip_tf, 
-            compress="LZW",
-            photometric="RGB",
-        )
-        with rasterio.open(local_rgb_out, "w", **profile) as dst:
-            dst.write(rgb_data)
-            dst.set_band_description(1, "Red")
-            dst.set_band_description(2, "Green")
-            dst.set_band_description(3, "Blue")
+            for poly_task in polygons:
+                poly_geom = poly_task["polygon_geom"]
 
-        return (local_rgb_out, centroid.y, centroid.x)
+                poly_native = shapely_transform(project_to_native, poly_geom)
+                win = get_containing_window(src, poly_native.bounds, TILE_SIZE)
+                if win is None:
+                    continue
+
+                try:
+                    rgb_data = src.read(indexes=[1, 2, 3], window=win)
+                except Exception:
+                    continue
+
+                if src.nodata is not None and (rgb_data == src.nodata).all():
+                    continue
+
+                chip_tf   = rasterio.windows.transform(win, src.transform)
+                tile_bbox = box(*rasterio.transform.array_bounds(win.height, win.width, chip_tf))
+                centroid  = shapely_transform(project_to_wgs84, tile_bbox.centroid)
+
+                # Write chip to a unique local path
+                local_rgb_out = f"{work_dir}/output/rgb_{base_name}_{len(results)}.tif"
+                profile = dict(
+                    driver="GTiff",
+                    count=3,
+                    dtype=rgb_data.dtype,
+                    width=TILE_SIZE, height=TILE_SIZE,
+                    crs=src.crs,
+                    transform=chip_tf,
+                    compress="LZW",
+                    photometric="RGB",
+                )
+                with rasterio.open(local_rgb_out, "w", **profile) as dst:
+                    dst.write(rgb_data)
+                    dst.set_band_description(1, "Red")
+                    dst.set_band_description(2, "Green")
+                    dst.set_band_description(3, "Blue")
+
+                results.append((local_rgb_out, centroid.y, centroid.x))
 
     finally:
         if os.path.exists(local_input):
             os.remove(local_input)
 
+    return results
 
-# Ecoregion lookup (main process) -----------------------------
 
-_region_tree = STRtree(gdf_regions_work.geometry.centroid.values)
+# ── Optimization 2: build the region-lookup transformer once ─────────────────
+# Previously, find_nearest_region() called pyproj.Transformer.from_crs(...)
+# on every invocation (once per completed tile in the main thread). Constructing
+# a Transformer is non-trivial — it involves CRS parsing and proj network
+# lookups. Building it once at module level and reusing it costs nothing.
+
+_region_tree            = STRtree(gdf_regions_work.geometry.centroid.values)
+_wgs84_to_working_tf    = pyproj.Transformer.from_crs(4326, WORKING_CRS, always_xy=True)
 
 def find_nearest_region(centroid_lon: float, centroid_lat: float) -> str:
-    projector = pyproj.Transformer.from_crs(4326, WORKING_CRS, always_xy=True).transform
-    pt_work   = shapely_transform(projector, Point(centroid_lon, centroid_lat))
+    pt_work = shapely_transform(
+        _wgs84_to_working_tf.transform,
+        Point(centroid_lon, centroid_lat),
+    )
     return gdf_regions_work.iloc[_region_tree.nearest(pt_work)]["ECO_NAME"]
 
 
 # Run ---------------------------------------------------
 
-print(f"\nProcessing {len(tasks_to_run)} polygons with {MAX_WORKERS} workers...\n")
+print(f"\nProcessing {len(tasks_to_run)} quad groups ({total_polygons} polygons) with {MAX_WORKERS} workers...\n")
 
-success_count = 0
-skip_count    = 0
-error_count   = 0
+success_count   = 0
+skip_count      = 0
+error_count     = 0
 duplicate_count = 0
-metadata_rows = []
+metadata_rows   = []
+stop_processing = False
 
 with concurrent.futures.ProcessPoolExecutor(
     max_workers=MAX_WORKERS,
@@ -348,23 +393,32 @@ with concurrent.futures.ProcessPoolExecutor(
 ) as executor:
 
     future_to_task = {
-        executor.submit(process_single_tile, task, WORK_DIR): task
-        for task in tasks_to_run
+        executor.submit(process_quad_group, task_group, WORK_DIR): task_group
+        for task_group in tasks_to_run
     }
 
-    with tqdm(total=len(tasks_to_run), desc="tiles", unit="tile") as pbar:
+    with tqdm(total=len(tasks_to_run), desc="quads", unit="quad") as pbar:
         for future in concurrent.futures.as_completed(future_to_task):
-            task = future_to_task[future]
-            try:
-                result = future.result()
-                if result is not None:
-                    local_rgb, centroid_lat, centroid_lon = result
-                    centroid_key = (round(centroid_lat, 6), round(centroid_lon, 6))
+            if stop_processing:
+                future.cancel()
+                pbar.update(1)
+                continue
 
-                    if centroid_key in done_centroids:
-                        duplicate_count += 1
-                        os.remove(local_rgb)
-                    else:
+            task_group = future_to_task[future]
+            try:
+                chip_results = future.result()  # list of (path, lat, lon)
+
+                if not chip_results:
+                    skip_count += len(task_group["polygons"])
+                else:
+                    for local_rgb, centroid_lat, centroid_lon in chip_results:
+                        centroid_key = (round(centroid_lat, 6), round(centroid_lon, 6))
+
+                        if centroid_key in done_centroids:
+                            duplicate_count += 1
+                            os.remove(local_rgb)
+                            continue
+
                         uid_str = make_tile_uid(centroid_key[0], centroid_key[1])
 
                         bucket.blob(f"{RGB_PREFIX}{uid_str}.tif").upload_from_filename(local_rgb)
@@ -377,23 +431,21 @@ with concurrent.futures.ProcessPoolExecutor(
                             "TrainClass":   "negative",
                             "RegionName":   find_nearest_region(centroid_lon, centroid_lat),
                             "UIDs":         9999,
+                            "Version":      METADATA_VERSION,
                         })
 
                         done_centroids.add(centroid_key)
                         success_count += 1
 
                         if TARGET_TILES and len(done_centroids) >= TARGET_TILES:
-                            for f in future_to_task:
-                                f.cancel()
+                            stop_processing = True
                             break
-                else:
-                    skip_count += 1
 
             except Exception as exc:
                 error_count += 1
-                if error_count <= 5:  # print first few to avoid spam
-                    print(f"ERROR on {task.get('blob_path', '?')}: {type(exc).__name__}: {exc}")
-                    
+                if error_count <= 5:
+                    print(f"ERROR on {task_group.get('blob_path', '?')}: {type(exc).__name__}: {exc}")
+
             pbar.update(1)
 
 # Write metadata -------------------------------------------------
@@ -403,6 +455,8 @@ if metadata_rows:
     local_csv = f"{WORK_DIR}/output/metadata.csv"
 
     if existing_df is not None:
+        if "Version" not in existing_df.columns:
+            existing_df["Version"] = pd.NA
         combined = pd.concat([existing_df, new_df], ignore_index=True)
     else:
         combined = new_df
@@ -415,8 +469,8 @@ if metadata_rows:
 else:
     print("No successful tiles — metadata not written.")
 
-total_written  = len(combined) if metadata_rows else (len(existing_df) if existing_df is not None else 0)
-remaining      = (TARGET_TILES - total_written) if TARGET_TILES else None
+total_written = len(combined) if metadata_rows else (len(existing_df) if existing_df is not None else 0)
+remaining     = (TARGET_TILES - total_written) if TARGET_TILES else None
 
 print(f"  Written this run   : {success_count}")
 print(f"  Skipped (no window): {skip_count}")
