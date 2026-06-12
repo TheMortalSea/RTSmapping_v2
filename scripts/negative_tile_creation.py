@@ -23,6 +23,7 @@ from google.colab import auth
 from google.cloud import storage
 import concurrent.futures
 from tqdm import tqdm
+from tqdm.notebook import tqdm
 import pandas as pd
 import pyproj
 from itertools import groupby
