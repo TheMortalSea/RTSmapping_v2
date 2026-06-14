@@ -94,6 +94,17 @@ Fresh temp dir per test — no cross-test state leakage.
 | `test_filter_train_positive_subset_is_deterministic` | Two invocations with the same input give the same output (seed=42 hard-coded) | real — reproducibility |
 | `test_filter_train_positive_subset_full_pct_no_op` | subset_pct=100 keeps every tile | shallow — boundary case |
 
+### [test_config.py](test_config.py)
+
+| Test | Checks | Strictness |
+|---|---|---|
+| `test_load_config_without_base_unchanged` | no `base:` key → behavior identical to before | shallow |
+| `test_base_merge_nested_override` | `base: baseline.yaml` inherits all keys; overrides win at any nesting depth; sibling keys preserved; `base` key consumed | real — config-inheritance contract |
+| `test_base_merge_lists_replace_not_concat` | lists replace wholesale (no concat surprises) | real |
+| `test_missing_base_raises` | dangling base path → FileNotFoundError naming both files | real |
+| `test_chained_base_rejected` | base-of-base → ValueError (one level only, by design) | real |
+| `test_deep_merge_does_not_mutate_inputs` | merge is pure | real |
+
 ### [test_dataset.py](test_dataset.py)
 
 | Test | Checks | Strictness |
@@ -130,7 +141,8 @@ Fresh temp dir per test — no cross-test state leakage.
 | `test_output_bias_for_imbalanced_prior` | prior=0.01 → bias ≈ -log(99) | real |
 | `test_output_is_logits_not_probabilities` | Random-input outputs span beyond [0, 1] | real — logits contract |
 | `test_invalid_bias_prior_rejected` | Prior outside (0, 1) → `ValueError` | shallow |
-| `test_unknown_architecture_rejected` | Unsupported arch → clear `ValueError` | shallow |
+| `test_build_model_segformer_output_shape_and_bias` | SegFormer (mit_b5) builds, returns (B,1,H,W) logits at input res, and the class prior flows through its `.segmentation_head[0]` bias (fair arch comparison) | real — guards the new architecture branch (2026-06-06) |
+| `test_unknown_architecture_rejected` | Unsupported arch (`bogusnet`) → clear `ValueError` (`segformer` is now supported) | shallow |
 
 ### [test_losses.py](test_losses.py)
 
@@ -269,12 +281,14 @@ End-to-end training loop on the synthetic fixture (~130 s, still Tier 1 — no G
 | `test_resume_checkpoint_rotation` | resume_latest-*.pth exists post-training | real |
 | `test_no_nan_in_model_params` | Final EMA weights all finite | real — numerical guard |
 | `test_mlflow_run_written` | MLflow directory populated | shallow |
+| `test_train_iou_logged` | `train_iou` logged per epoch ∈ [0,1] (needed for experiments.md §5.4 data-scaling gap + §8.1 Phase-5 gate) | real — guards the train-metric add (2026-06-07) |
 | `test_ema_divergent_from_live_after_training` | EMA ≠ live weights after unfreeze (exercises update path) | real — plan risk #15 |
 | `test_prediction_shows_response_on_positive_region` | max pred prob > 0.1 on a positive tile (collapse guard) | real — plan risk (mode collapse) |
 | `test_train_smoke_resume_then_continue` | Resume from epoch-2 snapshot for 1 more epoch; EMA shadow is restored and continues decaying (key set unchanged, post-resume ≠ saved) | real — Important I5 (2026-05-02); guards EMA-restore-on-resume audit fix |
 | `test_select_preview_tiles_uses_fixed_list` | A `preview_tiles.yaml` UID list is used verbatim (intersected with val, order preserved) | real — fixed preview contract (2026-06-05) |
 | `test_select_preview_tiles_is_seed_independent` | Same fixed list → identical previews for seed 42 vs 43 (cross-experiment comparability) | real — guards the seed-coupling bug fix |
 | `test_select_preview_tiles_falls_back_when_none_in_val` | If no configured tile is in val, fall back to the seeded heuristic | real — graceful fallback |
+| `test_resume_ema_shadow_on_model_device` | `_resume_from` moves the restored EMA shadow to the model's device; `ema.update` must not raise cpu/cuda mismatch (skipped without CUDA) | real — regression for 2026-06-11 A100 resume crash |
 
 ---
 

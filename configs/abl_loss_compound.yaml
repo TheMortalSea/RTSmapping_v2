@@ -92,7 +92,7 @@ augmentation:
     p: 0.3
 
 loss:
-  function: "focal"
+  function: "compound"   # ABLATION (vs baseline focal-only): lambda_focal*Focal + lambda_dice*Dice
   focal_gamma: 2.0
   focal_alpha: 0.25
   lambda_focal: 1.0
@@ -169,4 +169,4 @@ metrics:
 mlflow:
   tracking_uri: "file:///outputs/mlflow"  # local file store inside Docker; MLflow 2.x+ does not support gs:// as tracking (only artifact) URI
   experiment_name: "rts-segmentation-v2"
-  run_name: "phase0c_seed42"
+  run_name: "abl_loss_compound"
