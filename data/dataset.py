@@ -25,7 +25,9 @@ import rasterio
 import torch
 from torch.utils.data import Dataset
 
-from data.normalization import load_stats, stats_to_arrays
+from data.normalization import (
+    apply_norm, build_norm_arrays, fill_nodata_with_mean, load_stats, stats_to_arrays,
+)
 from data.transforms import dilate_label_boundary
 
 logger = logging.getLogger(__name__)
@@ -74,6 +76,41 @@ def parse_extra_spec(extra_cfg: list[dict[str, Any]] | None) -> list[ExtraChanne
     return out
 
 
+def substitute_nodata(
+    rgb: np.ndarray,
+    label: np.ndarray,
+    rgb_mean: np.ndarray,
+    ignore_index: int = 255,
+) -> tuple[np.ndarray, np.ndarray]:
+    """§4.4 NoData handling for RGB tiles (training side).
+
+    Zero is the NoData sentinel in the PlanetScope RGB tiles. Two cases:
+      * **all-band-zero pixel** (true NoData — no coverage): set its label to
+        `ignore_index` so loss skips it (no signal to learn from), and
+      * **any zero band** (incl. band dropout, e.g. a missing blue channel):
+        substitute that band with its raw per-channel mean, so after z-score the
+        pixel sits at ~0 (neutral) instead of injecting a hard zero edge or
+        distorting the input — while the valid bands of a partially-degraded
+        tile keep carrying their signal.
+
+    Computed pre-augmentation so the ignore label rides the same geometric
+    transform as the rest of the mask. Returns new (rgb, label) arrays.
+
+    Args:
+        rgb: (H, W, 3) uint8 raw RGB.
+        label: (H, W) uint8 label.
+        rgb_mean: (3,) raw per-channel means (z-score stats, raw units).
+        ignore_index: label value for ignored pixels.
+    """
+    nodata = (rgb == 0).all(axis=-1)            # (H, W) — all bands zero
+    label = label.copy()
+    label[nodata] = ignore_index
+    # Per-band fill (band dropout): substitute each zero band with its mean via the
+    # shared helper so training/inference neutralise NoData identically (Rule 3).
+    rgb = fill_nodata_with_mean(rgb.copy(), rgb == 0, rgb_mean, channel_axis=-1)
+    return rgb, label
+
+
 class RTSDataset(Dataset):
     """Return dict: {'image': (C, H, W) float32 tensor, 'label': (H, W) int64 tensor, 'tile_id': str}.
 
@@ -95,6 +132,7 @@ class RTSDataset(Dataset):
         label_ignore_index: int = 255,
         boundary_handling: str = "none",   # none | ignore (soft_labels deferred to a later iteration)
         boundary_ignore_width: int = 3,
+        nodata_handling: bool = False,      # §4.4: zero→mean input + 255 label for all-band-zero
     ):
         if boundary_handling == "soft_labels":
             raise NotImplementedError(
@@ -117,6 +155,7 @@ class RTSDataset(Dataset):
         self.label_ignore_index = label_ignore_index
         self.boundary_handling = boundary_handling
         self.boundary_ignore_width = boundary_ignore_width
+        self.nodata_handling = nodata_handling
 
         if norm_stats_path is not None:
             stats = load_stats(norm_stats_path)
@@ -140,12 +179,19 @@ class RTSDataset(Dataset):
                         f"does not match config order {expected_extra!r}"
                     )
             self.mean, self.std = stats_to_arrays(stats, with_extra=bool(extra_channels))
+            # Per-channel normalization params (z-score+clip vs fixed_scale, data.md §9).
+            self._norm = build_norm_arrays(stats, with_extra=bool(extra_channels))
         else:
             # Permitted for smoke tests; real runs must supply stats.
             logger.warning("RTSDataset created without normalization stats; output will be unnormalized")
             n_channels = 3 + len(extra_channels)
             self.mean = np.zeros(n_channels, dtype=np.float32)
             self.std = np.ones(n_channels, dtype=np.float32)
+            self._norm = {"mean": self.mean, "std": self.std,
+                          "clip_lo": np.full(n_channels, np.nan, dtype=np.float32),
+                          "clip_hi": np.full(n_channels, np.nan, dtype=np.float32),
+                          "is_fixed": np.zeros(n_channels, dtype=bool),
+                          "scale": np.ones(n_channels, dtype=np.float32)}
 
     def __len__(self) -> int:
         return len(self.tile_ids)
@@ -185,6 +231,9 @@ class RTSDataset(Dataset):
         rgb = self._read_rgb(tid)                             # (H, W, 3) uint8
         label = self._read_label(tid)                         # (H, W) uint8
 
+        if self.nodata_handling:                              # §4.4 (before boundary/aug)
+            rgb, label = substitute_nodata(rgb, label, self.mean, self.label_ignore_index)
+
         if self.boundary_handling == "ignore":
             label = dilate_label_boundary(label, self.boundary_ignore_width,
                                           self.label_ignore_index)
@@ -200,7 +249,7 @@ class RTSDataset(Dataset):
         label_out = aug["mask"]
 
         img = stacked.astype(np.float32).transpose(2, 0, 1)                   # (C, H, W)
-        img = (img - self.mean[:, None, None]) / self.std[:, None, None]
+        img = apply_norm(img, self._norm)   # per-channel z-score+clip / fixed_scale (data.md §9)
 
         return {
             "image": torch.from_numpy(img),

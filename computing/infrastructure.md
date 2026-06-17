@@ -165,9 +165,12 @@ All VMs are in the **PDG project**. Daily start/stop/SSH workflow:
 
 ### Zones & GPU availability
 
-us-west1 is primary. GPU capacity varies by zone — if a start fails, fall back per
+The active production node is in **us-central1-a** (`a100-8x-train`); us-west1 hosted the now-stopped
+single-A100 / L4 dev VMs. GPU capacity varies by zone — if a start fails, fall back per
 [vm_instruction.md Appendix A.1](vm_instruction.md) (us-west1-c, us-west2-a/b, us-central1-a).
 Large multi-GPU and H100 machines need explicit quota and may only be available in specific zones.
+**Stopping `a100-8x-train` risks losing the stockout-won 8×A100 capacity** — prefer keeping it busy
+over stopping for short idles (`experiments.md §13`).
 
 ---
 

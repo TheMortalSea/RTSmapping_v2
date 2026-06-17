@@ -82,6 +82,20 @@ Fresh temp dir per test — no cross-test state leakage.
 | `test_stats_to_arrays_with_extra` | Concatenation order: RGB first, then EXTRA in declared order | real |
 | `test_fill_nodata_inference_convention_chw_perpixel_float` | Shared `fill_nodata_with_mean` on the inference path (CHW float32, per-pixel mask broadcast across channels) fills exact (unrounded) mean; rest untouched — Rule-3 train/inference parity | real |
 | `test_fill_nodata_rounds_for_integer_raster` | uint8 raster → mean rounded to dtype (on-disk raw-value contract) | real |
+| `test_build_norm_arrays_modes_and_clip` | `build_norm_arrays` maps the stats `mode`/`clip`/`scale` to per-channel arrays (RGB plain z-score; EXTRA zscore-with-clip vs fixed_scale) — data.md §9 | real |
+| `test_apply_norm_zscore_clip_and_fixed_scale` | `apply_norm` clips before z-score on zscore channels; divides by `scale` (no z-score) on fixed_scale (SE_PROTO) channels | real — the §9 dispatch contract |
+| `test_apply_norm_rgb_only_matches_plain_zscore` | No EXTRA/modes ⇒ dispatch == plain `(x-μ)/σ` (backward-compat) | real |
+| `test_build_stats_dict_records_modes` | `build_stats_dict` carries `extra_modes`/`extra_clips`/`extra_scales` into the `extra` block | shallow |
+
+### [test_extra_channels.py](test_extra_channels.py)
+
+EXTRA derivation SSoT (`data/extra_channels.py`). SE math only — Earth Engine is mocked.
+
+| Test | Checks | Strictness |
+|---|---|---|
+| `test_band_norm_mode` | `band_norm_mode` returns "zscore" for NDVI/SE_PCA/TC and "fixed_scale" for SE_PROTO; unknown band → `ValueError` | real — §9 SSoT |
+| `test_se_bands_projection_and_cosine` | With `fetch_se_raw` mocked: `se_bands` returns {2,3,4,5} of shape (H,W); SE_PROTO ∈ [-1,1]; SE_PCA1 == manual `flat @ component[0]` projection | real — SE derivation math |
+| `test_se_bands_nan_propagates` | A no-coverage (NaN) SE pixel yields NaN SE bands; finite pixels stay finite (matches S2 NaN handling) | real |
 
 ### [test_sampler.py](test_sampler.py)
 
@@ -121,6 +135,8 @@ Fresh temp dir per test — no cross-test state leakage.
 | `test_dataset_with_variable_extra` | Bands [0, 2] + arbitrary names → `(5, 64, 64)` | real — flexible-EXTRA end-to-end |
 | `test_dataset_label_values_in_set` | Every label's unique values ⊂ {0, 1, 255} | real |
 | `test_boundary_dilation_adds_ignore` | Width=2 dilation creates 255 band and preserves interior 1s | real |
+| `test_substitute_nodata_all_band_zero_becomes_ignore_and_mean` | §4.4: all-band-zero pixel → label 255 + per-channel mean; single-band dropout → mean substitution only (label kept); non-zero untouched | real — pure-function NoData logic |
+| `test_substitute_nodata_noop_when_no_zeros` | No zeros → rgb and label returned unchanged | real |
 | `test_init_raises_on_rgb_channel_name_mismatch` | RTSDataset refuses stats with permuted RGB channel names (training.md §4.5) | real — Critical C1 (2026-05-02) |
 | `test_init_raises_on_extra_channel_name_mismatch` | RTSDataset refuses stats with mis-ordered EXTRA channel names | real — Critical C1 (2026-05-02) |
 | `test_read_with_retry_recovers_from_transient_failure` | Transient GCS/VSI read error is retried; eventual success returned (no real backoff) | real — guards against single transient read crashing a multi-hour run (2026-06-04) |
@@ -145,6 +161,7 @@ Fresh temp dir per test — no cross-test state leakage.
 | `test_output_is_logits_not_probabilities` | Random-input outputs span beyond [0, 1] | real — logits contract |
 | `test_invalid_bias_prior_rejected` | Prior outside (0, 1) → `ValueError` | shallow |
 | `test_build_model_segformer_output_shape_and_bias` | SegFormer (mit_b5) builds, returns (B,1,H,W) logits at input res, and the class prior flows through its `.segmentation_head[0]` bias (fair arch comparison) | real — guards the new architecture branch (2026-06-06) |
+| `test_build_model_smp_decoder_sweep` | §8.2 arch sweep: each smp decoder (`deeplabv3plus`/`fpn`/`pspnet`/`manet`) builds on EffB5, returns (B,1,H,W) logits, shares the `.segmentation_head[0]` bias path (parametrized) | real — guards the decoder-sweep branch (2026-06-15) |
 | `test_unknown_architecture_rejected` | Unsupported arch (`bogusnet`) → clear `ValueError` (`segformer` is now supported) | shallow |
 
 ### [test_losses.py](test_losses.py)
