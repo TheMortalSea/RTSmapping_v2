@@ -176,16 +176,12 @@ proceed to the next step after confirmation with the desired label matchness.
 
 ---
 
-## 7. Compute, storage & cost
+## 7. Compute 
 
 - **VM:** one dedicated **CPU** VM (the GEE export runs server-side; EXTRA generation and tiling are
   embarrassingly parallel I/O + light CPU). High-vCPU, **Spot/preemptible**, no GPU; stopped when idle.
-  Provision per [computing/vm_instruction.md](../computing/vm_instruction.md).
-- **Storage is the watch-item.** The $70k PDG credit is **compute-only** — storage and network egress
-  are billed separately. A 1°×3° S2 composite at 10 m is ≈ 11k×11k px × several bands ≈ **>1 GB/tile**;
-  full 40–84°N across two years is **multi-TB**. Mitigations: deflate-compressed COGs, trimming the
-  2024 extent to label regions (§6.1), and co-locating the bucket with the VM (§6.4). Infra facts and
-  budget live in [computing/infrastructure.md](../computing/infrastructure.md).
+  Provision per [computing/vm_instruction.md](../computing/vm_instruction.md). Claude code can decide the
+  VM type and report quota to request manually, then create the VM automatically.
 
 ---
 
