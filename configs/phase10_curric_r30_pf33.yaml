@@ -1,0 +1,17 @@
+# Step 2 §10.1 — harder final ratio 1:30 AND positive_fraction 0.33 (most precision-tilted cell).
+base: phase0c_seed42.yaml
+data:
+  data_root: /outputs/v1.0/data_local
+  normalization_stats_path: /outputs/v1.0/staging/v1_splits/normalization_stats.json
+channels: {rgb: true, extra: []}
+loss: {boundary_handling: ignore, boundary_ignore_width: 2}
+sampling:
+  positive_fraction: 0.33
+  curriculum_schedule:
+    "1-10": 1
+    "11-30": 5
+    "31-50": 10
+    "51-100": 15
+    "101-300": 30
+mlflow:
+  run_name: phase10_curric_r30_pf33

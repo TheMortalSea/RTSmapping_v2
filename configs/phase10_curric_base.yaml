@@ -1,0 +1,14 @@
+# Step 2 / experiments.md §10.1 — curriculum & sampling sweep REFERENCE cell.
+# Locked EffB5 config: UNet++/EffB5 + focal + boundary ignore_w2 (Phase-3 winner), RGB-only,
+# corrected leakage-free split. Base curriculum (final 1:20) + positive_fraction 0.5.
+# The 3 sibling configs vary final ratio {30} and positive_fraction {0.33} against this.
+base: phase0c_seed42.yaml
+data:
+  data_root: /outputs/v1.0/data_local
+  normalization_stats_path: /outputs/v1.0/staging/v1_splits/normalization_stats.json
+channels: {rgb: true, extra: []}
+loss:
+  boundary_handling: ignore
+  boundary_ignore_width: 2
+mlflow:
+  run_name: phase10_curric_base
