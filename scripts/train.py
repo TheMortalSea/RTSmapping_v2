@@ -718,10 +718,18 @@ def main() -> int:
     base_lr = float(cfg["lr_schedule"]["base_lr"])
     backbone_mult = float(cfg["lr_schedule"]["backbone_lr_multiplier"])
 
-    param_groups = freeze_mod.build_param_groups(
-        model, decoder_lr=frozen_lr, backbone_lr=frozen_lr,
-        weight_decay=wd,
-    )
+    llrd_decay = cfg["lr_schedule"].get("llrd_decay")
+    if llrd_decay:
+        # §8.2a: layer-wise LR decay for ViT/foundation encoders (per-layer lr_scale,
+        # applied by the scheduler). EffB5 runs omit llrd_decay → unchanged 2-group path.
+        param_groups = freeze_mod.build_llrd_param_groups(
+            model, lr=frozen_lr, weight_decay=wd, llrd_decay=float(llrd_decay),
+        )
+    else:
+        param_groups = freeze_mod.build_param_groups(
+            model, decoder_lr=frozen_lr, backbone_lr=frozen_lr,
+            weight_decay=wd,
+        )
     optimizer = torch.optim.AdamW(param_groups, lr=frozen_lr)
     set_lrs = scheduler_mod.make_lr_setter(cfg)
     is_range_test = scheduler_mod.is_lr_range_test(cfg)
