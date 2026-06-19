@@ -193,3 +193,24 @@ def test_unknown_scheduler_raises():
     cfg["lr_schedule"]["scheduler"] = "wat"
     with pytest.raises(ValueError):
         make_lr_setter(cfg)
+
+
+def test_phase2_backbone_lr_scale_applied():
+    """LLRD: a backbone group's per-epoch LR is multiplied by its lr_scale; groups
+    without lr_scale (decoder, legacy 2-group runs) are unaffected."""
+    cfg = _base_cfg()
+    set_lrs = make_lr_setter(cfg)
+    ps = [nn.Parameter(torch.zeros(1)) for _ in range(3)]
+    optim = torch.optim.AdamW(
+        [
+            {"name": "decoder", "params": [ps[0]]},                      # no lr_scale → 1.0
+            {"name": "backbone", "params": [ps[1]], "lr_scale": 1.0},    # top layer
+            {"name": "backbone", "params": [ps[2]], "lr_scale": 0.25},   # earlier layer
+        ],
+        lr=0.0,
+    )
+    set_lrs(optim, 15)  # a phase-2 epoch
+    full = optim.param_groups[1]["lr"]
+    quarter = optim.param_groups[2]["lr"]
+    assert full > 0.0
+    assert quarter == pytest.approx(0.25 * full)

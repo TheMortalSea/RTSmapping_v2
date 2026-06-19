@@ -164,6 +164,25 @@ EXTRA derivation SSoT (`data/extra_channels.py`). SE math only — Earth Engine 
 | `test_build_model_segformer_output_shape_and_bias` | SegFormer (mit_b5) builds, returns (B,1,H,W) logits at input res, and the class prior flows through its `.segmentation_head[0]` bias (fair arch comparison) | real — guards the new architecture branch (2026-06-06) |
 | `test_build_model_smp_decoder_sweep` | §8.2 arch sweep: each smp decoder (`deeplabv3plus`/`fpn`/`pspnet`/`manet`) builds on EffB5, returns (B,1,H,W) logits, shares the `.segmentation_head[0]` bias path (parametrized) | real — guards the decoder-sweep branch (2026-06-15) |
 | `test_unknown_architecture_rejected` | Unsupported arch (`bogusnet`) → clear `ValueError` (`segformer` is now supported) | shallow |
+| `test_fusion_default_and_ensemble_are_plain_models` | `model.fusion` absent (=early) and `ensemble` both build a normal single-encoder model (F4 averaging is eval-side) | real — fusion default + back-compat (2026-06-18) |
+| `test_fusion_stem_init_zeroes_extra_input_channels` | F1: encoder stem-conv weights zero on EXTRA channels (≥3), nonzero RGB | real — guards the F1 init |
+| `test_fusion_stem_init_invariant_to_extra_at_init` | F1: at init, changing only EXTRA channels leaves the output unchanged (epoch-0 == RGB-only) | real — the F1 contract |
+| `test_fusion_chan_attn_shape_gate_and_delegation` | F2: wrapper returns (B,1,H,W) logits, delegates `.encoder`/`.segmentation_head` (bias-init flows through), gate per-channel in (0,1) | real — guards F2 + freeze/bias compat |
+| `test_fusion_chan_attn_param_groups_split` | F2: gate params land in the non-encoder (decoder) group so freeze schedule + backbone-LR target correctly | real — F2 × freeze.py integration |
+| `test_fusion_unknown_rejected` | Unsupported `model.fusion` → clear `ValueError` | shallow |
+| `test_build_model_foundation_rgb` | `arch='foundation'` (DINOv3 ViT) builds, (B,1,H,W) logits, class-prior bias flows through `.segmentation_head[0]` | real — guards the FM branch (2026-06-18) |
+| `test_build_model_foundation_rejects_extra_channels` | foundation is RGB-only for now → declaring EXTRA raises (Step 4b) | shallow |
+
+### [test_foundation.py](test_foundation.py)
+
+Forward-path tests for `models/foundation.py` (FoundationSegmenter: DINOv3/ViT encoder → simple feature pyramid → FPN decoder → logits). CPU, `pretrained=False`. Added 2026-06-18 (second-wave Step 4).
+
+| Test | Asserts | Strictness |
+|---|---|---|
+| `test_foundation_forward_shape` | ViT `forward_intermediates` → pyramid → decoder → `(B,1,H,W)` at input res | real — the core ViT→dense chain |
+| `test_foundation_taps_four_blocks_incl_deepest` | 4 evenly-spaced block taps, deepest included, sorted | real — pyramid-diversity contract |
+| `test_foundation_exposes_encoder_and_head` | `.encoder` (freeze/LLRD) + `.segmentation_head[0]` bias-init compatible | real — integration hooks |
+| `test_foundation_output_is_logits` | random-input outputs span beyond [0,1] | shallow — logits contract |
 
 ### [test_losses.py](test_losses.py)
 
@@ -203,6 +222,7 @@ EXTRA derivation SSoT (`data/extra_channels.py`). SE math only — Earth Engine 
 | `test_cosine_exact_halfway_at_t_over_tmax_0p5` | Mid-cosine LR brackets (base_lr + min_lr)/2 | real |
 | `test_phase1_epoch_zero_handled_safely` | epoch=0 treated as Phase 1, no crash | shallow |
 | `test_lr_range_test_endpoints_and_log_midpoint` | lr_range_test: step 0 → lr_min, last step → lr_max, midpoint → geometric mean | real — Phase 0 §3.2 implementation |
+| `test_phase2_backbone_lr_scale_applied` | LLRD: a backbone group's per-epoch LR is multiplied by its `lr_scale`; groups without it (decoder/legacy) unaffected | real — §8.2a LLRD × scheduler (2026-06-18) |
 | `test_lr_range_test_applies_same_lr_to_all_groups` | All param groups receive the same LR under range-test mode | real |
 | `test_lr_range_test_rejects_invalid_bounds` | lr_min ≥ lr_max → `ValueError` | shallow — guard |
 | `test_unknown_scheduler_raises` | Unknown `scheduler:` value → `ValueError` | shallow — dispatch guard |
@@ -252,6 +272,8 @@ EXTRA derivation SSoT (`data/extra_channels.py`). SE math only — Earth Engine 
 | `test_build_param_groups_partitions_by_id` | Every model param appears in exactly one named group | real |
 | `test_build_param_groups_lrs_set` | Decoder/backbone LRs + weight_decay set as requested | shallow |
 | `test_optimizer_respects_frozen_encoder` | After freeze + step, encoder weights unchanged | real — integration check |
+| `test_build_llrd_param_groups_decay_and_coverage` | LLRD (§8.2a): per-layer `lr_scale` increases stem→top (top=1.0), decoder group=1.0, every model param covered exactly once | real — guards LLRD grouping (2026-06-18) |
+| `test_build_llrd_rejects_bad_decay` | `llrd_decay` outside (0,1] → `ValueError` | shallow |
 
 ### [test_mlflow_utils.py](test_mlflow_utils.py)
 
