@@ -38,6 +38,28 @@ from training import visualizations as viz  # noqa: E402
 logging.basicConfig(level=logging.INFO, format="%(levelname)s | %(message)s")
 logger = logging.getLogger("regen_previews")
 
+# Legacy runs (phase0/2/3/5) recorded now-dead `gs://rts-mapping-v2/...` data_root + norm
+# paths; the tiles + a superset stats json are mirrored locally with identical layout
+# (metadata.csv / PLANET-RGB / EXTRA / labels). They are all RGB-only, so the superset
+# stats (RGB + all bands) reproduce the RGB mean/std the model was trained with (per-dataset
+# z-score; corrected-split RGB stats differ negligibly).
+LOCAL_DATA_FALLBACK = "/outputs/v1.0/data_local"
+LOCAL_NORM_FALLBACK = "/outputs/v1.0/staging/v1_splits/normalization_stats.json"
+
+
+def _resolve_data_root(root: str) -> str:
+    """Remap a dead gs:// (or missing) data_root to the local mirror (same dir layout)."""
+    if root.startswith("gs://") or not Path(root).exists():
+        return LOCAL_DATA_FALLBACK
+    return root
+
+
+def _resolve_norm_path(norm_path: str) -> str:
+    """Remap a dead gs:// (or missing) norm path to the local superset stats json."""
+    if norm_path.startswith("gs://") or not Path(norm_path).exists():
+        return LOCAL_NORM_FALLBACK
+    return norm_path
+
 
 def _regen_one(run_dir: Path, preview_ids: list[str]) -> str:
     cfg_path = run_dir / "config.yaml"
@@ -46,7 +68,7 @@ def _regen_one(run_dir: Path, preview_ids: list[str]) -> str:
         return "skip (no config/ckpt)"
     cfg = yaml.safe_load(cfg_path.read_text())
     data = cfg["data"]
-    root = data["data_root"].rstrip("/")
+    root = _resolve_data_root(data["data_root"]).rstrip("/")
     extra_channels = parse_extra_spec(cfg.get("channels", {}).get("extra", []) or [])
     metadata = load_metadata(f"{root}/{data['metadata_csv']}")
 
@@ -55,7 +77,7 @@ def _regen_one(run_dir: Path, preview_ids: list[str]) -> str:
         tile_ids=preview_ids, metadata=metadata, data_root=root,
         rgb_dir=data["rgb_dir"], extra_dir=data["extra_dir"], labels_dir=data["labels_dir"],
         extra_channels=extra_channels,
-        norm_stats_path=data["normalization_stats_path"],
+        norm_stats_path=_resolve_norm_path(data["normalization_stats_path"]),
         transform=build_eval_transforms(),
         tile_size=int(data["tile_size"]), label_ignore_index=int(data["label_ignore_index"]),
         boundary_handling="none",
