@@ -11,9 +11,14 @@ field-standard pieces:
   2. Simple Feature Pyramid (ViTDet, Li et al. 2022) — resample those same-resolution maps
      to strides {4, 8, 16, 32} with transposed/strided convs.
 
+**Hierarchical backbones** (SAM2/Hiera — `sam2_*`/`hiera_*`) skip the ViT bridge entirely:
+they already emit a native {/4,/8,/16,/32} pyramid, so we build them via timm `features_only`
+and 1×1-project each stage straight into the same FPN decoder (RGB-only — the features_only
+wrapper hides the patch-embed stem; no LLRD since there's no `.blocks`). See `__init__`.
+
 Then a light FPN decoder + a Conv2d seg head. The head is `self.segmentation_head` whose
 [0] is the final Conv2d (bias), so models.segmentation._init_output_bias works unchanged;
-`self.encoder` is the ViT so training/freeze.py + the LLRD/linear-probe schedule plug in.
+`self.encoder` is the ViT/Hiera so training/freeze.py + the LLRD/linear-probe schedule plug in.
 
 Outputs logits (B, 1, H, W). Decoder differs from UNet++ (a ViT can't cleanly reuse smp's
 CNN-encoder decoder interface) — standard practice for ViT segmentation; the comparison to
