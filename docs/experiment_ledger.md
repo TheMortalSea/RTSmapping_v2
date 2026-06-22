@@ -14,7 +14,7 @@ Source of truth: `/mnt/outputs/v1.0/runs/<name>/run_summary.md` (finished) and `
 > control (Phase-4 RGB control = 0.830), not against earlier phases. Final test is scored once, honestly,
 > on the corrected split (Step 5).
 
-_Last refreshed: 2026-06-22 — v2 final-lock 3-seed mean **0.9123**; greedy COMPLETE (EXTRA=NDVI); F3/F5 heavy fusion LOSES (F0 locked); mixing-aug family struck out (EffB3/copy-paste/mosaic/cutmix all no-win); now running: DINOv3+NDVI, SAM2/Hiera RGB, RandAug/TrivialAug. (Model = v2; repo RTSmapping_v2.)_
+_Last refreshed: 2026-06-22 (PM) — v2 final-lock 3-seed mean **0.9123**; greedy COMPLETE (EXTRA=NDVI); F3/F5 heavy fusion LOSES (F0 locked); mixing-aug family struck out (EffB3/copy-paste/mosaic/cutmix/mixup all no-win). **web-DINOv3+NDVI 0.9120 = ties EffB5+NDVI** (generic foundation not the lever); **SAM2/Hiera RGB 0.590 non-competitive**; **sat-DINOv3 ViT-L RGB 0.9187 (climbing)** = the live encoder bet; **7B frozen probe killed** (diverged, non-competitive). Running: sat-DINOv3 ViT-L (RGB + NDVI), web-DINOv3 ImageNet-norm control, RandAug/TrivialAug, **ignore-region ablation (3-seed)**. (Model = v2; repo RTSmapping_v2.)_
 
 ---
 
@@ -97,9 +97,33 @@ _Last refreshed: 2026-06-22 — v2 final-lock 3-seed mean **0.9123**; greedy COM
 | 73 | 06-22 | phase4_fm_dinov3_ndvi | D/E: DINOv3+NDVI (fair foundation test) | corrected | — | 🔵 running (ep47/~120; slow ViT) — gate vs EffB5+NDVI 0.9123 |
 | 74 | 06-22 | aug_trivialaugment_deploy | F: TrivialAugment (shadow-safe pool) | corrected | — | 🔵 running (user-revived) — gate vs deploy 0.9123 |
 | 75 | 06-22 | aug_randaugment_deploy | F: RandAugment num_ops=2 (shadow-safe pool) | corrected | — | 🔵 running (user-revived) — gate vs deploy 0.9123 |
-| 76 | 06-22 | fm_sam2_rgb | E: SAM2/Hiera foundation encoder, RGB-only | corrected | — | 🔵 running — gate vs EffB5-RGB ~0.830 (foundation-helps-RGB?) + EffB5+NDVI 0.9123 |
+| 76 | 06-22 | fm_sam2_rgb | E: SAM2/Hiera foundation encoder, RGB-only | corrected | **0.590** | 🔵 running (~ep90) — **non-competitive** (≪ EffB5-RGB 0.830); hierarchical Hiera features weak for RTS |
+| 77 | 06-22 | **phase4_fm_dinov3_ndvi** | D/E: web-DINOv3+NDVI (fair foundation test) | corrected | **0.9120** | ✅ **ties EffB5+NDVI 0.9123** (best_epoch 40) — generic web foundation is NOT the lever once NDVI is added |
+| 78 | 06-22 | aug_mixup_deploy | F: mixup screen | corrected | 0.9028 | ✅ Δ−0.0095 → no-win (mixing-aug family now 4/4 struck out) |
+| 79 | 06-22 | aug_randaugment_deploy | F: RandAugment (shadow-safe pool) | corrected | 0.9140 | 🔵 running (~ep55) — best-so-far Δ+0.0017 (within noise; ≪ G) |
+| 80 | 06-22 | **aug_trivialaugment_deploy** | F: TrivialAugment (shadow-safe pool) | corrected | **0.9226** | 🔵 running (~ep55) — best-so-far **Δ+0.0103, just under G=0.0112** → best aug arm; watch for a seed-confirm trigger |
+| 81 | 06-22 | **fm_dinov3sat_l_rgb** | E: satellite-DINOv3 ViT-L (SAT-493M), RGB-only | corrected | **0.9187** | 🔵 running (~ep35, climbing) — **≈/> deploy 0.9123 on RGB-ONLY** → the live encoder bet; sat-native norm |
+| 82 | 06-22 | fm_dinov3sat_l_ndvi | E: satellite-DINOv3 ViT-L + NDVI | corrected | 0.813 | 🔵 running (~ep25, early) — NDVI fused via patch-embed expansion; too early to read |
+| 83 | 06-22 | fm_dinov3_rgb_imagenet | E control: web-DINOv3 RGB + native ImageNet norm | corrected | 0.884 | 🔵 running (~ep35) — de-confounds norm: ImageNet-norm 0.884 > z-score 0.873 → norm matters; still ≪ sat ViT-L |
+| 84 | 06-22 | ❌ fm_dinov3sat_7b_frozen | E: satellite-DINOv3 7B frozen linear-probe | corrected | 0.498 (peak) | ❌ **killed** — diverged (constant frozen_lr=1e-3, no anneal; val 0.498→0.0028) AND non-competitive; frozen sat-7B features need fine-tuning |
+| 85 | 06-22 | ablation_noignore_ndvi_seed42/43/44 | C: **ignore-region ablation** (train-only, no manual ignore) | corrected | — | 🔵 running (ep10) — RGB+NDVI deploy recipe on ignore-free train labels (255→true class; 99.94% →bg); gate vs 0.9123 to prove ignore polygons help |
 
 ---
+
+## Working branches & worktrees (active, not yet merged to `main`)
+
+The 8-GPU runs mount the **`main`** working tree at `/app`, so in-flight work lives in **isolated git
+worktrees** under `/mnt/outputs/worktrees/` to avoid disturbing them. Active as of 2026-06-22 PM:
+
+| Branch | Worktree path | Contents | Status |
+|--------|--------------|----------|--------|
+| `ablation/no-ignore-regions` | `/mnt/outputs/worktrees/no-ignore-ablation` | `scripts/regenerate_labels_no_ignore.py` + `configs/ablation_noignore_ndvi_seed{42,43,44}.yaml`; hybrid train-only labels at `data_local/labels_noignore_train/` | 3-seed ablation running (rows #85) |
+| `report/overhaul` | `/mnt/outputs/worktrees/report` | `scripts/build_report.py` overhaul (per-family learnings, locked-decisions, dashboard) + this ledger update | ready to PR |
+| **PR #42** (open, not merged) | — | sat-DINOv3 configs (`fm_dinov3sat_*`), web-DINOv3 ImageNet control, `train.py` EMA-on-frozen guard, SAM2 path, RandAug/TrivialAug | configs already launched (live in container memory; files not on `main` — **merge needed before any resume**) |
+
+> ⚠️ **PR #42 caveat:** the running sat-DINOv3 / aug / SAM2 jobs loaded their configs at launch; those config
+> files are **not on `main`** (PR #42 unmerged). A resume of any of these would fail until #42 lands. Reconcile
+> PR #42's `train.py` with PR #43's at merge.
 
 ## Queued (configs ready, awaiting a free GPU)
 
@@ -126,7 +150,9 @@ Plan: `.claude/plans/elegant-exploring-lemur.md`. Family scheme (replacing the o
 E (UNet++/EffB5 — decoders lose) · F (drop-RandomScale; keep photometric+CLAHE) · G (default sampling) ·
 I (v2 recipe 3-seed mean **0.9123**, spread 0.907–0.916; pending DINOv3 fair test). Infra: `base_v2_fast` stop-fix · bootstrap metric · gate policy (mean Δ≥G **and** 3-seed sign-consistency).
 
-**🔵 In-progress (running):** **DINOv3+NDVI** (ep47/~120, slow ViT — the long pole) · **SAM2/Hiera RGB** (foundation, built 06-22) · **TrivialAugment** + **RandAugment** (shadow-safe pool, user-revived 06-22) · mixup (finishing) · F3/F5 finishing (verdict already set: lose to F0).
+**🔵 In-progress (running):** **sat-DINOv3 ViT-L RGB** (0.9187 @ep35, climbing — the live encoder bet) + **ViT-L+NDVI** (early) + **web-DINOv3 ImageNet-norm control** · **TrivialAugment** (0.9226, best aug arm, near-gate) + **RandAugment** (0.9140, tie) · **ignore-region ablation 3-seed** (train-only, gate vs 0.9123). On GPU6/7 after the 7B kill.
+
+**✅ Foundation-encoder verdict landing (E):** web-DINOv3+NDVI **0.9120 = ties** EffB5+NDVI 0.9123 → generic web foundation is **not the lever** once NDVI is added. SAM2/Hiera RGB **0.590 = non-competitive**. 7B-frozen probe **killed** (diverged + non-competitive). The **only** remaining encoder hope is the **satellite-pretrained ViT-L** (0.9187 RGB-only, climbing); if it beats 0.9123 with a seed-confirm, it reopens the E lock — else UNet++/EffB5 stays.
 
 **✅ Screens landed 06-22 (all no-win vs deploy 0.9123, single-seed — none earns a seed-confirm):** EffB3 0.9050 (Δ−0.007) · copy-paste 0.8930 (Δ−0.019) · mosaic 0.9069 (Δ−0.005) · cutmix 0.9014 (Δ−0.011). **Mixing-aug family (F) struck out** (4/4 no-win — consistent with the representation-limited, not regularization-limited, diagnosis). RandAug/TrivialAug were briefly deprioritized on this evidence but **user revived them** → now running as the auto-policy angle (distinct from the mixing arms).
 

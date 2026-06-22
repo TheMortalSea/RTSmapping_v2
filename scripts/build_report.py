@@ -544,7 +544,7 @@ FAMILY_LEARNINGS = [
                   "(Δ−0.007, no-win). web-DINOv3+NDVI ties EffB5+NDVI (~0.912) → generic foundation is "
                   "not the lever. <strong>Satellite DINOv3 ViT-L (SAT-493M) fine-tuned reached 0.9187 @ "
                   "ep30 (climbing)</strong>; the frozen 7B probe was non-competitive (best 0.498) and "
-                  "diverged (constant frozen_lr) → killed. SAM2/Hiera RGB still running."),
+                  "diverged (constant frozen_lr) → killed. SAM2/Hiera RGB non-competitive (0.59)."),
     dict(id="F", name="Augmentation", status="running",
          learned="Augmentation is NOT the plateau-breaker (the third pillar of the representation-limited "
                  "diagnosis). Photometric aug genuinely helps and must be kept; downscale (RandomScale) "
