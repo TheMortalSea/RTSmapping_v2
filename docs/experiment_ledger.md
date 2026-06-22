@@ -100,8 +100,9 @@ _Last refreshed: 2026-06-22 (PM) — v2 final-lock 3-seed mean **0.9123**; greed
 | 76 | 06-22 | fm_sam2_rgb | E: SAM2/Hiera foundation encoder, RGB-only | corrected | **0.590** | 🔵 running (~ep90) — **non-competitive** (≪ EffB5-RGB 0.830); hierarchical Hiera features weak for RTS |
 | 77 | 06-22 | **phase4_fm_dinov3_ndvi** | D/E: web-DINOv3+NDVI (fair foundation test) | corrected | **0.9120** | ✅ **ties EffB5+NDVI 0.9123** (best_epoch 40) — generic web foundation is NOT the lever once NDVI is added |
 | 78 | 06-22 | aug_mixup_deploy | F: mixup screen | corrected | 0.9028 | ✅ Δ−0.0095 → no-win (mixing-aug family now 4/4 struck out) |
-| 79 | 06-22 | aug_randaugment_deploy | F: RandAugment (shadow-safe pool) | corrected | 0.9140 | 🔵 running (~ep55) — best-so-far Δ+0.0017 (within noise; ≪ G) |
-| 80 | 06-22 | **aug_trivialaugment_deploy** | F: TrivialAugment (shadow-safe pool) | corrected | **0.9226** | 🔵 running (~ep55) — best-so-far **Δ+0.0103, just under G=0.0112** → best aug arm; watch for a seed-confirm trigger |
+| 79 | 06-22 | aug_randaugment_deploy | F: RandAugment (shadow-safe pool) | corrected | 0.9089 | ✅ Δ−0.0034 → no-win (best_smoothed; peak 0.914 was a single-epoch tail) |
+| 80 | 06-22 | **aug_trivialaugment_deploy** | F: TrivialAugment (shadow-safe pool) | corrected | **0.9167** | ✅ **Δ+0.0045** (best_smoothed) → best aug arm but **below G=0.0112** → 3-seed confirm launched (seed43/44 on GPU0/1) to close F: noise or small real gain? |
+| 80b | 06-22 | aug_trivialaugment_deploy_seed43/44 | F: TrivialAugment seed-confirm | corrected | — | 🔵 running (GPU0/1, from resolved config) — sign-consistency test; even 3/3 positive is sub-gate (can't lock), so this is F-closure not a candidate |
 | 81 | 06-22 | **fm_dinov3sat_l_rgb** | E: satellite-DINOv3 ViT-L (SAT-493M), RGB-only | corrected | **0.9187** | 🔵 running (~ep35, climbing) — **≈/> deploy 0.9123 on RGB-ONLY** → the live encoder bet; sat-native norm |
 | 82 | 06-22 | fm_dinov3sat_l_ndvi | E: satellite-DINOv3 ViT-L + NDVI | corrected | 0.813 | 🔵 running (~ep25, early) — NDVI fused via patch-embed expansion; too early to read |
 | 83 | 06-22 | fm_dinov3_rgb_imagenet | E control: web-DINOv3 RGB + native ImageNet norm | corrected | 0.884 | 🔵 running (~ep35) — de-confounds norm: ImageNet-norm 0.884 > z-score 0.873 → norm matters; still ≪ sat ViT-L |
