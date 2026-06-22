@@ -105,7 +105,7 @@ gdf_polygons["ECO_NAME"] = joined["ECO_NAME"].values
 
 missing = gdf_polygons["ECO_NAME"].isna()
 if missing.any():
-    region_tree = STRtree(gdf_regions_work.geometry.centroid.values)
+    region_tree = STRtree(gdf_regions_work.geometry.values)
     for idx in gdf_polygons[missing].index:
         nearest_i = region_tree.nearest(gdf_polygons.loc[idx, "geometry"].centroid)
         gdf_polygons.at[idx, "ECO_NAME"] = gdf_regions_work.iloc[nearest_i]["ECO_NAME"]
@@ -358,7 +358,7 @@ def process_quad_group(task_group: dict, work_dir: str, current_count_fn):
 # a Transformer is non-trivial — it involves CRS parsing and proj network
 # lookups. Building it once at module level and reusing it costs nothing.
 
-_region_tree            = STRtree(gdf_regions_work.geometry.centroid.values)
+_region_tree = STRtree(gdf_regions_work.geometry.values)
 _wgs84_to_working_tf    = pyproj.Transformer.from_crs(4326, WORKING_CRS, always_xy=True)
 
 def find_nearest_region(centroid_lon: float, centroid_lat: float) -> str:
@@ -470,7 +470,7 @@ finally:
             os.remove(stranded_file)
         except Exception:
             pass
-        
+
 # Write metadata -------------------------------------------------
 
 if metadata_rows:

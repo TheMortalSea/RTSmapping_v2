@@ -88,7 +88,7 @@ gdf_positive = gpd.read_file(positive_local)
 gdf_ignore   = gpd.read_file(ignore_local)
 gdf_regions  = gpd.read_file(regions_local)
 
-# --- Load tile boundaries --------------------------------------------------
+# Load tile boundaries --------------------------------------------------
 
 gdf_grid = gpd.read_file(tile_boundaries_local)
 
@@ -111,7 +111,7 @@ if TEST_LIMIT:
     print(f"TEST_LIMIT={TEST_LIMIT}: using first {TEST_LIMIT} selected tiles")
 
 
-# --- Blob path construction ------------------------------------------------
+# Blob path construction ------------------------------------------------
 # Name format: tile_{col}_{row}_c{n}_r{n}  e.g. tile_91_1573_c1_r6
 # Produces:    {INPUT_PREFIX}/{col}/{row}/{MOSAIC_NAME}_{col}-{row}_quad.tif
 
@@ -126,23 +126,22 @@ def name_to_blob(name: str) -> str | None:
     return f"{INPUT_PREFIX}/{col}/{row}/{filename}"
 
 
-# --- Ecoregions ------------------------------------------------------------
+# Ecoregions ------------------------------------------------------------
 
 if "ECO_NAME" not in gdf_regions.columns:
     print(f"ERROR: 'ECO_NAME' column not found in regions GeoJSON. Available: {list(gdf_regions.columns)}")
     sys.exit(1)
 
 gdf_regions_work = gdf_regions.to_crs(WORKING_CRS)
-_region_tree     = STRtree(gdf_regions_work.geometry.centroid.values)
-
+_region_tree         = STRtree(gdf_regions_work.geometry.values)
+_wgs84_to_working    = pyproj.Transformer.from_crs(4326, WORKING_CRS, always_xy=True)
 
 def find_nearest_region(centroid_lon: float, centroid_lat: float) -> str:
-    projector = pyproj.Transformer.from_crs(4326, WORKING_CRS, always_xy=True).transform
-    pt_work   = shapely_transform(projector, Point(centroid_lon, centroid_lat))
+    pt_work = shapely_transform(_wgs84_to_working.transform, Point(centroid_lon, centroid_lat))
     return gdf_regions_work.iloc[_region_tree.nearest(pt_work)]["ECO_NAME"]
 
 
-# --- Build tasks -----------------------------------------------------------
+# Build tasks -----------------------------------------------------------
 
 tasks          = []
 bad_name_count = 0
@@ -230,8 +229,7 @@ def make_tile_uid(lat: float, lon: float, precision: int = 12) -> str:
     return "".join(result)
 
 
-# --- Worker ----------------------------------------------------------------
-
+# Worker ------------------------------------------
 def worker_init(positive_path, ignore_path, bucket_name):
     global _gdf_positive, _gdf_ignore, _gcs_client, _gcs_bucket
     _gdf_positive = gpd.read_file(positive_path)
@@ -359,8 +357,7 @@ def process_single_tile(task: dict, work_dir: str, footprint_crs_epsg: int):
             os.remove(local_input)
 
 
-# --- Run -------------------------------------------------------------------
-
+# Run -------------------------------------------------------------------
 footprint_crs_epsg = gdf_selected.crs.to_epsg()
 print(f"Processing {len(tasks_to_run)} tiles with {MAX_WORKERS} workers\n")
 
