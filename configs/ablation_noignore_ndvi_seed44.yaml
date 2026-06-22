@@ -1,0 +1,23 @@
+# Ablation: locked RGB+NDVI deploy recipe, TRAIN-ONLY labels regenerated WITHOUT the
+# manual ignore-region polygons (255 reclassified to true class via the positive RTS-truth
+# union: 1 if delineated, else 0 — empirically 99.94% -> background). Val/test labels are
+# byte-identical to the deploy baseline, so val_realistic_pr_auc_geomean is directly
+# comparable to deploy_v1_ndvi (3-seed mean 0.9123; seed44 0.9144). Only `labels_dir`
+# differs from deploy_v1_ndvi_seed44. Tests whether the manual ignore masks HELP learning.
+base: base_v2_fast.yaml
+seed: 44
+data:
+  data_root: /outputs/v1.0/data_local
+  labels_dir: labels_noignore_train
+  normalization_stats_path: /outputs/v1.0/staging/v1_splits/normalization_stats_ndvi.json
+channels:
+  rgb: true
+  extra:
+    - {name: ndvi, band: 0}
+loss:
+  boundary_handling: ignore
+  boundary_ignore_width: 2
+augmentation:
+  multi_scale: {p: 0.0}
+mlflow:
+  run_name: ablation_noignore_ndvi_seed44
