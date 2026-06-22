@@ -93,15 +93,19 @@ _Last refreshed: 2026-06-22 — v2 final-lock 3-seed mean **0.9123**; greedy COM
 | 69 | 06-21 | aug_copypaste_deploy | F: copy-paste screen | corrected | 0.8930 | ✅ Δ−0.0192 → **worst aug arm** (instance-paste breaks spatial-context/shadow cues) |
 | 70 | 06-21 | aug_mosaic_deploy | F: mosaic screen | corrected | 0.9069 | ✅ Δ−0.0054 → no-win (within deploy seed spread) |
 | 71 | 06-21 | aug_cutmix_deploy | F: cutmix screen | corrected | 0.9014 | ✅ Δ−0.0109 → no-win |
-| 72 | 06-22 | aug_mixup_deploy | F: mixup screen | corrected | — | 🔵 running (ep71, vs deploy 0.9123) |
-| 73 | 06-22 | phase4_fm_dinov3_ndvi | D/E: DINOv3+NDVI (fair foundation test) | corrected | — | 🔵 running (ep47/~120; slow ViT) — gate vs EffB5+NDVI 0.9123 |
+| 72 | 06-22 | aug_mixup_deploy | F: mixup screen | corrected | 0.9028 | ✅ Δ−0.0095 → no-win — **completes mixing-aug family at 4/4 no-win** |
+| 73 | 06-22 | phase4_fm_dinov3_ndvi | D/E: web DINOv3+NDVI (fair foundation test) | corrected | 0.9120 | ✅ **ties EffB5+NDVI 0.9123 (Δ−0.0003)** — the DINOv3-RGB edge (0.873>0.830) **vanishes once NDVI is added**; web foundation ≯ EffB5 with NDVI |
 | 74 | 06-22 | aug_trivialaugment_deploy | F: TrivialAugment (shadow-safe pool) | corrected | — | 🔵 running (user-revived) — gate vs deploy 0.9123 |
 | 75 | 06-22 | aug_randaugment_deploy | F: RandAugment num_ops=2 (shadow-safe pool) | corrected | — | 🔵 running (user-revived) — gate vs deploy 0.9123 |
 | 76 | 06-22 | fm_sam2_rgb | E: SAM2/Hiera foundation encoder, RGB-only | corrected | — | 🔵 running — gate vs EffB5-RGB ~0.830 (foundation-helps-RGB?) + EffB5+NDVI 0.9123 |
 | 77 | 06-22 | fm_dinov3sat_l_rgb | E: **DINOv3 SATELLITE** ViT-L (SAT-493M), fine-tuned, native sat-norm | corrected | — | 🔵 running (ep4, ~132s/ep) — gate vs web DINOv3-RGB 0.873 + EffB5+NDVI 0.9123 |
 | 78 | 06-22 | fm_dinov3sat_7b_frozen | E: DINOv3 SATELLITE ViT-7B (6.7B), frozen linear-probe | corrected | — | 🔵 running (frozen OK, no OOM @bs4) — feature-quality upper-bound |
+| 79 | 06-22 | fm_dinov3_rgb_imagenet | E: web DINOv3-RGB + native ImageNet norm (control) | corrected | — | 🔵 running (GPU5 backfill) — de-confounds sat-vs-web (web with its native norm vs the 0.873 z-score run) |
+| 80 | 06-22 | fm_dinov3sat_l_ndvi | E: DINOv3 SATELLITE ViT-L + NDVI | corrected | — | 🔵 running (GPU3 backfill) — the deployment-relevant foundation test: gate vs EffB5+NDVI 0.9123 + web DINOv3+NDVI 0.912 |
 
-> **Catch (2026-06-22, user):** our DINOv3 was the **web** model (`vit_base_patch16_dinov3`, LVD-1689M), fed per-dataset z-score — NOT the **satellite** SAT-493M variant. Runs #77/#78 test the satellite encoder with its **native** norm (mean (0.430,0.411,0.296)/std (0.213,0.156,0.143)). Norm confound vs the web DINOv3 runs (which used per-dataset z-score) noted → sat-vs-web is directional.
+> **Catch (2026-06-22, user):** our DINOv3 was the **web** model (`vit_base_patch16_dinov3`, LVD-1689M), fed per-dataset z-score — NOT the **satellite** SAT-493M variant. Runs #77/#78/#80 test the satellite encoder with its **native** norm (mean (0.430,0.411,0.296)/std (0.213,0.156,0.143)); #79 is the web+ImageNet-norm control. Norm confound vs the earlier web DINOv3 runs (per-dataset z-score) noted → sat-vs-web is directional until #79 lands.
+>
+> **Foundation verdict forming (2026-06-22):** web DINOv3+NDVI **0.912 ties EffB5+NDVI 0.9123** — the foundation encoder's RGB edge disappears once NDVI is added, so a generic web foundation encoder is **not** the lever. The open bet is whether a **satellite-domain** encoder (sat ViT-L ± NDVI, #77/#80) or the 7B (#78) breaks the tie.
 
 ---
 
