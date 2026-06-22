@@ -44,7 +44,7 @@ def _auto_policy_pool(magnitude: float) -> list:
                              val_shift_limit=int(20 * m), p=1.0),
         A.RandomGamma(gamma_limit=(int(100 - 40 * m), int(100 + 40 * m)), p=1.0),
         A.Sharpen(alpha=(0.1, 0.1 + 0.4 * m), lightness=(0.8, 1.2), p=1.0),
-        A.GaussianBlur(blur_limit=(3, 3 + 2 * int(round(m))), p=1.0),
+        A.GaussianBlur(blur_limit=(3, 3 + 2 * max(1, round(2 * m))), p=1.0),  # 5px@m=.5 … 7px@m=1
         A.CLAHE(clip_limit=max(1.0, 4.0 * m), tile_grid_size=(8, 8), p=1.0),
     ]
 
@@ -145,7 +145,7 @@ def build_train_transforms(
     pad_fill_mask = ignore_index if ms.get("pad_mask_ignore", False) else 0
 
     # Color stage: hand-tuned ops (default) OR a shadow-safe auto-policy (RandAug/TrivialAug).
-    color_stage = _build_color_stage(col, aug_cfg.get("auto_policy", {}))
+    color_stage = _build_color_stage(col, aug_cfg.get("auto_policy") or {})
 
     geometric_stage = A.Compose(
         [

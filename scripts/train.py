@@ -680,6 +680,20 @@ def _print_artifact_summary(cfg: dict, out_dir: Path, run_id: str) -> None:
     logger.info("\n".join(lines))
 
 
+def _deploy_state_dict(model, ema) -> dict:
+    """Weights for the best-checkpoint deployment save.
+
+    EMA shadow weights when EMA exists (post-unfreeze), else live weights. The live-weight
+    path covers a best reached during the freeze phase and a permanently-frozen-encoder
+    linear-probe (``freeze_backbone_epochs ≥ max_epochs``), which would otherwise never
+    write a deployment checkpoint.
+    """
+    if ema is not None:
+        with ema.swap_in(model):
+            return {k: v.detach().clone() for k, v in model.state_dict().items()}
+    return {k: v.detach().clone() for k, v in model.state_dict().items()}
+
+
 def main() -> int:
     args = _parse_args()
     cfg = load_config(args.config)
@@ -880,15 +894,8 @@ def main() -> int:
             is_best = es.update(epoch, val_metrics)
             smoothed = es.smoothed_value()
             if ckpt_mgr.update_best(smoothed):
-                # Save deployment checkpoint. EMA weights when available (post-unfreeze);
-                # else live weights — covers a best during the freeze phase and a
-                # permanently-frozen-encoder linear-probe (freeze_backbone_epochs ≥ max_epochs),
-                # which would otherwise never write a deployment checkpoint.
-                if ema is not None:
-                    with ema.swap_in(model):
-                        deploy_state = {k: v.detach().clone() for k, v in model.state_dict().items()}
-                else:
-                    deploy_state = {k: v.detach().clone() for k, v in model.state_dict().items()}
+                # EMA weights post-unfreeze, else live weights (freeze phase / frozen probe).
+                deploy_state = _deploy_state_dict(model, ema)
                 trained_with = ckpt_mod.TrainedWith(
                     precision=precision.effective,
                     seed=int(cfg["seed"]),

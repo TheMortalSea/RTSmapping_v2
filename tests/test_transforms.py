@@ -131,20 +131,34 @@ def _auto_cfg(mode: str, **kw) -> dict:
     return cfg
 
 
+def _color_op_names(transform) -> list[str]:
+    """Op type names of a TrainTransform's color stage (the locked-baseline contract)."""
+    return [type(t).__name__ for t in transform._color.transforms]
+
+
 def test_auto_policy_default_none_is_handtuned():
-    """No auto_policy key → hand-tuned color stage (locked baseline), runs unchanged."""
-    rgb, extra, mask = _make_inputs(seed=1)
+    """No auto_policy key → color stage is EXACTLY the hand-tuned baseline ops (bit-identical
+    contract), not an auto-policy. Asserts structure, not just shape."""
     cfg = _aug_cfg(color_p=1.0, geo_p=0.0)
     assert "auto_policy" not in cfg
-    out = build_train_transforms(tile_size=64, aug_cfg=cfg)(image=rgb, extra=extra, mask=mask)
-    assert out["image"].shape == rgb.shape
+    t = build_train_transforms(tile_size=64, aug_cfg=cfg)
+    # The locked baseline color stage: brightness/contrast, hue/sat, gauss-noise, CLAHE — in order.
+    assert _color_op_names(t) == [
+        "RandomBrightnessContrast", "HueSaturationValue", "GaussNoise", "CLAHE",
+    ]
+    # And an explicit-null auto_policy must behave identically (defensive `or {}` guard).
+    cfg_null = _aug_cfg(color_p=1.0, geo_p=0.0); cfg_null["auto_policy"] = None
+    assert _color_op_names(build_train_transforms(tile_size=64, aug_cfg=cfg_null)) == _color_op_names(t)
+    rgb, extra, mask = _make_inputs(seed=1)
+    out = t(image=rgb, extra=extra, mask=mask)
     np.testing.assert_array_equal(out["extra"], extra)  # color stage never touches EXTRA
 
 
 def test_trivialaugment_runs_preserves_shape_and_mask():
     rgb, extra, mask = _make_inputs(seed=2)
-    out = build_train_transforms(tile_size=64, aug_cfg=_auto_cfg("trivialaugment", magnitude=1.0))(
-        image=rgb, extra=extra, mask=mask)
+    t = build_train_transforms(tile_size=64, aug_cfg=_auto_cfg("trivialaugment", magnitude=1.0))
+    assert _color_op_names(t) == ["OneOf"]   # exactly one random op per image
+    out = t(image=rgb, extra=extra, mask=mask)
     assert out["image"].shape == rgb.shape and out["image"].dtype == rgb.dtype
     np.testing.assert_array_equal(out["mask"], mask)      # photometric ops never touch the mask
     np.testing.assert_array_equal(out["extra"], extra)    # nor EXTRA
@@ -152,8 +166,9 @@ def test_trivialaugment_runs_preserves_shape_and_mask():
 
 def test_randaugment_runs_with_num_ops():
     rgb, extra, mask = _make_inputs(seed=3)
-    out = build_train_transforms(tile_size=64, aug_cfg=_auto_cfg("randaugment", num_ops=2, magnitude=0.5))(
-        image=rgb, extra=extra, mask=mask)
+    t = build_train_transforms(tile_size=64, aug_cfg=_auto_cfg("randaugment", num_ops=2, magnitude=0.5))
+    assert _color_op_names(t) == ["SomeOf"]  # N random ops per image
+    out = t(image=rgb, extra=extra, mask=mask)
     assert out["image"].shape == rgb.shape
     np.testing.assert_array_equal(out["mask"], mask)
 

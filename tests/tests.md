@@ -168,11 +168,20 @@ Sample-mixing augs (`data/mixing.py`, family F). Pure array ops; synthetic tiles
 | `test_extra_none_path_still_works` | RGB-only call path (no `extra` kwarg) preserved through the split | real — backward-compat for baseline RGB-only |
 | `test_pad_mask_ignore_default_is_background` | Default RandomScale pad border in the mask is background (0) — documents the baked-in baseline | real — Stage 3B A/B control |
 | `test_pad_mask_ignore_true_labels_border_ignore` | `multi_scale.pad_mask_ignore: true` labels the pad border ignore (255), not background | real — Stage 3B pad-fix (albumentations 2.x `fill_mask`) |
-| `test_auto_policy_default_none_is_handtuned` | No `auto_policy` block ⇒ hand-tuned color stage (locked baseline), EXTRA untouched | real — backward-compat for the auto-policy gate |
-| `test_trivialaugment_runs_preserves_shape_and_mask` | `auto_policy.mode=trivialaugment` runs; shape/dtype preserved; mask + EXTRA bit-identical (photometric never touches them) | real — family-F auto-policy contract |
-| `test_randaugment_runs_with_num_ops` | `auto_policy.mode=randaugment, num_ops=2` runs; shape preserved; mask untouched | real — family-F auto-policy contract |
+| `test_auto_policy_default_none_is_handtuned` | No `auto_policy` (and explicit-null) ⇒ color stage is **exactly** the baseline op list `[RandomBrightnessContrast, HueSaturationValue, GaussNoise, CLAHE]` (structural bit-identity), EXTRA untouched | real — the locked-baseline contract |
+| `test_trivialaugment_runs_preserves_shape_and_mask` | `mode=trivialaugment` → color stage is exactly `[OneOf]`; runs; shape/dtype preserved; mask + EXTRA untouched | real — family-F auto-policy contract |
+| `test_randaugment_runs_with_num_ops` | `mode=randaugment, num_ops=2` → color stage is exactly `[SomeOf]`; runs; mask untouched | real — family-F auto-policy contract |
 | `test_auto_policy_pool_excludes_shadow_scramblers` | op pool omits solarize/invert/posterize/equalize/channel-shuffle/grayscale (shadow-cue safety) | real — the RTS shadow-safety guard |
 | `test_auto_policy_invalid_mode_raises` | unknown `auto_policy.mode` → `ValueError` | shallow |
+
+### [test_train_helpers.py](test_train_helpers.py)
+
+Module-level helpers in `scripts/train.py` (CPU, no training loop). Added 2026-06-22.
+
+| Test | Checks | Strictness |
+|---|---|---|
+| `test_deploy_state_dict_live_weights_when_no_ema` | `_deploy_state_dict(model, ema=None)` → live weights (the freeze-phase / permanently-frozen-probe path that would otherwise never write a deployment checkpoint) | real — guards the frozen-encoder checkpoint fix |
+| `test_deploy_state_dict_uses_ema_and_restores_model` | with EMA present → captures swapped-in EMA weights and restores the live model after | real — EMA-path superset guarantee |
 
 ### [test_models.py](test_models.py)
 
