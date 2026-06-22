@@ -108,3 +108,20 @@ def test_sam2_rejects_extra_channels():
     import pytest
     with pytest.raises(NotImplementedError):
         FoundationSegmenter(SAM2_BACKBONE, pretrained=False, in_channels=4)
+
+
+# --- DINOv3 satellite (SAT-493M) ViT-L (family E) ---
+
+DINOV3_SAT_L = "vit_large_patch16_dinov3.sat493m"
+
+
+def test_dinov3_sat_vitl_forward_shape():
+    """Satellite DINOv3 ViT-L builds via the isotropic-ViT path (forward_intermediates) →
+    (B,1,H,W). It's a plain ViT (NOT hierarchical) and exposes .blocks so LP-FT + LLRD apply
+    (unlike the SAM2/Hiera path). Same code path as the web ViT-B; only the weights differ."""
+    model = FoundationSegmenter(DINOV3_SAT_L, pretrained=False).eval()
+    assert not model._hierarchical and hasattr(model.encoder, "blocks")
+    x = torch.zeros(1, 3, 64, 64)
+    with torch.no_grad():
+        y = model(x)
+    assert y.shape == (1, 1, 64, 64)

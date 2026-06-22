@@ -879,17 +879,23 @@ def main() -> int:
             # Early stopping + best-checkpoint tracking.
             is_best = es.update(epoch, val_metrics)
             smoothed = es.smoothed_value()
-            if ckpt_mgr.update_best(smoothed) and ema is not None:
-                # Save deployment checkpoint using EMA weights.
-                with ema.swap_in(model):
-                    ema_state = {k: v.detach().clone() for k, v in model.state_dict().items()}
+            if ckpt_mgr.update_best(smoothed):
+                # Save deployment checkpoint. EMA weights when available (post-unfreeze);
+                # else live weights — covers a best during the freeze phase and a
+                # permanently-frozen-encoder linear-probe (freeze_backbone_epochs ≥ max_epochs),
+                # which would otherwise never write a deployment checkpoint.
+                if ema is not None:
+                    with ema.swap_in(model):
+                        deploy_state = {k: v.detach().clone() for k, v in model.state_dict().items()}
+                else:
+                    deploy_state = {k: v.detach().clone() for k, v in model.state_dict().items()}
                 trained_with = ckpt_mod.TrainedWith(
                     precision=precision.effective,
                     seed=int(cfg["seed"]),
                     config_sha=mlflow_utils.config_sha(cfg),
                 )
                 ckpt_mgr.save_deployment(
-                    ema_state_dict=ema_state,
+                    ema_state_dict=deploy_state,
                     epoch=epoch,
                     best_metric=smoothed,
                     channel_names=["R", "G", "B"] + [c.name for c in data["extra_channels"]],

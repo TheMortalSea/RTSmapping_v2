@@ -213,6 +213,7 @@ Forward-path tests for `models/foundation.py` (FoundationSegmenter: DINOv3/ViT e
 | `test_sam2_hierarchical_forward_shape` | SAM2/Hiera (`sam2_hiera_tiny`): native {/4,/8,/16,/32} pyramid → 1×1 proj (4) → FPN → `(B,1,H,W)` | real — guards the hierarchical foundation branch (2026-06-22) |
 | `test_sam2_exposes_encoder_and_head` | `.encoder.parameters()` (LP-FT/freeze) + `.segmentation_head[0]` bias-init compatible | real — integration hooks for the no-LLRD path |
 | `test_sam2_rejects_extra_channels` | SAM2/Hiera path is RGB-only (stem not exposed) → `in_channels≠3` raises `NotImplementedError` | shallow — guard |
+| `test_dinov3_sat_vitl_forward_shape` | Satellite DINOv3 ViT-L (`vit_large_patch16_dinov3.sat493m`) builds via the isotropic-ViT path → `(B,1,H,W)`; non-hierarchical + has `.blocks` (LP-FT/LLRD apply) | real — guards the satellite-DINOv3 branch (2026-06-22) |
 
 ### [test_losses.py](test_losses.py)
 
