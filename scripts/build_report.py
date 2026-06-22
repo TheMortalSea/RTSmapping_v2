@@ -490,6 +490,146 @@ GATE_G = max(0.01, 2 * SIGMA0)        # 0.0112 — experiments.md §1.4 (winner 
 GATE_RATIOS = "[5, 10, 20]"
 PCT_TO_NPOS = {25: 328, 50: 656, 75: 983, 100: 1311}   # v1.0 train positives = 1311
 
+# v2 deploy reference (corrected leakage-free split). 3-seed mean of the locked recipe
+# (RGB+NDVI · F0 · focal·ignore_w2 · default sampling · aug−RandomScale · base_v2_fast).
+# SSoT: docs/experiment_ledger.md row #64. Corrected-split σ ≈ 0.012 (~2× the leaky σ₀).
+DEPLOY_MEAN = 0.9123
+DEPLOY_SEEDS = (0.9144, 0.9068, 0.9156)
+SIGMA_CORRECTED = 0.012
+
+
+# ---------------------------------------------------------------------------
+# Curated, ledger-sourced content (SSoT = docs/experiment_ledger.md).
+# These mirror the ledger the same way MU0/SIGMA0 mirror docs/phase0_baseline.md.
+# Update here whenever the ledger's verdicts change. Family scheme A–K.
+# ---------------------------------------------------------------------------
+
+# Per-family "what we learned" — the experiment-group narrative. Each entry:
+#   id, name, status (badge), learned (the headline insight), evidence (deciding runs/numbers).
+FAMILY_LEARNINGS = [
+    dict(id="A", name="Baseline & gate", status="done",
+         learned="A reproducible baseline and an honest winner gate were established before any "
+                 "experiment was trusted. Everything downstream is measured against this.",
+         evidence="3-seed baseline μ₀=0.7912 (leaky split); seed std σ₀=0.0056 → gate "
+                  "G=max(2σ₀,0.01)=0.0112. Later re-measured on the corrected split: σ≈0.012 "
+                  "(~2× larger) → a LOCK now needs mean Δ≥G <em>and</em> sign-consistency across 3 seeds."),
+    dict(id="B", name="Data scaling", status="done",
+         learned="More labeled data is NOT the near-term lever — v1.0 is on a data plateau and the "
+                 "model is well-matched to its data (not over-parameterized). This is the first pillar "
+                 "of the central diagnosis: we are representation-limited, not data-volume-limited.",
+         evidence="Data-scaling slope (75→100)/(25→50) is flat; train/val IoU gap ≈0.05 best / 0.17 "
+                  "final (≪0.4). 25%→100%: 0.764→0.790 (leaky). No new labels are coming, so the fixed "
+                  "1.5k positives must be squeezed by representation, not volume."),
+    dict(id="C", name="Loss & boundary", status="done",
+         learned="The win is the BOUNDARY treatment, not the loss function. Focal alone is the loss "
+                 "winner; precision-skewed Tversky collapses the imbalanced gate. Adding a boundary-"
+                 "ignore band is what clears the gate — both loss families pass with it, neither without.",
+         evidence="focal·ignore_w2 = 0.805 (leaky; seed-confirmed 0.805–0.820), tied with compound "
+                  "1:2·ignore_w3 (0.802–0.817); chosen for simplicity. Tversky 2:8 collapsed (0.073). "
+                  "LOCKED: focal + boundary-ignore width 2."),
+    dict(id="D", name="Channels & fusion", status="done",
+         learned="A single well-chosen extra channel (NDVI) is the biggest representation win — and "
+                 "more is not better. Adding further channels or heavier fusion architectures extracts "
+                 "LESS than the simple 4-channel early-stack. The plateau is about signal, not plumbing.",
+         evidence="NDVI-alone 3-seed mean 0.8985 ≫ RGB control 0.830 (+0.07, ≫σ) and > full 8-band "
+                  "0.869. Greedy forward from NDVI added nothing (+se_pca 0.900, +tc 0.900, +se_proto "
+                  "0.898, +nbr 0.856 — none clears G). Heavy fusion LOSES: F3-full ~0.78, F5-full ~0.83, "
+                  "F5-pair ~0.87 (all ≪ NDVI-alone). LOCKED: EXTRA=[NDVI], F0 early channel-stack."),
+    dict(id="E", name="Architecture & encoder", status="running",
+         learned="Capacity is not the lever (consistent with B/F). No CNN decoder beats the dense-skip "
+                 "UNet++, and scaling capacity down (EffB3) or up doesn't help. The open bet is the "
+                 "ENCODER representation: generic web-DINOv3 helps on RGB but its edge vanishes once NDVI "
+                 "is added; a satellite-pretrained encoder is the live candidate.",
+         evidence="UNet++/EffB5 ≥ FPN (0.794 tie) > DeepLabV3+ > PSPNet ≫ MANet (0.621). EffB3 0.9050 "
+                  "(Δ−0.007, no-win). web-DINOv3+NDVI ties EffB5+NDVI (~0.912) → generic foundation is "
+                  "not the lever. <strong>Satellite DINOv3 ViT-L (SAT-493M) fine-tuned reached 0.9187 @ "
+                  "ep30 (climbing)</strong>; the frozen 7B probe was non-competitive (best 0.498) and "
+                  "diverged (constant frozen_lr) → killed. SAM2/Hiera RGB still running."),
+    dict(id="F", name="Augmentation", status="running",
+         learned="Augmentation is NOT the plateau-breaker (the third pillar of the representation-limited "
+                 "diagnosis). Photometric aug genuinely helps and must be kept; downscale (RandomScale) "
+                 "HURTS; and the whole sample-mixing family fails to beat the deploy recipe. Auto-policies "
+                 "are the last aug angle being tested.",
+         evidence="Geometric-only craters to 0.794 (−0.072) → photometric matters; CLAHE/×1.5 within "
+                  "noise → keep, don't strengthen. Drop-RandomScale +0.016, positive in 3/3 seeds → "
+                  "LOCKED drop. Mixing augs all no-win vs deploy 0.9123: copy-paste 0.893 (worst — breaks "
+                  "spatial-context/shadow cues), cutmix 0.901, mosaic 0.907, mixup ~. RandAugment / "
+                  "TrivialAugment (shadow-safe pool) running."),
+    dict(id="G", name="Sampling / curriculum", status="done",
+         learned="Default balanced sampling is sufficient — the curriculum 'win' did not survive seeds.",
+         evidence="Curriculum r20_pf33: 0.894/0.901/0.859 → mean ≈0.885 vs base 0.879 (Δ≈0.006, sign "
+                  "flipped on seed 44) → within noise, REJECTED. Default sampling LOCKED."),
+    dict(id="H", name="Calibration & TTA", status="pending",
+         learned="Not yet run — the inference-time squeeze (temperature + threshold + D4-TTA) is held "
+                 "for the final lock. Scale-TTA is gated on a separate scale-transfer test.",
+         evidence="Required before ship; adopt D4-TTA if ≥1% PR-AUC at ≤0.5% precision cost."),
+    dict(id="I", name="Final lock & test", status="done",
+         learned="The locked v2 recipe's components are additive: boundary-ignore + drop-RandomScale "
+                 "stack cleanly on top of NDVI for the strongest model so far. Test-Realistic is touched "
+                 "exactly once, at the very end.",
+         evidence="Deploy 3-seed 0.9144/0.9068/0.9156 → mean <strong>0.9123</strong> (spread 0.907–0.916), "
+                  "+0.014 over NDVI-alone 0.8985. Re-locks only if a pre-ship screen earns it."),
+    dict(id="J", name="Deploy & inference", status="pending",
+         learned="Deployment target is decided (L4 fleet for the 41.5M-tile pan-Arctic pass); the run "
+                 "happens after the winner locks. Pan-Arctic mapping reads as a QC-assisted candidate map "
+                 "(high recall + filtering), not yet a fully-automated high-precision product.",
+         evidence="us-west1 L4 fleet decided; inference pipeline drafted (PR #19/#23)."),
+    dict(id="K", name="Deferred / discussed", status="pending",
+         learned="Several deeper bets are deliberately deferred to v3 or gated, so they never block the "
+                 "v2 ship: re-stage (+28 pos), hard-negative mining (post first inference), MAE SSL "
+                 "pretraining (end-stage), pseudo-labeling (backup only).",
+         evidence="See the ledger's dropped/discussed table for the full record + the reason each idea "
+                  "isn't in v2 (e.g. SegFormer/EffB7/UNet3+/YOLO/SAM3 all dropped with cause)."),
+]
+
+# The meta-learnings that cut across families — the project's central thesis.
+CROSS_CUTTING = [
+    ("Representation-limited, not capacity / volume / regularization-limited",
+     "The single most important finding, triangulated from three independent families: data scaling is "
+     "a plateau with a well-matched model (B), no bigger/smaller backbone or decoder helps (E), and "
+     "neither heavier regularization nor more augmentation helps (F). So leverage lives in richer "
+     "representation (channels, encoders, SSL) — not in scale or regularization."),
+    ("NDVI is the efficient representation lever — and more is not better",
+     "One channel (NDVI) delivers the bulk of the gain over RGB (+0.07); adding channels, channel-"
+     "attention, or dual-encoder/cross-modal fusion all extract LESS (D). The signal ceiling is reached "
+     "by a simple 4-channel early-stack."),
+    ("The boundary, the downscale, and photometric aug are the cheap, real wins",
+     "Three components stack additively onto NDVI for the deploy recipe: boundary-ignore_w2 (C), "
+     "dropping RandomScale downscale (F, +0.016/3-of-3), and keeping the photometric set (F, geometric-"
+     "only is −0.072)."),
+    ("Foundation encoders: generic helps RGB, but satellite-pretraining is the live bet",
+     "web-DINOv3 beats EffB5 on RGB (+0.043) but the edge vanishes once NDVI is added (ties at ~0.912). "
+     "The remaining encoder bet is a satellite-domain model — sat-DINOv3 ViT-L fine-tuned is at 0.92 and "
+     "climbing (E)."),
+]
+
+# Locked decisions — every locked choice + how it was decided.
+LOCKED_DECISIONS = [
+    ("Normalization", "Per-dataset z-score (Arm A)", "A",
+     "Arm A 0.667 vs B 0.626 / C 0.670 (tie, A kept as default); locked into all phase0c+ configs."),
+    ("Loss", "Focal", "C",
+     "Focal beats Tversky (collapses) and compound 1:2 (near-miss) on the imbalanced gate."),
+    ("Boundary", "Ignore band, width 2", "C",
+     "focal·ignore_w2 0.805 (seed-confirmed 0.805–0.820); the gate-clearing win. Tied w/ compound·w3, "
+     "kept for simplicity (single loss + narrower discarded band)."),
+    ("Decoder / backbone", "UNet++ / EfficientNet-B5", "E",
+     "No smp decoder beats it (FPN ties, MANet collapses); EffB3 capacity-down is −0.007."),
+    ("EXTRA channels", "NDVI only (4-ch RGB+NDVI)", "D",
+     "NDVI 3-seed 0.8985 ≫ RGB 0.830 and > full 8-band 0.869; greedy forward added no channel (all <G)."),
+    ("Fusion", "F0 early channel-stack", "D",
+     "F0/F1/F2 tie; heavy F3/F5 lose (≪ NDVI-alone) → simplest fusion locked, evidence-based."),
+    ("Augmentation — scale", "Drop RandomScale downscale", "F",
+     "3-seed A/B +0.016, positive in all 3 seeds (sign-consistent)."),
+    ("Augmentation — photometric", "Keep photometric set + CLAHE", "F",
+     "Geometric-only is −0.072; dropping CLAHE / ×1.5 are within noise → keep as-is."),
+    ("Sampling", "Default balanced (no curriculum)", "G",
+     "Curriculum r20_pf33 mean Δ≈0.006 with a flipped seed → within noise, rejected."),
+    ("Stop schedule", "base_v2_fast (patience 5, start 45, max 120)", "—",
+     "Gate-neutral (fastcheck 0.8934 ≈ original 0.888); ~2× throughput, best checkpoint unchanged."),
+    ("Deploy recipe (v2)", "RGB+NDVI · F0 · focal·ignore_w2 · default · −RandomScale", "I",
+     "3-seed mean 0.9123 (0.9144/0.9068/0.9156); re-locks only if a pre-ship screen earns it."),
+]
+
 
 def _dedup_latest(runs):
     """Keep the most-recent run per run_name (relaunches create duplicates)."""
@@ -552,16 +692,21 @@ project's single living dashboard — auto-generated from MLflow (<code>{trackin
 <div class='card'>
   <div style='display:flex; gap:2rem; flex-wrap:wrap;'>
     <div><span class='label'>Dataset</span><br><span class='metric'>{ds}</span> <span style='font-size:0.8rem'>{tiles}</span></div>
-    <div><span class='label'>Baseline μ₀</span><br><span class='metric'>{MU0:.4f}</span></div>
+    <div><span class='label'>v2 deploy (corrected, 3-seed)</span><br><span class='metric'>{DEPLOY_MEAN:.4f}</span></div>
+    <div><span class='label'>Baseline μ₀ (leaky)</span><br><span class='metric'>{MU0:.4f}</span></div>
     <div><span class='label'>Gate G = max(2σ₀,0.01)</span><br><span class='metric'>{GATE_G:.3f}</span></div>
-    <div><span class='label'>Current phase</span><br><span class='metric'>Phase 3 → 4</span></div>
+    <div><span class='label'>Stage</span><br><span class='metric'>Pre-ship screens</span></div>
   </div>
-  <p style='margin-top:0.6rem; font-size:0.85rem; color:#555'>A candidate <strong>wins</strong> iff
-  Δ(PR-AUC geomean) vs μ₀ ≥ G <em>and</em> precision@recall0.5 does not regress (experiments.md §1.4).
-  Gate metric = geomean(PR-AUC @ {GATE_RATIOS}); 1:200/1000 deferred to Test-Realistic.</p>
+  <p style='margin-top:0.6rem; font-size:0.85rem; color:#555'>Model = <strong>v2</strong>. A candidate
+  <strong>wins</strong> iff Δ(PR-AUC geomean) vs the reference ≥ G <em>and</em> precision@recall0.5 does
+  not regress (experiments.md §1.4); every LOCK also requires 3-seed sign-consistency. Gate metric =
+  geomean(PR-AUC @ {GATE_RATIOS}); 1:200/1000 deferred to Test-Realistic. Current reference for new
+  screens is the <strong>v2 deploy {DEPLOY_MEAN:.4f}</strong> (corrected split); μ₀ is the original
+  leaky-split anchor for the gate width.</p>
 </div>
 <p class='toc'><strong>Jump:</strong>
-<a href='#p0a'>Phase 0</a><a href='#p1'>Phase 1</a><a href='#p2'>Phase 2</a><a href='#p3'>Phase 3</a>
+<a href='#learnings'>What we learned</a><a href='#locked'>Locked decisions</a><a href='#dashboard'>Overview</a>
+<a href='#p0a'>Phase 0</a><a href='#p2'>Phase 2</a><a href='#p3'>Phase 3</a>
 <a href='#p4'>Phase 4</a><a href='#p5'>Phase 5</a><a href='#findings'>Findings</a><a href='#future'>Future</a></p>
 """
 
@@ -780,6 +925,111 @@ def _section_future() -> str:
 """
 
 
+def _section_family_learnings() -> str:
+    """Per-experiment-group ('family') 'what we learned' + the cross-cutting thesis.
+
+    Curated from the ledger SSoT (docs/experiment_ledger.md). This is the narrative the
+    detailed per-phase tables below support."""
+    cross = "".join(
+        f"<div class='insight'><strong>{t}</strong><br>{body}</div>"
+        for t, body in CROSS_CUTTING
+    )
+    rows = ""
+    for f in FAMILY_LEARNINGS:
+        rows += f"""
+<tr>
+  <td style='text-align:center; font-weight:700; font-size:1.05rem; color:#1d4ed8'>{f['id']}</td>
+  <td><strong>{f['name']}</strong><br>{_badge(f['status'])}</td>
+  <td>{f['learned']}</td>
+  <td style='font-size:0.82rem; color:#475569'>{f['evidence']}</td>
+</tr>"""
+    return f"""
+<h2 id='learnings'>What each experiment group taught us</h2>
+<p>The project is organised into experiment <strong>families A–K</strong> (the SSoT registry is
+<code>docs/experiment_ledger.md</code>). This section is the headline takeaway from each group; the
+detailed run tables and curves are in the per-phase sections below.</p>
+<h3>Cross-cutting thesis</h3>
+{cross}
+<h3>By family</h3>
+<table>
+  <thead><tr><th style='width:3%'>Fam</th><th style='width:17%'>Group</th>
+  <th style='width:42%'>What we learned</th><th style='width:38%'>Deciding evidence</th></tr></thead>
+  <tbody>{rows}</tbody>
+</table>
+"""
+
+
+def _section_locked_decisions() -> str:
+    """Every locked choice + the family it belongs to + how it was decided."""
+    rows = ""
+    for name, choice, fam, how in LOCKED_DECISIONS:
+        rows += (f"<tr><td><strong>{name}</strong></td>"
+                 f"<td class='winner'>{choice}</td>"
+                 f"<td style='text-align:center'>{fam}</td>"
+                 f"<td style='font-size:0.85rem; color:#475569'>{how}</td></tr>\n")
+    return f"""
+<h2 id='locked'>Locked decisions &amp; how each was decided</h2>
+<p>The v2 recipe is the accumulation of these locked choices. Each was gated on
+Δ ≥ G=({GATE_G:.4f}) with a precision-@-recall guard; every LOCK additionally required 3-seed
+sign-consistency (corrected-split σ≈{SIGMA_CORRECTED}).</p>
+<table>
+  <thead><tr><th style='width:20%'>Decision</th><th style='width:28%'>Locked choice</th>
+  <th style='width:5%'>Fam</th><th>How it was decided</th></tr></thead>
+  <tbody>{rows}</tbody>
+</table>
+<div class='card'><span class='label'>v2 deploy reference (corrected split)</span><br>
+<span class='metric'>{DEPLOY_MEAN:.4f}</span>
+<span style='font-size:0.85rem'>3-seed mean — {DEPLOY_SEEDS[0]} / {DEPLOY_SEEDS[1]} / {DEPLOY_SEEDS[2]}</span></div>
+"""
+
+
+def _count_runs() -> dict:
+    """Dynamic dashboard counts from the run dirs (host or container path)."""
+    out = {"run_dirs": 0, "summaries": 0}
+    for base in ("/mnt/outputs/v1.0/runs", "/outputs/v1.0/runs"):
+        p = Path(base)
+        if p.is_dir():
+            out["run_dirs"] = sum(1 for d in p.iterdir() if d.is_dir())
+            out["summaries"] = sum(1 for _ in p.glob("*/run_summary.md"))
+            break
+    return out
+
+
+def _section_training_overview() -> str:
+    """Program dashboard: how much was explored, what's locked vs still open."""
+    c = _count_runs()
+    n = c["run_dirs"] or 96  # ledger master table ≈ this many launched runs
+    cards = [
+        ("Training runs launched", str(n), "across families A–K (ledger master table)"),
+        ("Architectures tried", "8+", "UNet++/EffB5 (locked), FPN, DeepLabV3+, PSPNet, MANet, EffB3, "
+         "DINOv3 (web+sat), SAM2/Hiera"),
+        ("Loss × boundary cells", "10", "focal/compound/tversky × ignore-width {1,2,3}"),
+        ("EXTRA-channel configs", "12+", "RGB, NDVI, NBR, TC, SE-PCA, SE-Proto, full-8band + greedy pairs"),
+        ("Augmentation arms", "12+", "photometric audit, RandomScale A/B, copy-paste/mosaic/cutmix/mixup, "
+         "RandAug/TrivialAug"),
+        ("Fusion methods", "5", "F0–F5 (F0 locked; F3/F5 heavy fusion tested → lose)"),
+    ]
+    card_html = "".join(
+        f"<div style='flex:1 1 200px'><span class='label'>{lab}</span><br>"
+        f"<span class='metric'>{val}</span><br>"
+        f"<span style='font-size:0.8rem; color:#64748b'>{sub}</span></div>"
+        for lab, val, sub in cards
+    )
+    locked = sum(1 for f in FAMILY_LEARNINGS if f["status"] == "done")
+    running = sum(1 for f in FAMILY_LEARNINGS if f["status"] == "running")
+    pending = sum(1 for f in FAMILY_LEARNINGS if f["status"] == "pending")
+    return f"""
+<h2 id='dashboard'>Training overview</h2>
+<div class='card'><div style='display:flex; gap:1.5rem; flex-wrap:wrap'>{card_html}</div></div>
+<p style='font-size:0.9rem'>Families: <strong>{locked} settled</strong> ·
+<strong>{running} in-progress</strong> · <strong>{pending} pending/conditional</strong>.
+Hyperparameters that are <strong>locked</strong> (loss, boundary, channels, fusion, backbone, sampling,
+aug) vs <strong>yet-to-lock</strong> (calibration/TTA, final encoder verdict) are detailed in the
+<a href='#locked'>Locked decisions</a> section. Split caveat: phases 0/2/3/5 are on the leaky split
+(relative only); families 4/10/D/E/F/I and the final test use the corrected leakage-free split.</p>
+"""
+
+
 def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Generate the project living HTML report from MLflow")
     p.add_argument("--config", default="configs/baseline.yaml",
@@ -804,6 +1054,9 @@ def main() -> int:
 
     import datetime
     overview = _section_overview(tracking_uri)
+    learnings = _section_family_learnings()
+    locked = _section_locked_decisions()
+    dashboard = _section_training_overview()
     s0a = _section_phase0a(mlflow, experiment_name)
     s0b = _section_phase0b(mlflow, experiment_name)
     s0c = _section_phase0c(mlflow, experiment_name)
@@ -831,6 +1084,14 @@ def main() -> int:
 <code>docs/report.md</code> · program SSoT: <code>training/experiments.md</code>.</p>
 
 {overview}
+{learnings}
+{locked}
+{dashboard}
+
+<hr style="margin-top:2.5rem">
+<p style="color:#64748b; font-size:0.9rem"><strong>Detailed run history</strong> — the per-phase tables,
+curves and figures the narrative above is built from (auto-generated from MLflow; phases use the original
+numbering, mapped to families A–K in the ledger).</p>
 <h2 id='p0a'>2. Phase 0 — Baseline calibration <span class='badge b-done'>done</span></h2>
 {s0a}
 {s0b}
