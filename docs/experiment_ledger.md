@@ -98,6 +98,10 @@ _Last refreshed: 2026-06-22 — v2 final-lock 3-seed mean **0.9123**; greedy COM
 | 74 | 06-22 | aug_trivialaugment_deploy | F: TrivialAugment (shadow-safe pool) | corrected | — | 🔵 running (user-revived) — gate vs deploy 0.9123 |
 | 75 | 06-22 | aug_randaugment_deploy | F: RandAugment num_ops=2 (shadow-safe pool) | corrected | — | 🔵 running (user-revived) — gate vs deploy 0.9123 |
 | 76 | 06-22 | fm_sam2_rgb | E: SAM2/Hiera foundation encoder, RGB-only | corrected | — | 🔵 running — gate vs EffB5-RGB ~0.830 (foundation-helps-RGB?) + EffB5+NDVI 0.9123 |
+| 77 | 06-22 | fm_dinov3sat_l_rgb | E: **DINOv3 SATELLITE** ViT-L (SAT-493M), fine-tuned, native sat-norm | corrected | — | 🔵 running (ep4, ~132s/ep) — gate vs web DINOv3-RGB 0.873 + EffB5+NDVI 0.9123 |
+| 78 | 06-22 | fm_dinov3sat_7b_frozen | E: DINOv3 SATELLITE ViT-7B (6.7B), frozen linear-probe | corrected | — | 🔵 running (frozen OK, no OOM @bs4) — feature-quality upper-bound |
+
+> **Catch (2026-06-22, user):** our DINOv3 was the **web** model (`vit_base_patch16_dinov3`, LVD-1689M), fed per-dataset z-score — NOT the **satellite** SAT-493M variant. Runs #77/#78 test the satellite encoder with its **native** norm (mean (0.430,0.411,0.296)/std (0.213,0.156,0.143)). Norm confound vs the web DINOv3 runs (which used per-dataset z-score) noted → sat-vs-web is directional.
 
 ---
 
