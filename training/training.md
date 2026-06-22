@@ -133,6 +133,8 @@ Satellite basemaps contain NoData pixels (ocean, cloud, non-permafrost masked re
 
 Phase 0's `data/transforms.py` boundary-ignore logic is reused — a NoData mask becomes an additional source of ignore=255 labels merged with the boundary-dilated mask.
 
+Implemented in `data.dataset.substitute_nodata` (zero is the NoData sentinel): all-band-zero pixels → `label=255`; any zero band → substitute that band with its raw per-channel mean (handles band dropout while keeping the valid bands of a partially-degraded tile). **Gated by `data.nodata_handling` (bool, default `false`)** so it is opt-in per dataset version — the locked Phase-0 baseline was trained without it, so it stays off for the v1.0 ablation program and is enabled only on re-staged datasets that keep degraded tiles.
+
 ### 4.5 Normalization-stats schema
 
 `normalization_stats.json` carries channel-name bindings alongside parallel mean/std arrays. RGB block is always present; EXTRA block only when EXTRA channels are declared. Source of truth: `data/normalization.py:build_stats_dict`.
@@ -222,7 +224,7 @@ Both approaches will be implemented and selected via YAML config for ablation. K
 - Applied on-the-fly in the DataLoader using scipy binary dilation on label mask
 - Simple, proven in medical imaging segmentation
 
-**Approach 2: Soft Labels** (`boundary_handling: soft_labels`) — **deferred to v2.1**
+**Approach 2: Soft Labels** (`boundary_handling: soft_labels`) — **deferred to a later iteration**
 - Near-boundary pixels get softened labels: background → `soft_label_value`, RTS → `1 - soft_label_value`
 - Options: constant soft values (0.05/0.95) or distance-based softening
 - Requires using BCE with soft targets (not cross-entropy with integer labels)

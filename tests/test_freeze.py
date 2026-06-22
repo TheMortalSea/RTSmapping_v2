@@ -84,3 +84,35 @@ def test_optimizer_respects_frozen_encoder():
         assert torch.equal(p.detach(), enc_before[id(p)]), (
             "Frozen encoder weights changed after optimizer step"
         )
+
+
+# --- LLRD param groups (§8.2a, second-wave Step 4) ---------------------------
+import pytest  # noqa: E402
+from training.freeze import build_llrd_param_groups  # noqa: E402
+from models.foundation import FoundationSegmenter  # noqa: E402
+
+
+def _vit():
+    return FoundationSegmenter("vit_base_patch16_dinov3", pretrained=False)
+
+
+def test_build_llrd_param_groups_decay_and_coverage():
+    m = _vit()
+    groups = build_llrd_param_groups(m, lr=1e-4, weight_decay=0.05, llrd_decay=0.7)
+    bb = [g for g in groups if g["name"] == "backbone"]
+    dec = [g for g in groups if g["name"] == "decoder"]
+    assert len(dec) == 1 and dec[0]["lr_scale"] == 1.0
+    scales = [g["lr_scale"] for g in bb]
+    assert scales == sorted(scales)              # stem (min) → top (max)
+    assert scales[-1] == pytest.approx(1.0)      # top encoder layer keeps full LR
+    assert scales[0] < scales[-1]                # early layers decayed
+    # every model param in exactly one group
+    grouped = [p for g in groups for p in g["params"]]
+    assert {id(p) for p in grouped} == {id(p) for p in m.parameters()}
+    assert len(grouped) == len(list(m.parameters()))
+
+
+def test_build_llrd_rejects_bad_decay():
+    m = _vit()
+    with pytest.raises(ValueError, match="llrd_decay"):
+        build_llrd_param_groups(m, lr=1e-4, weight_decay=0.0, llrd_decay=1.5)

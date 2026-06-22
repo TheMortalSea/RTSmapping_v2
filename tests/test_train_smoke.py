@@ -246,6 +246,18 @@ def test_mlflow_run_written(trained_run):
     assert experiments, "no MLflow experiments written"
 
 
+def test_train_iou_logged(trained_run):
+    """train_iou is logged per epoch and is a valid IoU in [0, 1].
+
+    Needed for experiments.md §5.4 (data-scaling gap) and §8.1 (Phase-5 gate)."""
+    mlruns = trained_run["mlruns_dir"]
+    files = list(mlruns.glob("**/metrics/train_iou"))
+    assert files, "train_iou metric not logged to MLflow"
+    vals = [float(ln.split()[1]) for ln in files[0].read_text().splitlines() if ln.strip()]
+    assert vals, "train_iou metric file is empty"
+    assert all(0.0 <= v <= 1.0 for v in vals), f"train_iou outside [0, 1]: {vals}"
+
+
 def test_ema_divergent_from_live_after_training(trained_run):
     """After training, EMA weights should not equal fresh live weights bit-for-bit.
 
@@ -393,3 +405,89 @@ def test_train_smoke_resume_then_continue(synthetic_dataset, tmp_path, monkeypat
         "Post-resume EMA shadow is bit-identical to the saved one across an "
         "extra epoch of training — resume likely did not restart the EMA decay."
     )
+
+
+# --- fixed preview-tile selection (scripts/train.py _select_preview_tiles) ---
+
+def test_select_preview_tiles_uses_fixed_list(tmp_path):
+    """A preview_tiles.yaml of UIDs is used verbatim (intersected with val)."""
+    import pandas as pd
+    import train
+
+    pv = tmp_path / "preview_tiles.yaml"
+    pv.write_text(yaml.safe_dump({"positive": ["pA", "pB"], "negative": ["nA"]}))
+    meta = pd.DataFrame({"Tile_ID": ["pA", "pB", "nA", "nB"],
+                         "TrainClass": ["positive", "positive", "negative", "negative"]})
+    cfg = {"seed": 7, "metrics": {"preview_tile_config": str(pv)}}
+
+    out = train._select_preview_tiles(cfg, meta, ["pA", "pB", "nA", "nB"])
+    assert out == ["pA", "pB", "nA"]  # order preserved, all kept
+
+
+def test_select_preview_tiles_is_seed_independent(tmp_path):
+    """Same fixed list → identical previews regardless of experiment seed."""
+    import pandas as pd
+    import train
+
+    pv = tmp_path / "preview_tiles.yaml"
+    pv.write_text(yaml.safe_dump({"positive": ["pA"], "negative": ["nA"]}))
+    meta = pd.DataFrame({"Tile_ID": ["pA", "nA"], "TrainClass": ["positive", "negative"]})
+    val = ["pA", "nA"]
+    a = train._select_preview_tiles({"seed": 42, "metrics": {"preview_tile_config": str(pv)}}, meta, val)
+    b = train._select_preview_tiles({"seed": 43, "metrics": {"preview_tile_config": str(pv)}}, meta, val)
+    assert a == b == ["pA", "nA"]
+
+
+def test_select_preview_tiles_falls_back_when_none_in_val(tmp_path):
+    """If no configured tile is in val, fall back to the seeded heuristic."""
+    import pandas as pd
+    import train
+
+    pv = tmp_path / "preview_tiles.yaml"
+    pv.write_text(yaml.safe_dump({"positive": ["ghost"], "negative": ["phantom"]}))
+    meta = pd.DataFrame({"Tile_ID": ["pA", "pB", "nA", "nB"],
+                         "TrainClass": ["positive", "positive", "negative", "negative"]})
+    cfg = {"seed": 1, "metrics": {"preview_tile_config": str(pv)}}
+    out = train._select_preview_tiles(cfg, meta, ["pA", "pB", "nA", "nB"])
+    assert "ghost" not in out and "phantom" not in out
+    assert len(out) > 0  # heuristic produced something
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA to expose device mismatch")
+def test_resume_ema_shadow_on_model_device(tmp_path):
+    """EMA shadow restored by _resume_from must live on the model's device.
+
+    Regression for the 2026-06-11 A100 crash: the resume checkpoint is loaded
+    with map_location="cpu", and the restored shadow stayed on CPU while the
+    model was on CUDA — EMA.update then raised a cpu/cuda device mismatch.
+    """
+    import train
+    from training import early_stopping as es_mod
+
+    model = torch.nn.Linear(4, 2).cuda()
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
+    es = es_mod.EarlyStopping(metric_name="m", patience=3, min_delta=0.0, start_epoch=1)
+    precision = train.PrecisionSetup(
+        requested="fp32", effective="fp32", autocast_dtype=None,
+        use_scaler=False, scaler=None,
+    )
+    cpu_sd = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+    ckpt_path = tmp_path / "resume_latest-0005.pth"
+    torch.save({
+        "checkpoint_type": "resume",
+        "epoch": 5,
+        "live_state_dict": cpu_sd,
+        "optimizer_state_dict": optimizer.state_dict(),
+        "early_stopping_state": es.state_dict(),
+        "ema_state_dict": cpu_sd,
+    }, ckpt_path)
+
+    next_epoch, ema = train._resume_from(
+        ckpt_path, model, optimizer, precision, es,
+        {"ema": {"enabled": True, "decay": 0.999}}, freeze_epochs=0,
+    )
+    assert next_epoch == 6
+    assert ema is not None
+    device = next(model.parameters()).device
+    assert all(v.device == device for v in ema.shadow.values())
+    ema.update(model)  # must not raise a device-mismatch RuntimeError

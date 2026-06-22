@@ -15,6 +15,7 @@ Key decisions:
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -24,10 +25,38 @@ import rasterio
 import torch
 from torch.utils.data import Dataset
 
-from data.normalization import load_stats, stats_to_arrays
+from data.normalization import (
+    apply_norm, build_norm_arrays, fill_nodata_with_mean, load_stats, stats_to_arrays,
+)
+from data.mixing import MixingAugmenter
 from data.transforms import dilate_label_boundary
 
 logger = logging.getLogger(__name__)
+
+# GCS reads over rasterio's /vsigs/ layer occasionally fail transiently (a
+# truncated range read surfaces as TIFFReadDirectory / TIFFReadEncodedStrip).
+# A single such failure in a DataLoader worker otherwise crashes a multi-hour
+# run, so tile reads retry with exponential backoff. Genuinely corrupt tiles
+# still fail all attempts and surface loudly with the tile id.
+_READ_ATTEMPTS = 4
+_READ_BACKOFF_S = 0.5
+
+
+def _read_with_retry(read_fn: Any, *, tile_id: str, what: str) -> np.ndarray:
+    """Run a tile-read callable, retrying transient GCS/VSI read errors."""
+    last_exc: Exception | None = None
+    for attempt in range(_READ_ATTEMPTS):
+        try:
+            return read_fn()
+        except Exception as exc:  # rasterio: RasterioIOError / CPLE_AppDefinedError
+            last_exc = exc
+            if attempt < _READ_ATTEMPTS - 1:
+                logger.warning("Read %s failed for tile %s (attempt %d/%d): %s",
+                               what, tile_id, attempt + 1, _READ_ATTEMPTS, exc)
+                time.sleep(_READ_BACKOFF_S * (2 ** attempt))
+    raise RuntimeError(
+        f"Failed to read {what} for tile {tile_id} after {_READ_ATTEMPTS} attempts"
+    ) from last_exc
 
 
 @dataclass
@@ -46,6 +75,41 @@ def parse_extra_spec(extra_cfg: list[dict[str, Any]] | None) -> list[ExtraChanne
             raise ValueError(f"Each channels.extra entry needs 'name' and 'band': {entry}")
         out.append(ExtraChannel(name=str(entry["name"]), band=int(entry["band"])))
     return out
+
+
+def substitute_nodata(
+    rgb: np.ndarray,
+    label: np.ndarray,
+    rgb_mean: np.ndarray,
+    ignore_index: int = 255,
+) -> tuple[np.ndarray, np.ndarray]:
+    """§4.4 NoData handling for RGB tiles (training side).
+
+    Zero is the NoData sentinel in the PlanetScope RGB tiles. Two cases:
+      * **all-band-zero pixel** (true NoData — no coverage): set its label to
+        `ignore_index` so loss skips it (no signal to learn from), and
+      * **any zero band** (incl. band dropout, e.g. a missing blue channel):
+        substitute that band with its raw per-channel mean, so after z-score the
+        pixel sits at ~0 (neutral) instead of injecting a hard zero edge or
+        distorting the input — while the valid bands of a partially-degraded
+        tile keep carrying their signal.
+
+    Computed pre-augmentation so the ignore label rides the same geometric
+    transform as the rest of the mask. Returns new (rgb, label) arrays.
+
+    Args:
+        rgb: (H, W, 3) uint8 raw RGB.
+        label: (H, W) uint8 label.
+        rgb_mean: (3,) raw per-channel means (z-score stats, raw units).
+        ignore_index: label value for ignored pixels.
+    """
+    nodata = (rgb == 0).all(axis=-1)            # (H, W) — all bands zero
+    label = label.copy()
+    label[nodata] = ignore_index
+    # Per-band fill (band dropout): substitute each zero band with its mean via the
+    # shared helper so training/inference neutralise NoData identically (Rule 3).
+    rgb = fill_nodata_with_mean(rgb.copy(), rgb == 0, rgb_mean, channel_axis=-1)
+    return rgb, label
 
 
 class RTSDataset(Dataset):
@@ -67,13 +131,15 @@ class RTSDataset(Dataset):
         transform,  # albumentations Compose
         tile_size: int = 512,
         label_ignore_index: int = 255,
-        boundary_handling: str = "none",   # none | ignore (soft_labels deferred to v2.1)
+        boundary_handling: str = "none",   # none | ignore (soft_labels deferred to a later iteration)
         boundary_ignore_width: int = 3,
+        nodata_handling: bool = False,      # §4.4: zero→mean input + 255 label for all-band-zero
+        aug_cfg: dict | None = None,        # train-only; enables sample-mixing augs (data/mixing.py)
     ):
         if boundary_handling == "soft_labels":
             raise NotImplementedError(
-                "boundary_handling='soft_labels' is deferred to v2.1 "
-                "(training.md §5.5). Use 'none' or 'ignore' for v2.0."
+                "boundary_handling='soft_labels' is deferred to a later iteration "
+                "(training.md §5.5). Use 'none' or 'ignore' for v1.0."
             )
         if boundary_handling not in ("none", "ignore"):
             raise ValueError(
@@ -91,6 +157,7 @@ class RTSDataset(Dataset):
         self.label_ignore_index = label_ignore_index
         self.boundary_handling = boundary_handling
         self.boundary_ignore_width = boundary_ignore_width
+        self.nodata_handling = nodata_handling
 
         if norm_stats_path is not None:
             stats = load_stats(norm_stats_path)
@@ -114,12 +181,35 @@ class RTSDataset(Dataset):
                         f"does not match config order {expected_extra!r}"
                     )
             self.mean, self.std = stats_to_arrays(stats, with_extra=bool(extra_channels))
+            # Per-channel normalization params (z-score+clip vs fixed_scale, data.md §9).
+            self._norm = build_norm_arrays(stats, with_extra=bool(extra_channels))
         else:
             # Permitted for smoke tests; real runs must supply stats.
             logger.warning("RTSDataset created without normalization stats; output will be unnormalized")
             n_channels = 3 + len(extra_channels)
             self.mean = np.zeros(n_channels, dtype=np.float32)
             self.std = np.ones(n_channels, dtype=np.float32)
+            self._norm = {"mean": self.mean, "std": self.std,
+                          "clip_lo": np.full(n_channels, np.nan, dtype=np.float32),
+                          "clip_hi": np.full(n_channels, np.nan, dtype=np.float32),
+                          "is_fixed": np.zeros(n_channels, dtype=bool),
+                          "scale": np.ones(n_channels, dtype=np.float32)}
+
+        # Sample-mixing augmentations (copy-paste/mosaic/cutmix/mixup — data/mixing.py).
+        # Train-only: enabled iff aug_cfg declares an `augmentation.mixing` block with p>0.
+        self._positive_ids = [t for t in self.tile_ids if self.is_positive(t)]
+
+        def _sample_source(positive_only: bool):
+            pool = self._positive_ids if (positive_only and self._positive_ids) else self.tile_ids
+            tid = pool[int(np.random.default_rng().integers(len(pool)))]
+            s_rgb = self._read_rgb(tid)
+            s_lab = self._read_label(tid)
+            s_extra = self._read_extra(tid) if self.extra_channels else None
+            return s_rgb, s_extra, s_lab
+
+        self._mixing = MixingAugmenter(
+            aug_cfg or {}, _sample_source, self.tile_size, self.label_ignore_index,
+        )
 
     def __len__(self) -> int:
         return len(self.tile_ids)
@@ -129,23 +219,27 @@ class RTSDataset(Dataset):
 
     def _read_rgb(self, tile_id: str) -> np.ndarray:
         """(H, W, 3) uint8."""
-        with rasterio.open(self._path(self.rgb_dir, tile_id)) as src:
-            arr = src.read(out_dtype="uint8")  # (3, H, W)
-        return arr.transpose(1, 2, 0)
+        def _do() -> np.ndarray:
+            with rasterio.open(self._path(self.rgb_dir, tile_id)) as src:
+                return src.read(out_dtype="uint8").transpose(1, 2, 0)  # (H, W, 3)
+        return _read_with_retry(_do, tile_id=tile_id, what="RGB")
 
     def _read_extra(self, tile_id: str) -> np.ndarray:
         """(H, W, N) float32, where N = len(self.extra_channels)."""
         bands_1idx = [c.band + 1 for c in self.extra_channels]
-        with rasterio.open(self._path(self.extra_dir, tile_id)) as src:
-            arr = src.read(bands_1idx, out_dtype="float32")  # (N, H, W)
-        return arr.transpose(1, 2, 0)
+        def _do() -> np.ndarray:
+            with rasterio.open(self._path(self.extra_dir, tile_id)) as src:
+                return src.read(bands_1idx, out_dtype="float32").transpose(1, 2, 0)  # (H, W, N)
+        return _read_with_retry(_do, tile_id=tile_id, what="EXTRA")
 
     def _read_label(self, tile_id: str) -> np.ndarray:
         """(H, W) uint8. Negative tiles have no label file; return all-zeros."""
         if not self.is_positive(tile_id):
             return np.zeros((self.tile_size, self.tile_size), dtype=np.uint8)
-        with rasterio.open(self._path(self.labels_dir, tile_id)) as src:
-            return src.read(1, out_dtype="uint8")
+        def _do() -> np.ndarray:
+            with rasterio.open(self._path(self.labels_dir, tile_id)) as src:
+                return src.read(1, out_dtype="uint8")
+        return _read_with_retry(_do, tile_id=tile_id, what="label")
 
     def is_positive(self, tile_id: str) -> bool:
         return bool(self.metadata.loc[tile_id, "TrainClass"] == "positive")
@@ -154,12 +248,19 @@ class RTSDataset(Dataset):
         tid = self.tile_ids[idx]
         rgb = self._read_rgb(tid)                             # (H, W, 3) uint8
         label = self._read_label(tid)                         # (H, W) uint8
+        extra = self._read_extra(tid) if self.extra_channels else None
+
+        # Sample-mixing augs (train-only, default-off) on raw arrays, BEFORE boundary
+        # dilation + transform so pasted/mixed pixels get the same downstream treatment.
+        if self._mixing.enabled:
+            rgb, extra, label = self._mixing(rgb, extra, label, np.random.default_rng())
+
+        if self.nodata_handling:                              # §4.4 (before boundary/aug)
+            rgb, label = substitute_nodata(rgb, label, self.mean, self.label_ignore_index)
 
         if self.boundary_handling == "ignore":
             label = dilate_label_boundary(label, self.boundary_ignore_width,
                                           self.label_ignore_index)
-
-        extra = self._read_extra(tid) if self.extra_channels else None
 
         if extra is not None:
             aug = self.transform(image=rgb, extra=extra, mask=label)
@@ -170,7 +271,7 @@ class RTSDataset(Dataset):
         label_out = aug["mask"]
 
         img = stacked.astype(np.float32).transpose(2, 0, 1)                   # (C, H, W)
-        img = (img - self.mean[:, None, None]) / self.std[:, None, None]
+        img = apply_norm(img, self._norm)   # per-channel z-score+clip / fixed_scale (data.md §9)
 
         return {
             "image": torch.from_numpy(img),

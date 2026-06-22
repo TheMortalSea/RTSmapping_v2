@@ -41,6 +41,7 @@ import mlflow
 import numpy as np
 import pandas as pd
 import torch
+import yaml
 from torch.utils.data import DataLoader
 
 # Make sibling top-level packages importable when run as a script.
@@ -223,7 +224,7 @@ def _setup_data(cfg: dict) -> dict:
         stats = None
         logger.warning("Normalization stats not found at %s; using unit stats", stats_path)
 
-    tr_aug = build_train_transforms(tile_size, cfg["augmentation"])
+    tr_aug = build_train_transforms(tile_size, cfg["augmentation"], ignore_index=ignore_idx)
     ev_aug = build_eval_transforms()
 
     train_ids = get_tile_ids("train", metadata, splits)
@@ -239,7 +240,7 @@ def _setup_data(cfg: dict) -> dict:
         logger.info("Filtered train tiles to %d%% positive subset → %d tiles",
                     int(subset_pct), len(train_ids))
 
-    def _make_ds(tile_ids, transform):
+    def _make_ds(tile_ids, transform, aug_cfg=None):
         return RTSDataset(
             tile_ids=tile_ids,
             metadata=metadata,
@@ -254,9 +255,12 @@ def _setup_data(cfg: dict) -> dict:
             label_ignore_index=ignore_idx,
             boundary_handling=boundary,
             boundary_ignore_width=boundary_w,
+            nodata_handling=cfg["data"].get("nodata_handling", False),
+            aug_cfg=aug_cfg,
         )
 
-    train_ds = _make_ds(train_ids, tr_aug)
+    # Mixing augs are train-only → pass aug_cfg to train, never to val.
+    train_ds = _make_ds(train_ids, tr_aug, aug_cfg=cfg["augmentation"])
     val_ds = _make_ds(val_ids, ev_aug)
 
     bs = int(cfg["training"]["batch_size"])
@@ -357,6 +361,7 @@ def _train_one_epoch(
     global_step_offset: int = 0,
     total_steps: int = 1,
     lr_history: list[tuple[int, float, float]] | None = None,
+    ignore_index: int = 255,
 ) -> dict[str, float]:
     """Run one training epoch. Returns per-epoch averages.
 
@@ -369,6 +374,7 @@ def _train_one_epoch(
     running_loss = 0.0
     running_n = 0
     nan_count = 0
+    tp_px = fp_px = fn_px = 0  # train pixel-IoU accumulators (experiments.md §5.4 / §8.1)
     scaler_halves = 0
     scaler_prev_scale: float | None = None
     if precision.scaler is not None:
@@ -402,6 +408,16 @@ def _train_one_epoch(
             logger.warning("Non-finite loss at step %d; skipping update", step)
             continue
 
+        # Train pixel-IoU accumulation (logit > 0 ⇔ prob > 0.5; ignore excluded).
+        # gt (label==1) ⊆ valid since the RTS class is never the ignore value.
+        with torch.no_grad():
+            pred = logits.detach().squeeze(1) > 0
+            gt = labels == 1
+            valid = labels != ignore_index
+            tp_px += int((pred & gt).sum())
+            fp_px += int((pred & valid & ~gt).sum())
+            fn_px += int((~pred & gt).sum())
+
         if precision.scaler is not None:
             precision.scaler.scale(loss).backward()
             precision.scaler.unscale_(optimizer)
@@ -430,7 +446,9 @@ def _train_one_epoch(
             lr_history.append((global_step, float(optimizer.param_groups[0]["lr"]), loss_val))
 
     avg_loss = running_loss / max(1, running_n)
-    out = {"train_loss": avg_loss, "train_nan_steps": float(nan_count)}
+    iou_den = tp_px + fp_px + fn_px
+    train_iou = tp_px / iou_den if iou_den > 0 else 0.0
+    out = {"train_loss": avg_loss, "train_iou": train_iou, "train_nan_steps": float(nan_count)}
     if precision.scaler is not None:
         out["scaler_scale"] = float(precision.scaler.get_scale())
         out["scaler_halves_this_epoch"] = float(scaler_halves)
@@ -503,7 +521,33 @@ def _validate(
 
 
 def _select_preview_tiles(cfg: dict, metadata: pd.DataFrame, val_ids: list[str]) -> list[str]:
-    """Return the fixed 3+3 preview tile IDs (pass-1 heuristic)."""
+    """Return the preview tile IDs.
+
+    Prefers an explicit curated list from ``cfg["metrics"]["preview_tile_config"]``
+    (a YAML with ``positive``/``negative`` UID lists) so previews are identical
+    across experiments and seeds — fix the input, vary the model. Tiles absent
+    from this run's val split are skipped with a warning. Falls back to the
+    seeded pass-1 heuristic when no config is given or none of its tiles are in val.
+    """
+    preview_cfg_path = cfg.get("metrics", {}).get("preview_tile_config")
+    if preview_cfg_path and Path(preview_cfg_path).exists():
+        with open(preview_cfg_path) as f:
+            spec = yaml.safe_load(f) or {}
+        wanted = [str(t) for t in (spec.get("positive", []) + spec.get("negative", []))]
+        val_set = set(val_ids)
+        selected = [t for t in wanted if t in val_set]
+        missing = [t for t in wanted if t not in val_set]
+        if missing:
+            logger.warning("Preview tiles not in val split (skipped): %s", missing)
+        # Require most of the curated set to be present, else fall back to the heuristic.
+        # Guards against a stale config (e.g. after a split regeneration) silently
+        # degrading the panel to 1 tile instead of the intended 3-pos/3-neg.
+        min_ok = max(2, len(wanted) - 2)
+        if len(selected) >= min_ok:
+            logger.info("Using %d fixed preview tiles from %s", len(selected), preview_cfg_path)
+            return selected
+        logger.warning("Only %d/%d preview tiles from %s are in val (< %d); falling back to heuristic",
+                       len(selected), len(wanted), preview_cfg_path, min_ok)
     picked = viz.pick_preview_tiles_pass1(
         metadata.set_index("Tile_ID"),
         val_ids,
@@ -605,10 +649,42 @@ def _render_and_log_figures(
 # ---------------------------------------------------------------------------
 
 
+def _print_artifact_summary(cfg: dict, out_dir: Path, run_id: str) -> None:
+    """Print a structured artifact location summary at the end of every run.
+
+    This is the standard artifact-summary rule: every training run always emits
+    this block so results and checkpoints are trivially findable without opening
+    MLflow.
+    """
+    tracking_uri = os.environ.get("MLFLOW_TRACKING_URI") or cfg["mlflow"]["tracking_uri"]
+    exp_name = cfg["mlflow"]["experiment_name"]
+    run_name = cfg["mlflow"].get("run_name", "unknown")
+    ckpt_dir = out_dir / "checkpoints"
+    sep = "=" * 62
+    lines = [
+        "",
+        sep,
+        "  ARTIFACT SUMMARY",
+        sep,
+        f"  Run name      : {run_name}",
+        f"  MLflow run ID : {run_id}",
+        f"  Tracking URI  : {tracking_uri}",
+        f"  Experiment    : {exp_name}",
+        f"  Output dir    : {out_dir.resolve()}",
+        f"  Checkpoints   : {ckpt_dir.resolve()}",
+        f"  Best ckpt     : {(ckpt_dir / 'best_deployment.pth').resolve()}",
+        f"  Norm stats    : {cfg['data']['normalization_stats_path']}",
+        f"  Config used   : {cfg.get('_config_path', 'unknown')}",
+        sep,
+    ]
+    logger.info("\n".join(lines))
+
+
 def main() -> int:
     args = _parse_args()
     cfg = load_config(args.config)
     _apply_overrides(cfg, args.override)
+    cfg["_config_path"] = str(args.config)
 
     # Output directory.
     run_name = cfg["mlflow"].get("run_name", "run")
@@ -648,10 +724,18 @@ def main() -> int:
     base_lr = float(cfg["lr_schedule"]["base_lr"])
     backbone_mult = float(cfg["lr_schedule"]["backbone_lr_multiplier"])
 
-    param_groups = freeze_mod.build_param_groups(
-        model, decoder_lr=frozen_lr, backbone_lr=frozen_lr,
-        weight_decay=wd,
-    )
+    llrd_decay = cfg["lr_schedule"].get("llrd_decay")
+    if llrd_decay:
+        # §8.2a: layer-wise LR decay for ViT/foundation encoders (per-layer lr_scale,
+        # applied by the scheduler). EffB5 runs omit llrd_decay → unchanged 2-group path.
+        param_groups = freeze_mod.build_llrd_param_groups(
+            model, lr=frozen_lr, weight_decay=wd, llrd_decay=float(llrd_decay),
+        )
+    else:
+        param_groups = freeze_mod.build_param_groups(
+            model, decoder_lr=frozen_lr, backbone_lr=frozen_lr,
+            weight_decay=wd,
+        )
     optimizer = torch.optim.AdamW(param_groups, lr=frozen_lr)
     set_lrs = scheduler_mod.make_lr_setter(cfg)
     is_range_test = scheduler_mod.is_lr_range_test(cfg)
@@ -694,12 +778,14 @@ def main() -> int:
         logger.info("Resumed from %s at epoch %d (ema=%s)",
                     args.resume, start_epoch, ema is not None)
 
-    # Pre-warm positive tiles once (epoch 1 only).
-    if start_epoch == 1:
+    # Pre-warm positive tiles once (epoch 1 only) — only when gcsfuse is active.
+    # Without gcsfuse the reads hit GCS directly with no caching benefit; skip.
+    if start_epoch == 1 and cfg["training"].get("prewarm", False):
         _prewarm_positive_tiles(data["train_ds"])
 
     exposure_counter: dict[str, int] = {}
     nan_events: list[dict] = []
+    train_completed = False  # set True on normal loop exit; run_summary.md records the status
     t_start = time.time()
 
     # For lr_range_test, ramp LR per-step across the entire run.
@@ -711,8 +797,11 @@ def main() -> int:
             # Unfreeze transition.
             if epoch == freeze_epochs + 1 and ema is None:
                 freeze_mod.unfreeze_backbone(model)
-                ema = ema_mod.EMAModel(model, decay=float(cfg["ema"]["decay"]))
-                logger.info("Unfroze backbone; EMA initialised (decay=%g)", ema.decay)
+                if cfg["ema"].get("enabled", True):
+                    ema = ema_mod.EMAModel(model, decay=float(cfg["ema"]["decay"]))
+                    logger.info("Unfroze backbone; EMA initialised (decay=%g)", ema.decay)
+                else:
+                    logger.info("Unfroze backbone; EMA disabled")
 
             # Per-epoch LR update (skipped for range-test mode where LR moves per-step).
             if not is_range_test:
@@ -736,6 +825,7 @@ def main() -> int:
                 global_step_offset=global_step_offset,
                 total_steps=total_steps,
                 lr_history=lr_history,
+                ignore_index=int(cfg["data"]["label_ignore_index"]),
             )
             epoch_t = time.time() - epoch_t0
 
@@ -756,8 +846,12 @@ def main() -> int:
             if train_metrics.get("train_nan_steps", 0) > 0:
                 nan_events.append({"epoch": epoch, "nan_steps": int(train_metrics["train_nan_steps"])})
 
-            # Validation cadence.
-            if epoch % val_frequency != 0 and epoch != max_epochs:
+            # Validation cadence. An lr_range_test deliberately ramps LR to
+            # divergence; its deliverable is the per-step loss-vs-LR curve, not val
+            # metrics on a (NaN) blown-up model — so skip validation entirely (the
+            # forced final-epoch pass would otherwise feed NaN logits to PR-AUC /
+            # figure rendering and crash).
+            if is_range_test or (epoch % val_frequency != 0 and epoch != max_epochs):
                 continue
 
             # Swap EMA in for validation (if EMA exists — post-unfreeze).
@@ -820,6 +914,7 @@ def main() -> int:
 
             if es.should_stop(epoch):
                 break
+        train_completed = True
     finally:
         # LR-range-test: dump (step, lr, loss) curve as a CSV artifact for analysis.
         if lr_history is not None and lr_history:
@@ -849,8 +944,11 @@ def main() -> int:
             training_duration_s=duration,
             nan_events=nan_events,
             tmp_dir=out_dir,
+            status="completed" if train_completed else "crashed",
         )
+        run_id = mlflow.active_run().info.run_id if mlflow.active_run() else "unknown"
         mlflow.end_run()
+        _print_artifact_summary(cfg, out_dir, run_id)
         logger.info("Done in %.1fs", duration)
 
     return 0
@@ -893,11 +991,17 @@ def _resume_from(
     next_epoch = saved_epoch + 1
 
     ema: ema_mod.EMAModel | None = None
-    if saved_epoch > freeze_epochs and sd.get("ema_state_dict") is not None:
+    if saved_epoch > freeze_epochs and sd.get("ema_state_dict") is not None and cfg["ema"].get("enabled", True):
         # Reconstruct EMA so validation/best-checkpoint comparisons stay on
         # EMA weights instead of silently using live weights.
         ema = ema_mod.EMAModel(model, decay=float(cfg["ema"]["decay"]))
-        ema.shadow = {k: v.detach().clone() for k, v in sd["ema_state_dict"].items()}
+        # Checkpoint was loaded with map_location="cpu"; shadow tensors must
+        # live on the model's device or EMA.update mixes cpu/cuda tensors.
+        device = next(model.parameters()).device
+        ema.shadow = {
+            k: v.detach().clone().to(device)
+            for k, v in sd["ema_state_dict"].items()
+        }
     return next_epoch, ema
 
 

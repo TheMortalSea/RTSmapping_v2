@@ -29,22 +29,49 @@ Semantic segmentation of Retrogressive Thaw Slumps on 2024 PlanetScope RGB basem
 
 PR-AUC at subsampled ratios 1:200/500/1000 is a **prevalence-conditional deployment estimate**, not a prevalence-free model-quality score. The model's predictions are identical across ratios; only the negative pool changes. Absolute values across ratios are mechanically different (AP scales with prevalence). Only **relative comparisons at the same ratio across epochs or ablations** are meaningful. See training.md §6 + §10.3.
 
+### Gate-metric decision (2026-06-04): honest ratios, not 1:1000
+
+The Phase 0c seed42 calibration run exposed that the **gate metric was starved of negatives**. The full negative inventory is now ~13.7k tiles (ceiling ~16k — the ARTS confirmed-negative source is very unlikely to reach 100k). With ~129 val positives and ~1.4k val negatives, the val set **honestly supports at most ~1:10–1:20**. The configured 1:200/1:1000 ratios need 25.8k / 129k negative tiles respectively — physically impossible from a 16k pool — so they fall back to bootstrap-with-replacement and oscillate (seed42 swung 0.33↔0.62 epoch-to-epoch while pixel_IoU/obj_F1 rose monotonically; the model was fine, the metric was noise).
+
+Augmentation-inflation of negatives was considered and **rejected for evaluation**: augmented copies are highly correlated with their source (a flipped confidently-negative tile is still confidently negative), so they add no independent information — effective sample size stays ~1.4k. It would smooth the number (a "smarter bootstrap") but at ~90× validation forward-pass cost, and it does not make 1:1000 a trustworthy deployment estimate. Augmentation belongs at train time (data.md §7.2), not in the val/test metric.
+
+**Decision:**
+- The **gate metric** `val_realistic_pr_auc_geomean` is computed over the **honestly-supported ratios `[5, 10, 20]`** (config: `metrics.pr_auc_ratios`, SSoT in [training/metrics.py](../training/metrics.py)), with **pixel_IoU and obj_F1 as stability anchors**. (The **gate threshold** itself is `G = max(2σ₀, 0.01)` per `training/experiments.md §1.4` — a Δ-over-baseline, not a floor.)
+- 1:200/1:1000 are **dropped from the gate** (they were bootstrap noise). Honest deployment-prevalence reporting at high imbalance is deferred to final **Test-Realistic** reporting, where the clean lever is *more real negatives* — not augmentation. If the 16k ceiling holds, the final report uses the highest honestly-supported ratio with CIs and states the limitation transparently.
+
+*(Full Phase 0 results — μ₀, σ₀, σ-band, gate value — live in [docs/phase0_baseline.md](phase0_baseline.md). The experiment program is in [training/experiments.md](../training/experiments.md), the SSoT.)*
+
 ---
 
-## Experiment queue (priority order)
+## Experiment program → see `training/experiments.md` (SSoT)
 
-Ablations to run after the baseline completes. Each gets its own sub-section below; copy the template.
+The ordered, **gated** program — Phase 1 temporal → Phase 2 data-scaling → Phase 3 loss/boundary/WD
+→ Phase 4 EXTRA → Phase 5 architecture (gated) → Final — lives in
+**[training/experiments.md](../training/experiments.md)**, the single source of truth. Phase 0 results
+are in **[docs/phase0_baseline.md](phase0_baseline.md)**. **Do not** keep a second experiment list here:
+a drifted copy in this section caused a planning error (2026-06-07) — running a gated phase early and
+mis-defining the gate. The program SSoT and the gate definition (§1.4) are authoritative.
 
-1. **Boundary handling** (likely biggest lever for object recall on small RTS):
-    - `boundary_handling: ignore` with `boundary_ignore_width: 2`
-    - `boundary_handling: soft_labels` with `soft_label_value: 0.05`
-2. **Loss function**:
-    - Compound (Focal + Dice)
-    - Tversky (α=0.3, β=0.7) for precision-focused training
-3. **Focal hyperparameters**: γ ∈ {1, 2, 3, 5}, α ∈ {0.1, 0.25, 0.5}
-4. **Encoder size**: EfficientNet-B3 (capacity-down) / B7 (capacity-up)
-5. **EXTRA channels**: NDVI, NIR, Red Edge, SAR — individually and stacked
-6. **Architecture family**: SegFormer-B5 (training.md §3.2 priority 2)
+---
+
+## Data-refresh procedure (when a new dataset version lands)
+
+The Phase 0 gate is **provisional on the current immature snapshot** and must be re-measured whenever the
+dataset changes (e.g. the v0.3 selection upgrade). Sequence:
+
+1. `validate_training_data.py` (full, not sampled) — CRS/bands/dims/labels + the per-band degradation
+   WARN; exclude flagged ambiguous/degraded tiles.
+2. `create_splits.py --out-dir /outputs/new_splits` → inspect realized train/val/test pos·neg counts →
+   upload `splits.yaml`/`splits_summary.json` (back up old first).
+3. `compute_normalization_stats.py` over the **new** train split → upload `normalization_stats.json`.
+4. Freeze the snapshot (`metadata_vX.csv`/`splits_vX.yaml`); pin configs; bump `data/version.json`.
+5. Re-run the 3-seed baseline → recompute μ₀, σ₀, and the gate **G = max(2σ₀, 0.01)** via
+   `build_report.py` → update `docs/phase0_baseline.md`.
+6. Resume the experiment program (`training/experiments.md`) against the new baseline.
+
+Deferred infra (not blocking): multi-GPU orchestrator (`scripts/run_experiments.py`) + a
+concurrency-safe MLflow backend (Cloud SQL Postgres or per-GPU file-stores; the file-store is **not**
+concurrency-safe); `torch.compile` + `channels_last` (needs state_dict/EMA/deploy testing).
 
 ---
 

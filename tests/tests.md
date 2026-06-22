@@ -9,9 +9,10 @@ Living doc for the test suite. **Update this file whenever you add, remove, or m
 Two-tier verification:
 
 - **Tier 1 — `pytest tests/`**: runs on synthetic fixtures, no GCS, no GPU. Fast suite ~12 s, plus the end-to-end train-smoke at ~130 s. Guards code correctness and contracts. **Must be green before any real-data work.**
-- **Tier 2 — real-data scripts**: runs on the real v2.0 bucket on the L4 VM.
+- **Tier 2 — real-data scripts**: runs on the real v2-alpha bucket on the L4 VM.
     - Phase 0 data checks: `scripts/check_data_content.py` (bucket structure) + `scripts/check_data.py` (DataLoader preview).
     - Phase 1 training smoke: `python scripts/train.py --config configs/smoke.yaml` (2 epochs on a subset of real regions; inference.md §6.4 gate).
+    - Inference validation: `scripts/validate_inference_tiny.py` (real 2025 quads + GPU; 11 PASS/FAIL checks on overlap/stitching/fusion/NoData/resume — results in `docs/inference_validation.md`).
 
 **Green pytest ≠ "this works on real imagery"** — it means the plumbing doesn't crash and the invariants hold on canned input. Real-data surprises (CRS mismatches, radiometric drift, missing EXTRA bands, OOM on real tile sizes) are caught by Tier 2, not here.
 
@@ -43,7 +44,7 @@ Defined in [conftest.py](conftest.py).
 
 | Fixture | What you get | Notes |
 |---|---|---|
-| `synthetic_dataset` | Temp dir laid out like `gs://.../training/v2.0/`: 4 regions × 3 tiles = 12 tiles (8 positive, 4 negative), 64×64 GeoTIFFs in `PLANET-RGB/`, `EXTRA/` (4-band), `labels/`, plus `metadata.csv` and `splits.yaml`. | Returns `{root, metadata_df, splits}`. 64×64 instead of 512×512 for speed. |
+| `synthetic_dataset` | Temp dir laid out like `gs://.../training/v2-alpha/`: 4 regions × 3 tiles = 12 tiles (8 positive, 4 negative), 64×64 GeoTIFFs in `PLANET-RGB/`, `EXTRA/` (4-band), `labels/`, plus `metadata.csv` and `splits.yaml`. | Returns `{root, metadata_df, splits}`. 64×64 instead of 512×512 for speed. |
 
 Fresh temp dir per test — no cross-test state leakage.
 
@@ -79,6 +80,23 @@ Fresh temp dir per test — no cross-test state leakage.
 | `test_save_load_roundtrip` | JSON write → read preserves values | shallow |
 | `test_stats_to_arrays_rgb_only` | `with_extra=False` returns RGB only | shallow |
 | `test_stats_to_arrays_with_extra` | Concatenation order: RGB first, then EXTRA in declared order | real |
+| `test_fill_nodata_inference_convention_chw_perpixel_float` | Shared `fill_nodata_with_mean` on the inference path (CHW float32, per-pixel mask broadcast across channels) fills exact (unrounded) mean; rest untouched — Rule-3 train/inference parity | real |
+| `test_fill_nodata_rounds_for_integer_raster` | uint8 raster → mean rounded to dtype (on-disk raw-value contract) | real |
+| `test_build_norm_arrays_modes_and_clip` | `build_norm_arrays` maps the stats `mode`/`clip`/`scale` to per-channel arrays (RGB plain z-score; EXTRA zscore-with-clip vs fixed_scale) — data.md §9 | real |
+| `test_apply_norm_zscore_clip_and_fixed_scale` | `apply_norm` clips before z-score on zscore channels; divides by `scale` (no z-score) on fixed_scale (SE_PROTO) channels | real — the §9 dispatch contract |
+| `test_apply_norm_neutralizes_nonfinite_extra` | Non-finite EXTRA pixels (SE coverage gaps, NDVI/NBR div-zero) → 0 post-norm (channel mean / no-signal), so NoData can't propagate NaN into the network — fixes the Phase-4 validation crash (2026-06-17) | real |
+| `test_apply_norm_rgb_only_matches_plain_zscore` | No EXTRA/modes ⇒ dispatch == plain `(x-μ)/σ` (backward-compat) | real |
+| `test_build_stats_dict_records_modes` | `build_stats_dict` carries `extra_modes`/`extra_clips`/`extra_scales` into the `extra` block | shallow |
+
+### [test_extra_channels.py](test_extra_channels.py)
+
+EXTRA derivation SSoT (`data/extra_channels.py`). SE math only — Earth Engine is mocked.
+
+| Test | Checks | Strictness |
+|---|---|---|
+| `test_band_norm_mode` | `band_norm_mode` returns "zscore" for NDVI/SE_PCA/TC and "fixed_scale" for SE_PROTO; unknown band → `ValueError` | real — §9 SSoT |
+| `test_se_bands_projection_and_cosine` | With `fetch_se_raw` mocked: `se_bands` returns {2,3,4,5} of shape (H,W); SE_PROTO ∈ [-1,1]; SE_PCA1 == manual `flat @ component[0]` projection | real — SE derivation math |
+| `test_se_bands_nan_propagates` | A no-coverage (NaN) SE pixel yields NaN SE bands; finite pixels stay finite (matches S2 NaN handling) | real |
 
 ### [test_sampler.py](test_sampler.py)
 
@@ -94,6 +112,17 @@ Fresh temp dir per test — no cross-test state leakage.
 | `test_filter_train_positive_subset_is_deterministic` | Two invocations with the same input give the same output (seed=42 hard-coded) | real — reproducibility |
 | `test_filter_train_positive_subset_full_pct_no_op` | subset_pct=100 keeps every tile | shallow — boundary case |
 
+### [test_config.py](test_config.py)
+
+| Test | Checks | Strictness |
+|---|---|---|
+| `test_load_config_without_base_unchanged` | no `base:` key → behavior identical to before | shallow |
+| `test_base_merge_nested_override` | `base: baseline.yaml` inherits all keys; overrides win at any nesting depth; sibling keys preserved; `base` key consumed | real — config-inheritance contract |
+| `test_base_merge_lists_replace_not_concat` | lists replace wholesale (no concat surprises) | real |
+| `test_missing_base_raises` | dangling base path → FileNotFoundError naming both files | real |
+| `test_chained_base_rejected` | base-of-base → ValueError (one level only, by design) | real |
+| `test_deep_merge_does_not_mutate_inputs` | merge is pure | real |
+
 ### [test_dataset.py](test_dataset.py)
 
 | Test | Checks | Strictness |
@@ -101,14 +130,34 @@ Fresh temp dir per test — no cross-test state leakage.
 | `test_parse_extra_spec_empty` | `None` and `[]` both → `[]` | shallow |
 | `test_parse_extra_spec_flexible_names` | Arbitrary names parsed, band indices preserved | real — flexible-EXTRA guarantee |
 | `test_parse_extra_spec_rejects_missing_keys` | Missing `name` or `band` → `ValueError` | real |
-| `test_dataset_rejects_soft_labels` | `boundary_handling="soft_labels"` raises `NotImplementedError` (deferred to v2.1, training.md §5.5) | real — guards a config option that isn't wired to code |
+| `test_dataset_rejects_soft_labels` | `boundary_handling="soft_labels"` raises `NotImplementedError` (deferred to a later iteration, training.md §5.5) | real — guards a config option that isn't wired to code |
 | `test_dataset_rejects_unknown_boundary_handling` | Unknown value (e.g. `"bogus"`) raises `ValueError` | real |
 | `test_dataset_rgb_only` | `(3, 64, 64) float32` image, `(64, 64) int64` label, str `tile_id`; negative tiles return synthetic all-zero label (no label file needed) | real — end-to-end plumbing |
 | `test_dataset_with_variable_extra` | Bands [0, 2] + arbitrary names → `(5, 64, 64)` | real — flexible-EXTRA end-to-end |
 | `test_dataset_label_values_in_set` | Every label's unique values ⊂ {0, 1, 255} | real |
 | `test_boundary_dilation_adds_ignore` | Width=2 dilation creates 255 band and preserves interior 1s | real |
+| `test_substitute_nodata_all_band_zero_becomes_ignore_and_mean` | §4.4: all-band-zero pixel → label 255 + per-channel mean; single-band dropout → mean substitution only (label kept); non-zero untouched | real — pure-function NoData logic |
+| `test_substitute_nodata_noop_when_no_zeros` | No zeros → rgb and label returned unchanged | real |
 | `test_init_raises_on_rgb_channel_name_mismatch` | RTSDataset refuses stats with permuted RGB channel names (training.md §4.5) | real — Critical C1 (2026-05-02) |
 | `test_init_raises_on_extra_channel_name_mismatch` | RTSDataset refuses stats with mis-ordered EXTRA channel names | real — Critical C1 (2026-05-02) |
+| `test_read_with_retry_recovers_from_transient_failure` | Transient GCS/VSI read error is retried; eventual success returned (no real backoff) | real — guards against single transient read crashing a multi-hour run (2026-06-04) |
+| `test_read_with_retry_raises_after_exhausting_attempts` | Persistently corrupt tile fails all 4 attempts and raises `RuntimeError` naming the tile id | real — corrupt tiles surface loudly, not silently |
+
+### [test_mixing.py](test_mixing.py)
+
+Sample-mixing augs (`data/mixing.py`, family F). Pure array ops; synthetic tiles + fake sampler.
+
+| Test | Checks | Strictness |
+|---|---|---|
+| `test_copy_paste_adds_positives_and_preserves_dtype` | copy-paste pastes an instance: positives appear, shape/dtype preserved | real — the rare-object lever |
+| `test_copy_paste_no_source_instances_is_identity` | negative source ⇒ identity (nothing to paste) | real — edge case |
+| `test_copy_paste_preserves_ignore_pixels` | pasted positives never overwrite ignore(255) | real — label-integrity guard |
+| `test_copy_paste_rgb_only_path` | works with `extra=None` | real — RGB-only compat |
+| `test_mosaic_output_shape_and_density` | mosaic returns tile_size, valid labels, positives present | real |
+| `test_cutmix_swaps_patch` | source patch (incl. positives) enters target | real |
+| `test_mixup_blends_and_unions_labels` | pixel blend + label union of both positive blocks | real |
+| `test_augmenter_off_by_default_is_identity` | no `mixing` config ⇒ bit-identical passthrough (default-off guarantee) | real — protects existing runs |
+| `test_augmenter_copy_paste_p1_fires` | `copy_paste.p=1` ⇒ op fires (positives added) | real — dispatch guard |
 
 ### [test_transforms.py](test_transforms.py)
 
@@ -117,6 +166,13 @@ Fresh temp dir per test — no cross-test state leakage.
 | `test_color_aug_does_not_touch_extra` | EXTRA channels are bit-identical after color-only augmentation (training.md §9.2) | real — Critical C3 (2026-05-02) |
 | `test_geometric_aug_applies_to_extra_and_mask` | HorizontalFlip applies to RGB, EXTRA, and mask jointly | real |
 | `test_extra_none_path_still_works` | RGB-only call path (no `extra` kwarg) preserved through the split | real — backward-compat for baseline RGB-only |
+| `test_pad_mask_ignore_default_is_background` | Default RandomScale pad border in the mask is background (0) — documents the baked-in baseline | real — Stage 3B A/B control |
+| `test_pad_mask_ignore_true_labels_border_ignore` | `multi_scale.pad_mask_ignore: true` labels the pad border ignore (255), not background | real — Stage 3B pad-fix (albumentations 2.x `fill_mask`) |
+| `test_auto_policy_default_none_is_handtuned` | No `auto_policy` block ⇒ hand-tuned color stage (locked baseline), EXTRA untouched | real — backward-compat for the auto-policy gate |
+| `test_trivialaugment_runs_preserves_shape_and_mask` | `auto_policy.mode=trivialaugment` runs; shape/dtype preserved; mask + EXTRA bit-identical (photometric never touches them) | real — family-F auto-policy contract |
+| `test_randaugment_runs_with_num_ops` | `auto_policy.mode=randaugment, num_ops=2` runs; shape preserved; mask untouched | real — family-F auto-policy contract |
+| `test_auto_policy_pool_excludes_shadow_scramblers` | op pool omits solarize/invert/posterize/equalize/channel-shuffle/grayscale (shadow-cue safety) | real — the RTS shadow-safety guard |
+| `test_auto_policy_invalid_mode_raises` | unknown `auto_policy.mode` → `ValueError` | shallow |
 
 ### [test_models.py](test_models.py)
 
@@ -128,7 +184,35 @@ Fresh temp dir per test — no cross-test state leakage.
 | `test_output_bias_for_imbalanced_prior` | prior=0.01 → bias ≈ -log(99) | real |
 | `test_output_is_logits_not_probabilities` | Random-input outputs span beyond [0, 1] | real — logits contract |
 | `test_invalid_bias_prior_rejected` | Prior outside (0, 1) → `ValueError` | shallow |
-| `test_unknown_architecture_rejected` | Unsupported arch → clear `ValueError` | shallow |
+| `test_build_model_segformer_output_shape_and_bias` | SegFormer (mit_b5) builds, returns (B,1,H,W) logits at input res, and the class prior flows through its `.segmentation_head[0]` bias (fair arch comparison) | real — guards the new architecture branch (2026-06-06) |
+| `test_build_model_smp_decoder_sweep` | §8.2 arch sweep: each smp decoder (`deeplabv3plus`/`fpn`/`pspnet`/`manet`) builds on EffB5, returns (B,1,H,W) logits, shares the `.segmentation_head[0]` bias path (parametrized) | real — guards the decoder-sweep branch (2026-06-15) |
+| `test_unknown_architecture_rejected` | Unsupported arch (`bogusnet`) → clear `ValueError` (`segformer` is now supported) | shallow |
+| `test_fusion_default_and_ensemble_are_plain_models` | `model.fusion` absent (=early) and `ensemble` both build a normal single-encoder model (F4 averaging is eval-side) | real — fusion default + back-compat (2026-06-18) |
+| `test_fusion_stem_init_zeroes_extra_input_channels` | F1: encoder stem-conv weights zero on EXTRA channels (≥3), nonzero RGB | real — guards the F1 init |
+| `test_fusion_stem_init_invariant_to_extra_at_init` | F1: at init, changing only EXTRA channels leaves the output unchanged (epoch-0 == RGB-only) | real — the F1 contract |
+| `test_fusion_chan_attn_shape_gate_and_delegation` | F2: wrapper returns (B,1,H,W) logits, delegates `.encoder`/`.segmentation_head` (bias-init flows through), gate per-channel in (0,1) | real — guards F2 + freeze/bias compat |
+| `test_fusion_chan_attn_param_groups_split` | F2: gate params land in the non-encoder (decoder) group so freeze schedule + backbone-LR target correctly | real — F2 × freeze.py integration |
+| `test_fusion_unknown_rejected` | Unsupported `model.fusion` → clear `ValueError` | shallow |
+| `test_heavy_fusion_shape_delegation_and_uses_extra` | F3/F5: (B,1,H,W) logits, delegates `.encoder`/`.segmentation_head`, has 2nd `.extra_encoder`, output depends on EXTRA channels | real — guards F3/F5 dual-encoder wiring |
+| `test_heavy_fusion_rejects_rgb_only` | F3/F5 with no EXTRA channels → `ValueError` | shallow — guard |
+| `test_build_model_foundation_rgb` | `arch='foundation'` (DINOv3 ViT) builds, (B,1,H,W) logits, class-prior bias flows through `.segmentation_head[0]` | real — guards the FM branch (2026-06-18) |
+| `test_build_model_foundation_rejects_extra_channels` | foundation is RGB-only for now → declaring EXTRA raises (Step 4b) | shallow |
+
+### [test_foundation.py](test_foundation.py)
+
+Forward-path tests for `models/foundation.py` (FoundationSegmenter: DINOv3/ViT encoder → simple feature pyramid → FPN decoder → logits). CPU, `pretrained=False`. Added 2026-06-18 (second-wave Step 4).
+
+| Test | Asserts | Strictness |
+|---|---|---|
+| `test_foundation_forward_shape` | ViT `forward_intermediates` → pyramid → decoder → `(B,1,H,W)` at input res | real — the core ViT→dense chain |
+| `test_foundation_taps_four_blocks_incl_deepest` | 4 evenly-spaced block taps, deepest included, sorted | real — pyramid-diversity contract |
+| `test_foundation_exposes_encoder_and_head` | `.encoder` (freeze/LLRD) + `.segmentation_head[0]` bias-init compatible | real — integration hooks |
+| `test_foundation_output_is_logits` | random-input outputs span beyond [0,1] | shallow — logits contract |
+| `test_foundation_extra_channels_forward_shape` | RGB+EXTRA (in_channels=4): patch-embed widened to 4, forward → `(B,1,H,W)` | real — guards the DINOv3+EXTRA adapter |
+| `test_foundation_extra_channels_zero_init_is_rgb_only_at_init` | EXTRA channels zero-init ⇒ epoch-0 invariant to EXTRA (fair F1-style start) | real — fairness/init guarantee |
+| `test_sam2_hierarchical_forward_shape` | SAM2/Hiera (`sam2_hiera_tiny`): native {/4,/8,/16,/32} pyramid → 1×1 proj (4) → FPN → `(B,1,H,W)` | real — guards the hierarchical foundation branch (2026-06-22) |
+| `test_sam2_exposes_encoder_and_head` | `.encoder.parameters()` (LP-FT/freeze) + `.segmentation_head[0]` bias-init compatible | real — integration hooks for the no-LLRD path |
+| `test_sam2_rejects_extra_channels` | SAM2/Hiera path is RGB-only (stem not exposed) → `in_channels≠3` raises `NotImplementedError` | shallow — guard |
 
 ### [test_losses.py](test_losses.py)
 
@@ -168,6 +252,7 @@ Fresh temp dir per test — no cross-test state leakage.
 | `test_cosine_exact_halfway_at_t_over_tmax_0p5` | Mid-cosine LR brackets (base_lr + min_lr)/2 | real |
 | `test_phase1_epoch_zero_handled_safely` | epoch=0 treated as Phase 1, no crash | shallow |
 | `test_lr_range_test_endpoints_and_log_midpoint` | lr_range_test: step 0 → lr_min, last step → lr_max, midpoint → geometric mean | real — Phase 0 §3.2 implementation |
+| `test_phase2_backbone_lr_scale_applied` | LLRD: a backbone group's per-epoch LR is multiplied by its `lr_scale`; groups without it (decoder/legacy) unaffected | real — §8.2a LLRD × scheduler (2026-06-18) |
 | `test_lr_range_test_applies_same_lr_to_all_groups` | All param groups receive the same LR under range-test mode | real |
 | `test_lr_range_test_rejects_invalid_bounds` | lr_min ≥ lr_max → `ValueError` | shallow — guard |
 | `test_unknown_scheduler_raises` | Unknown `scheduler:` value → `ValueError` | shallow — dispatch guard |
@@ -207,6 +292,9 @@ Fresh temp dir per test — no cross-test state leakage.
 | `test_accumulator_speckle_fp_filtered` | 1-px FP below min_blob_size doesn't count | real |
 | `test_accumulator_pr_auc_ranges_between_zero_and_one` | PR-AUC in [0, 1]; geomean equals single-ratio value | real |
 | `test_accumulator_no_positive_tiles_produces_zero_pr_auc` | No-positive val → PR-AUC=0.0 gracefully | real — edge case |
+| `test_bootstrap_off_by_default` | No `bootstrap_ratios` → no boot keys emitted (default frozen) | real — Stage 0.2 guard |
+| `test_bootstrap_emits_mean_and_ci_within_range` | Enabled → per-ratio mean/lo/hi in [0,1], lo ≤ mean ≤ hi | real — Stage 0.2 bootstrap readout |
+| `test_bootstrap_does_not_change_gate_metric` | Enabling bootstrap leaves the gate geomean bit-identical (separate RNG) | real — eval-freeze guarantee |
 
 ### [test_freeze.py](test_freeze.py)
 
@@ -217,6 +305,8 @@ Fresh temp dir per test — no cross-test state leakage.
 | `test_build_param_groups_partitions_by_id` | Every model param appears in exactly one named group | real |
 | `test_build_param_groups_lrs_set` | Decoder/backbone LRs + weight_decay set as requested | shallow |
 | `test_optimizer_respects_frozen_encoder` | After freeze + step, encoder weights unchanged | real — integration check |
+| `test_build_llrd_param_groups_decay_and_coverage` | LLRD (§8.2a): per-layer `lr_scale` increases stem→top (top=1.0), decoder group=1.0, every model param covered exactly once | real — guards LLRD grouping (2026-06-18) |
+| `test_build_llrd_rejects_bad_decay` | `llrd_decay` outside (0,1] → `ValueError` | shallow |
 
 ### [test_mlflow_utils.py](test_mlflow_utils.py)
 
@@ -255,6 +345,42 @@ Fresh temp dir per test — no cross-test state leakage.
 > when packaging misbehaves on a real run, or by feeding the smoke test's
 > synthetic MLflow run into `package_model()` end-to-end.
 
+### [test_inference_pipeline.py](test_inference_pipeline.py)
+
+Inference pipeline (`inference/` + grid/merge entry scripts), GPU-free. Fixture: synthetic 512px RGBA quads written on the **real zoom-15 mosaic grid** (production grid constants, small rasters), so quad-bounds math is exercised against an observed Planet quad coordinate.
+
+| Test | Checks | Strictness |
+|---|---|---|
+| `test_quad_bounds_match_observed_planet_quad` | grid math reproduces real quad 0-1515's GCS bounds | real — grid anchor |
+| `test_grid_constants_consistent` | GRID_N × QUAD_SIZE_M = world extent; resolution derivation | shallow |
+| `test_load_quad_index_validates_columns` | missing index columns → ValueError | shallow |
+| `test_read_tile_interior` | full-quad window read, no NoData | real |
+| `test_read_tile_straddles_quads` | tile spanning 2 quads mosaics correctly; alpha=0 → NoData | real — §4.1 quad-straddling |
+| `test_read_tile_outside_coverage_is_all_nodata` | no indexed quad → all-NoData | real — §5.3 |
+| `test_dataset_normalizes_and_mean_substitutes` | NoData pixels mean-substituted pre-z-score (normalize to 0); valid pixels z-scored | real — §5.3/§4.4 parity |
+| `test_dataset_flags_all_nodata` | all-NoData tile flagged for skip+manifest | real |
+| `test_dataset_rejects_missing_columns` | tile-list schema guard | shallow |
+| `test_tile_grid_counts_and_determinism` | deterministic ids, unique, every tile intersects a quad, tile = 512 px | real — §4.4 |
+| `test_tile_grid_aoi_filter` | AOI subset preserves global grid alignment | real |
+| `test_tta_inverse_correctness` | flip/rot-equivariant model ⇒ TTA mean == identity pass (exposes wrong inverse) | real — §7.2 |
+| `test_temperature_applied_to_logits_before_sigmoid` | sigmoid(logit/T), not T on probabilities | real — §7.3 |
+| `test_tta_pass_counts` | none/minimal/standard/full = 1/2/4/8 passes | shallow |
+| `test_predict_probs_rejects_unknown_tta` | bad tta config → ValueError | shallow |
+| `test_runtime_package_mismatch_aborts` | runtime vs package precision/tta mismatch aborts; null defers | real — §14 calibration-mismatch guard |
+| `test_probability_tile_roundtrip` | float32, NoData −1.0, EPSG:3857 roundtrip | real — §9.1 |
+| `test_binary_mask_roundtrip` | uint8, NoData 255 roundtrip | real — §9.2 |
+| `test_manifest_resume_skips_completed` | restart resumes from inference_log.json; skip reasons + counts kept | real — §8.3 |
+| `test_gaussian_weights_peak_center_symmetric` | σ=128 weight grid peaks center, symmetric | shallow |
+| `test_merge_weighted_average_and_nodata` | equal-weight overlap → exact mean; NoData strip falls back to valid tile | real — §4.3 |
+| `test_merge_ignores_missing_tiles` | absent (skipped) tile rasters don't break the merge | real |
+| `test_read_tile_scale05_expands_fov` | scale=0.5 decimated read: 2× ground bbox → same px dims, values survive bilinear | real — §6.2 scale path |
+| `test_read_tile_scale05_nodata_stays_crisp` | alpha resampled nearest: NoData boundary exact under decimation | real |
+
+> Not covered (deliberate): `scripts/inference.py` main loop and
+> `vectorize_predictions.py` are exercised by the Tier-2 real-data smoke
+> (see inference.md §13 pre-inference checklist), not unit tests — they are
+> thin glue over the tested modules.
+
 ### [test_train_smoke.py](test_train_smoke.py)
 
 End-to-end training loop on the synthetic fixture (~130 s, still Tier 1 — no GCS, no GPU). Asserts the hardened criteria from the plan Step 7a.
@@ -267,9 +393,14 @@ End-to-end training loop on the synthetic fixture (~130 s, still Tier 1 — no G
 | `test_resume_checkpoint_rotation` | resume_latest-*.pth exists post-training | real |
 | `test_no_nan_in_model_params` | Final EMA weights all finite | real — numerical guard |
 | `test_mlflow_run_written` | MLflow directory populated | shallow |
+| `test_train_iou_logged` | `train_iou` logged per epoch ∈ [0,1] (needed for experiments.md §5.4 data-scaling gap + §8.1 Phase-5 gate) | real — guards the train-metric add (2026-06-07) |
 | `test_ema_divergent_from_live_after_training` | EMA ≠ live weights after unfreeze (exercises update path) | real — plan risk #15 |
 | `test_prediction_shows_response_on_positive_region` | max pred prob > 0.1 on a positive tile (collapse guard) | real — plan risk (mode collapse) |
 | `test_train_smoke_resume_then_continue` | Resume from epoch-2 snapshot for 1 more epoch; EMA shadow is restored and continues decaying (key set unchanged, post-resume ≠ saved) | real — Important I5 (2026-05-02); guards EMA-restore-on-resume audit fix |
+| `test_select_preview_tiles_uses_fixed_list` | A `preview_tiles.yaml` UID list is used verbatim (intersected with val, order preserved) | real — fixed preview contract (2026-06-05) |
+| `test_select_preview_tiles_is_seed_independent` | Same fixed list → identical previews for seed 42 vs 43 (cross-experiment comparability) | real — guards the seed-coupling bug fix |
+| `test_select_preview_tiles_falls_back_when_none_in_val` | If no configured tile is in val, fall back to the seeded heuristic | real — graceful fallback |
+| `test_resume_ema_shadow_on_model_device` | `_resume_from` moves the restored EMA shadow to the model's device; `ema.update` must not raise cpu/cuda mismatch (skipped without CUDA) | real — regression for 2026-06-11 A100 resume crash |
 
 ---
 

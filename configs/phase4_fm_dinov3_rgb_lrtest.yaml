@@ -1,0 +1,25 @@
+# Step 4a (§8.2a): per-family LR-range test for the DINOv3 foundation encoder, RGB-only.
+# Run FIRST — picks base_lr for phase4_fm_dinov3_rgb.yaml. Single short ramp; train.py
+# skips validation under lr_range_test (deliverable is lr_range_test.csv).
+base: phase0c_seed42.yaml
+data:
+  data_root: /outputs/v1.0/data_local
+  normalization_stats_path: /outputs/v1.0/staging/v1_splits/normalization_stats.json
+channels:
+  rgb: true
+  extra: []
+model:
+  architecture: foundation
+  backbone: vit_base_patch16_dinov3
+  pretrained: true
+optimizer:
+  weight_decay: 5.0e-2          # ViT-appropriate
+training:
+  max_epochs: 1                 # range test is a single ramp over the run's steps
+lr_schedule:
+  scheduler: lr_range_test
+  lr_range_min: 1.0e-6
+  lr_range_max: 1.0e-2
+  freeze_backbone_epochs: 0     # range test probes the full model end-to-end
+mlflow:
+  run_name: phase4_fm_dinov3_rgb_lrtest

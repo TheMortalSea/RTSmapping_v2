@@ -78,6 +78,40 @@ def test_geometric_aug_applies_to_extra_and_mask():
     np.testing.assert_array_equal(out["mask"], np.ascontiguousarray(mask[:, ::-1]))
 
 
+def _scale_down_cfg() -> dict:
+    """All ops off except a deterministic 0.5x RandomScale (forces PadIfNeeded to pad)."""
+    cfg = _aug_cfg(color_p=0.0, geo_p=0.0)
+    cfg["multi_scale"] = {"scale_range": [0.5, 0.5], "p": 1.0}
+    return cfg
+
+
+def test_pad_mask_ignore_default_is_background():
+    """Default (flag absent): the RandomScale pad border in the mask is background (0).
+
+    This documents the baked-in baseline behaviour the A/B compares against.
+    """
+    rng = np.random.default_rng(3)
+    rgb = rng.integers(0, 256, size=(64, 64, 3), dtype=np.uint8)
+    mask = np.ones((64, 64), dtype=np.uint8)  # all-RTS so any 0 in output is from padding
+    transform = build_train_transforms(tile_size=64, aug_cfg=_scale_down_cfg())
+    out = transform(image=rgb, mask=mask)
+    assert (out["mask"] == 0).any(), "expected a background-labeled pad border by default"
+    assert (out["mask"] == 255).sum() == 0, "no ignore pixels should appear by default"
+
+
+def test_pad_mask_ignore_true_labels_border_ignore():
+    """With multi_scale.pad_mask_ignore=true, the pad border becomes ignore (255)."""
+    rng = np.random.default_rng(3)
+    rgb = rng.integers(0, 256, size=(64, 64, 3), dtype=np.uint8)
+    mask = np.ones((64, 64), dtype=np.uint8)
+    cfg = _scale_down_cfg()
+    cfg["multi_scale"]["pad_mask_ignore"] = True
+    transform = build_train_transforms(tile_size=64, aug_cfg=cfg, ignore_index=255)
+    out = transform(image=rgb, mask=mask)
+    assert (out["mask"] == 255).any(), "expected an ignore-labeled pad border with the flag on"
+    assert (out["mask"] == 0).sum() == 0, "pad border should be ignore(255), not background(0)"
+
+
 def test_extra_none_path_still_works():
     """Existing RGB-only call path (no extra kwarg) must still work."""
     rgb, _, mask = _make_inputs(seed=11)
@@ -86,3 +120,55 @@ def test_extra_none_path_still_works():
     np.testing.assert_array_equal(out["image"], rgb)
     np.testing.assert_array_equal(out["mask"], mask)
     assert "extra" not in out
+
+
+# --- Auto-augment policies (RandAugment / TrivialAugment), family F ---
+
+def _auto_cfg(mode: str, **kw) -> dict:
+    """Base aug cfg (geometry+scale off) with an auto_policy block."""
+    cfg = _aug_cfg(color_p=0.0, geo_p=0.0)  # geometry/scale off → mask & shape stay fixed
+    cfg["auto_policy"] = {"mode": mode, **kw}
+    return cfg
+
+
+def test_auto_policy_default_none_is_handtuned():
+    """No auto_policy key → hand-tuned color stage (locked baseline), runs unchanged."""
+    rgb, extra, mask = _make_inputs(seed=1)
+    cfg = _aug_cfg(color_p=1.0, geo_p=0.0)
+    assert "auto_policy" not in cfg
+    out = build_train_transforms(tile_size=64, aug_cfg=cfg)(image=rgb, extra=extra, mask=mask)
+    assert out["image"].shape == rgb.shape
+    np.testing.assert_array_equal(out["extra"], extra)  # color stage never touches EXTRA
+
+
+def test_trivialaugment_runs_preserves_shape_and_mask():
+    rgb, extra, mask = _make_inputs(seed=2)
+    out = build_train_transforms(tile_size=64, aug_cfg=_auto_cfg("trivialaugment", magnitude=1.0))(
+        image=rgb, extra=extra, mask=mask)
+    assert out["image"].shape == rgb.shape and out["image"].dtype == rgb.dtype
+    np.testing.assert_array_equal(out["mask"], mask)      # photometric ops never touch the mask
+    np.testing.assert_array_equal(out["extra"], extra)    # nor EXTRA
+
+
+def test_randaugment_runs_with_num_ops():
+    rgb, extra, mask = _make_inputs(seed=3)
+    out = build_train_transforms(tile_size=64, aug_cfg=_auto_cfg("randaugment", num_ops=2, magnitude=0.5))(
+        image=rgb, extra=extra, mask=mask)
+    assert out["image"].shape == rgb.shape
+    np.testing.assert_array_equal(out["mask"], mask)
+
+
+def test_auto_policy_pool_excludes_shadow_scramblers():
+    """The op pool must omit shadow-cue scramblers (solarize/invert/posterize/equalize/
+    channelshuffle/grayscale) — RTS keys on headwall shadows + tonal contrast."""
+    from data.transforms import _AUTOAUG_EXCLUDED, _auto_policy_pool
+    names = {type(op).__name__.lower() for op in _auto_policy_pool(0.5)}
+    for banned in _AUTOAUG_EXCLUDED:
+        assert not any(banned in n for n in names), f"shadow scrambler {banned!r} leaked into pool"
+
+
+def test_auto_policy_invalid_mode_raises():
+    import pytest
+    rgb, _, mask = _make_inputs(seed=4)
+    with pytest.raises(ValueError):
+        build_train_transforms(tile_size=64, aug_cfg=_auto_cfg("autoaugment"))(image=rgb, mask=mask)

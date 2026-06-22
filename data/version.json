@@ -1,0 +1,56 @@
+{
+  "version": "1.0",
+  "maturity": "STANDARD — first stable training dataset (declared 2026-06-13 after full fresh-from-rasters QC; see docs/v1.0_qc.md). Labels + structure flawless; positives pristine (batch2 full-frame bug fixed). Stable ground for the experiment program, with minor fixes/additions expected over time. Known issues (negatives only): 49 all-zero + 564 degraded-band tiles to drop at the next re-stage (gs://rts-mapping-v2/training/v1.0/qc/known_issues_v1.0.json). EXTRA stack absent → Phase 4 blocked.",
+  "created_date": "2026-06-13",
+  "validated_date": "2026-06-13",
+  "gcs_root": "gs://rts-mapping-v2/training/v1.0",
+  "source_gcs_root": "gs://abrupt_thaw/RTS_MODEL_V2/DATA/TRAINING_DATA (data-production bucket; mirrored into our own bucket after the v2-alpha in-place-rewrite loss — see computing/migrate_vm.md)",
+  "frozen_snapshot": "metadata.csv (cleaned, 22,259 tiles) + splits.yaml + normalization_stats.json, all under gcs_root. Gate (mu0/sigma0/G) being re-measured by the 3-seed Phase 0c baseline on this snapshot.",
+  "imagery_source": "PlanetScope Quarterly Basemap 2024 (July-September), RGB, ~3m/px",
+  "crs": "EPSG:3857",
+  "tile_size_px": 512,
+  "label_values": {"0": "background", "1": "RTS", "255": "ignore"},
+  "tile_counts": {
+    "total": 22259,
+    "positive": 1718,
+    "negative": 20541,
+    "note": "Source metadata had 22,296 (1,755 pos / 20,541 neg). Dropped 37 QC-flagged positives (28 empty-mask + 9 band>50%-zero) → 1,718 pos. Negatives all ARTS-sourced; positives tagged batch1/2/3. See gcs_root/dropped_tiles.json."
+  },
+  "split_counts": {
+    "ecoregions_total": 49,
+    "regions": {"train": 40, "val_realistic": 5, "test_realistic": 4},
+    "tiles": {"train": "1513 pos / 16438 neg", "val_realistic": "98 pos / 2053 neg", "test_realistic": "107 pos / 2050 neg"},
+    "note": "Regenerated 2026-06-16 by scripts/create_splits.py (seed 42, spatial-block) AFTER the RegionName hotfix (see region_hotfix below). Leakage-free: 0 ecoregions span >1 split. Supersedes the pre-hotfix split (train 31 / val 8 / test 11 regions), which had ~15.7% cross-split tile leakage incl. test contamination."
+  },
+  "region_hotfix": {
+    "applied": "2026-06-16",
+    "what": "data team corrected RegionName (Dinerstein ecoregion) for ~59% of tiles — the original circumpolar_subregions.geojson was cropped to the inference domain + a centroid CRS step was off, mis-assigning ecoregions and leaking tiles across the spatial-block split (incl. into test). Imagery/labels unchanged; only region labels moved.",
+    "source": "abrupt_thaw/RTS_MODEL_V2/DATA/TRAINING_DATA/metadata_region_hotfix.csv (Robb Young; confirmed by Heidi Rodenhizer)",
+    "applied_by": "scripts/apply_region_hotfix.py then scripts/create_splits.py",
+    "provenance": "pre-hotfix metadata/splits preserved in GCS as *.pre_hotfix and locally as metadata_pre_hotfix.csv",
+    "experiment_impact": "Phase-0/3/5 experiment numbers were computed on the pre-hotfix (leaky) split → absolute scores optimistic; relative gate comparisons (all candidates same split) ~preserved. NOT re-run (user policy: honest FINAL test only). Final test + Phase-4 EXTRA ablation use this corrected split."
+  },
+  "data_team_test_set": "gcs_root/TESTING/ holds a separate data-team test set (3,000 tiles: 349 pos / 2,651 neg, 22 regions). All tile_ids are also in the main metadata and all regions overlap train regions (spatially entangled). Final-lock decision (use as Test-Realistic vs. spatial-block test split) is OPEN — see docs/v1.0_rebaseline.md.",
+  "extra_channels": {
+    "description": "NONE in v1.0 — EXTRA/ is empty in the regenerated dataset. Phase 4 (EXTRA channel groups) is blocked until the data team appends the EXTRA stack per data/data.md §9.",
+    "bands": []
+  },
+  "normalization_stats_gcs": "gs://rts-mapping-v2/training/v1.0/normalization_stats.json",
+  "data_quality_notes": [
+    "Authoritative full QC 2026-06-13 (scripts/qc_full_dataset.py, fresh from rasters over all 22,296 source tiles; see docs/v1.0_qc.md). Labels + structure flawless: 0 unreadable, all 512²/3-band/uint8/EPSG:3857; positive labels 0 missing / 0 invalid-values / 0 empty / 0 full-frame (batch2 bug fixed); 0 duplicate IDs/centroids.",
+    "Known issues (NEGATIVES only): 49 all-zero (black) + 564 degraded (a band >50% zero) tiles — drop at next re-stage; list in gs://rts-mapping-v2/training/v1.0/qc/known_issues_v1.0.json.",
+    "Snapshot-staging correction: stage_v1_snapshot.py dropped 37 positives using the STALE mid-drop QC; the fresh QC shows only 9 were genuinely degraded — the other 28 'empty-mask' positives are fine in the current data and were WRONGLY dropped. Restore those 28 at the next re-stage (target clean positives = 1746, not 1718). The running baseline uses 1718; impact negligible (1.6%).",
+    "567 positives at 74-76°N (just above the 60-74°N inference domain) — kept; benign."
+  ],
+  "not_in_v1": [
+    "EXTRA stack (NDVI/NBR/SE-PCA/SE-Proto/Tasseled-Cap)",
+    "NIR (Sentinel-2)",
+    "Relative Elevation (ArcticDEM)",
+    "Shaded Relief (ArcticDEM)",
+    "slope",
+    "aspect",
+    "NDMI",
+    "SAR backscatter"
+  ],
+  "upgrade_path": "On any dataset change: re-run create_splits + compute_normalization_stats, bump this version string and the one in normalization_stats.json, re-baseline the 3-seed gate. Stage frozen snapshots into gs://rts-mapping-v2/training/<version>/ (our bucket) so external rewrites cannot destroy reproducibility."
+}

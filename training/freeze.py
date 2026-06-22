@@ -62,3 +62,65 @@ def build_param_groups(
         {"name": "decoder", "params": decoder_params, "lr": decoder_lr, "weight_decay": weight_decay},
         {"name": "backbone", "params": backbone_params, "lr": backbone_lr, "weight_decay": weight_decay},
     ]
+
+
+def _vit_layer_index(param_name: str, n_blocks: int) -> int:
+    """Depth index of an encoder param for LLRD: stem=0, blocks.i=i+1, top (final
+    norm / other)=n_blocks+1. Higher index = closer to the head = higher LR."""
+    if ".blocks." in param_name:
+        return int(param_name.split(".blocks.")[1].split(".")[0]) + 1
+    tail = param_name.split("encoder.", 1)[-1]
+    if tail.startswith(("patch_embed", "cls_token", "pos_embed", "reg_token", "mask_token")):
+        return 0
+    return n_blocks + 1
+
+
+def build_llrd_param_groups(
+    model: nn.Module,
+    lr: float,
+    weight_decay: float,
+    llrd_decay: float,
+) -> list[dict]:
+    """Layer-wise LR-decay param groups for a ViT-style encoder (§8.2a).
+
+    Each encoder layer (stem → blocks → final-norm) becomes its own named-"backbone"
+    group carrying `lr_scale = llrd_decay ** (top - layer_index)`, so the top encoder
+    layer keeps the full backbone LR and earlier layers decay toward the stem
+    (protecting general low-level pretrained features). Non-encoder params (decoder,
+    pyramid, head) form one "decoder" group with `lr_scale = 1.0`.
+
+    The scheduler multiplies each group's per-epoch LR by `lr_scale` (so the encoder
+    vs decoder ratio is still set by `backbone_lr_multiplier`; LLRD adds the taper).
+    All groups start at `lr`; the scheduler overrides per epoch.
+
+    Args:
+        model: must expose `.encoder` with a `.blocks` ModuleList (ViT/Eva).
+        lr: initial LR for every group (overwritten by the scheduler).
+        weight_decay: applied to all groups.
+        llrd_decay: per-layer decay factor in (0, 1] (e.g. 0.7).
+    """
+    if not (0.0 < llrd_decay <= 1.0):
+        raise ValueError(f"llrd_decay must be in (0, 1], got {llrd_decay}")
+    enc = model.encoder
+    n_blocks = len(enc.blocks)
+    top = n_blocks + 1
+    enc_ids = {id(p) for p in enc.parameters()}
+
+    by_layer: dict[int, list] = {}
+    decoder_params: list = []
+    for name, p in model.named_parameters():
+        if id(p) in enc_ids:
+            by_layer.setdefault(_vit_layer_index(name, n_blocks), []).append(p)
+        else:
+            decoder_params.append(p)
+
+    groups: list[dict] = []
+    for layer in sorted(by_layer):
+        scale = llrd_decay ** (top - layer)
+        groups.append({"name": "backbone", "params": by_layer[layer], "lr": lr,
+                       "weight_decay": weight_decay, "lr_scale": scale})
+    groups.append({"name": "decoder", "params": decoder_params, "lr": lr,
+                   "weight_decay": weight_decay, "lr_scale": 1.0})
+    logger.info("LLRD param groups: %d encoder layers (decay=%g) + 1 decoder group",
+                len(by_layer), llrd_decay)
+    return groups

@@ -117,11 +117,11 @@ def _make_warmup_cosine_setter(cfg: dict) -> Callable[..., None]:
         dec_lr = _decoder_lr(p2_epoch)
         bb_lr = _backbone_lr(p2_epoch)
 
+        # `lr_scale` (default 1.0) lets LLRD give each encoder layer its own LR
+        # (training/freeze.build_llrd_param_groups); non-LLRD groups carry no scale.
         for group in optimizer.param_groups:
-            if group.get("name") == "backbone":
-                group["lr"] = bb_lr
-            else:
-                group["lr"] = dec_lr
+            base = bb_lr if group.get("name") == "backbone" else dec_lr
+            group["lr"] = base * group.get("lr_scale", 1.0)
 
     logger.info(
         "LR setter built (warmup_cosine): freeze_epochs=%d, base_lr=%g, backbone_mult=%g, "

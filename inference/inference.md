@@ -1,5 +1,18 @@
 # RTS Segmentation Model v2: Inference Pipeline
 
+> **Implementation status (2026-06-12).** Phase-1 single-scale pipeline implemented and
+> smoke-tested end-to-end on real 2025-Q3 quads: `inference/{quad_index,tiles,predictor,writer}.py`
+> + `scripts/{build_quad_index,generate_tile_grid,inference,merge_predictions,vectorize_predictions}.py`.
+> §3.1 correction discovered at implementation: the 2025 data in `gs://pdg-planet-data` is **not**
+> pre-cut tiles but Planet **quad deliveries** — 4096×4096 uint8 RGBA quads on the zoom-15 mosaic
+> grid (2048×2048 grid over EPSG:3857; alpha band = NoData; per-quad UDM2 + metadata; a quad may
+> appear under several order UUIDs). Tiles are therefore 512×512 **windowed reads** that may
+> straddle quad boundaries (`inference/tiles.py` mosaics intersecting quads per tile). The §14
+> calibration-mismatch assertion is implemented (`inference/predictor.py:assert_runtime_matches_package`).
+> Deferred, per spec gates: multi-scale (§6.4), TTA validation (§7.4/8.5b), EXTRA channels
+> (definition pending upstream), final calibration (threshold/temperature still null). Smoke
+> evidence: `/mnt/outputs/inference/` (dev package from phase0c_seed42 with DEV-ONLY threshold).
+
 ## 1. Inference Objective
 
 Deploy the trained segmentation model for pan-arctic inference (60-74°N) on 2025 PlanetScope basemap imagery to produce an RTS survey map. The pipeline prioritizes **precision over recall** to minimize false alarms in the final product.
@@ -11,17 +24,30 @@ The data and model operation in inference should exactly match those in training
 
 ### 2.1 Compute Environment
 
+Decided 2026-06-15 (`computing/infrastructure.md`). Everything inference-side is **co-located in
+`us-west1`** with the input imagery — `pdg-planet-data` is single-region **US-WEST1** (verified), so a
+us-west1 fleet reads the 309,100 Planet quads (TBs) **egress-free**; a us-central1 VM (where training runs)
+would pay cross-region egress + latency on every read.
+
+**Fleet scaled to 32× L4 (2026-06-17, user decision).** `g2-standard-96` carries **8× L4** (the max L4
+per single G2 VM), so **32× L4 = 4 × `g2-standard-96`** — there is no single-VM 16/32-L4 option; an N-L4
+fleet is always ⌈N/8⌉ VMs. Doubling 16→32 L4 halves wallclock at ~constant GPU-hours/cost (the pass is
+embarrassingly parallel + resumable).
+
 | Resource | Specification |
 |----------|---------------|
-| Cloud | Google Cloud Platform |
-| VM Type | GPU-enabled VM (specific type TBD with PDG team) |
-| Storage | Google Cloud Storage bucket: `abruptthawmapping` |
+| Cloud | Google Cloud Platform (`pdg-project-406720`) |
+| Region | **us-west1** (co-located with `pdg-planet-data`) |
+| VM fleet | **4× `g2-standard-96`** = **32× NVIDIA L4** (forward-only bf16 is GCS-I/O-bound; no A100 needed). Spot for the bulk pass, on-demand for final re-runs. **Stop when idle** (L4 = low stockout). |
+| Throughput / wallclock | ~15–43 tiles/s/L4 co-located → **~8–25 h** for the **41.57M** tile-inferences on 32 L4 (≈270–770 GPU-hr, ~$170–500; benchmark one subregion to pin it — the earlier 10.5 t/s was cross-region read-bound, which co-location removes). |
+| Storage | `gs://woodwell-rts-inference-arts-south` (single-region **us-west1**) — outputs, 2025 EXTRA tiles, deployment package |
+| Orchestration | Domain tile list (`tiles_2025q3_domain_full.csv`) → 32 shards; one `scripts/inference.py` per GPU (1-per-GPU pin, `run_gpu_pool.sh` pattern) across the 4 VMs; resumable via `inference_log.json` (§8.3) so Spot preemption/stragglers just resume. |
 | Collaboration | PDG workflow optimization team (Luigi/Todd) |
 
 ### 2.2 Storage Structure
 
 ```
-gs://abruptthawmapping/
+gs://woodwell-rts-inference-arts-south/   # single-region us-west1 (co-located with pdg-planet-data)
 ├── models/
 │   └── rts-v2-seed42/                   # one deployment package per seed
 │       ├── weights.pth                  # EMA weights only (see training.md §4.3)
@@ -92,17 +118,29 @@ Note: `scripts/package_model.py` renames the training-time `best_deployment.pth`
 | Quarter | Q3 (July-September) |
 | Bands | RGB |
 | Resolution | 4.77 m projected (EPSG:3857; Web Mercator zoom 15; constant in projected space). Ground sample varies with latitude (see `training.md §8.3`). |
-| Coverage | 60-74°N (pan-arctic) |
+| Coverage | Permafrost ∩ Planet (`domain/circumpolar_south_domain.geojson`), ~45–76°N — see §3.2 |
 | CRS | EPSG:3857 |
 
-### 3.2 Coverage Estimation
+### 3.2 Coverage & tile count (measured 2026-06-17)
 
-| Parameter | Estimate |
-|-----------|----------|
-| Total area | ~20 million km² |
-| Tile size | 512×512 @ 4.77 m projected = 2442 m projected ≈ 5.81 km² per tile (projected; ground area shrinks at high latitude) |
-| Estimated tiles | ~3.4 million tiles (without overlap, projected) |
-| With overlap (stride per `configs/deployment.yaml.inference.stride_px`, see §4.2) | tile inferences = base_tiles × `(tile_size / stride_px)²`; at default stride 344 → ~7.5M (≈2.22× compute multiplier) |
+Replaces the earlier ~3.4M/~7.5M projected estimates with the actual scan of the 2025 download.
+
+| Parameter | Value (measured) |
+|-----------|------------------|
+| Quad index | **309,100 quads** under `gs://pdg-planet-data/global_quarterly/2025/q3/` (`scripts/build_quad_index.py` → `/mnt/outputs/inference/quad_index_2025q3.csv`) |
+| Raw coverage extent | 45.5–76°N, all longitudes; **land-focused** — Planet visual basemaps omit open ocean, so the quad grid is already land-only |
+| Inference domain | `domain/circumpolar_south_domain.geojson` (= permafrost ∩ Planet, per `domain/inference_domain.md`; EPSG:3413) — **20.68M km²**; parent permafrost region (`circumpolar_domain.geojson`) = 21.34M km² |
+| **Tile count** (stride 344, domain-masked) | **41,567,572 tiles** (`scripts/generate_tile_grid.py` → `scripts/mask_tiles_to_domain.py` centroid-in-domain → `tiles_2025q3_domain_full.csv`) |
+| Coverage completeness | real missing quads over land ≈ **0.05%** (143 enclosed cells of 309,100); ocean correctly absent. The grid is built from the quad index, so **ocean + gaps carry zero tiles — the count already excludes them** (no NoData/ocean reduction left to apply) |
+| Runtime (32× L4, no-TTA, 1 scale) | **~8–25 h**, ≈270–770 GPU-hr, ~$170–500 (see §2.1) |
+
+Overlay of the four components (permafrost region · Planet coverage · inference domain · tile-count
+region) at `/mnt/outputs/inference/domain_overlay.png` (built by `scripts/plot_domain_overlay.py`;
+coverage-gap QA by `scripts/check_coverage_gaps.py`).
+
+> **Domain note:** the inference domain extends to ~45°N at the boreal margin (not just 60–74°N) and is
+> bounded on the north (~74–76°N) by PlanetScope's coverage guarantee — the permafrost region north of
+> that (`circumpolar_north_domain.geojson`) has no 2025 Planet basemap and is excluded.
 
 ---
 
@@ -139,7 +177,7 @@ Flow:
 
 ### 4.3 Overlap Aggregation
 
-Fusion method: **distance-from-tile-center weighted average**, Gaussian weighting with σ = 128 px in tile coordinates, normalized per pixel.
+Fusion method: **distance-from-tile-center weighted average**, Gaussian weighting with σ = 128 px in tile coordinates, normalized per pixel. **Implementation refinement (2026-06-12, found by the tiny-area validation):** the weight is a separable *edge-zeroed* Gaussian (per-axis `g(i) = exp(−(i−c)²/2σ²) − g_edge`, `w = g⊗g`) rather than the plain radial form — the radial Gaussian retains weight ≈ 0.135 at the tile edge, so contributions appear/disappear discontinuously across seams (measured ~7× elevated probability gradients on seam lines). Zeroing the edge makes contributions fade in continuously; σ and the center-trust rationale are unchanged. Side effect: a pixel covered only by tiles' outermost row/column (the 1-px ring at an unchunked AOI boundary) has zero total weight → NoData.
 
 Rationale: edge-of-tile predictions come from locations where the model has seen fewer surrounding pixels within *this* tile. Center-of-tile predictions are more trustworthy. Max fusion (taking the highest probability across tiles) is recall-biased and contradicts §1's precision-over-recall goal; averaging preserves calibration.
 
@@ -482,15 +520,25 @@ Performed before releasing results (detailed in post-inference.md):
 | Multiple streams | Overlap data transfer and compute |
 | Model compilation | **Opt-in only.** `torch.compile()` changes numerics slightly; if enabled at deployment but disabled during calibration (or vice versa), the calibrated threshold is systematically wrong. Phase 1 baseline: `torch_compile: false`. Enable only when a benchmark demonstrates > 15% throughput gain *and* calibration is re-run with compile enabled. |
 
-### 11.3 Estimated Throughput
+### 11.3 Measured Throughput (2026-06-12)
 
-| Configuration | Tiles/Second (est.) | Wallclock for the §3.2 tile count |
-|---------------|---------------------|-----------------------------------|
-| 1 scale, no TTA, batch=64 | ~100-200 | ≈ tiles / throughput |
-| 2 scales, minimal TTA, batch=64 | ~50-100 | ≈ tiles / throughput |
-| 2 scales, standard TTA, batch=64 | ~25-50 | ≈ tiles / throughput |
+A100-80GB, bf16, no TTA, scale 1.0, 552-tile Banks Island AOI, quads streamed from GCS via
+windowed reads, no caching:
 
-**Note**: Estimates are rough pre-Phase-1 numbers; actual performance depends on I/O bandwidth, tile complexity, and GCS latency. Replace with the measured A100/H100 throughput from `scripts/inference_feasibility.py` (Phase 1 Step 8.5) before publishing the deployment plan.
+| Configuration | Tiles/s (measured) | §3.2 pan-arctic 7.5M tiles |
+|---------------|--------------------|----------------------------|
+| batch 64, 4 workers | 6.4 | — |
+| **batch 64, 8 workers** | **10.5** | **~198 GPU-h ≈ 25 h on the 8×A100 node** |
+| batch 128, 8 workers | 6.9 | — |
+| batch 128, 16 workers | 7.3 | — |
+
+The pipeline is **GCS-read-bound, not GPU-bound** (workers 4→8 nearly doubled throughput;
+larger batches did not help): at stride 344 each quad is re-opened by ~36 overlapping tiles
+with no reuse. **Highest-value optimization before the production run**: quad-level caching —
+a per-worker LRU of decoded quads, or restructuring the loop to process all tiles of a
+quad-block per fetch; expected ~10–30× (toward the original ~150 tiles/s estimate ⇒ a full
+pass at ~14 GPU-h). Cheaper GPUs (L4) are viable since the GPU idles at current throughput.
+Re-benchmark after the caching change and update this table.
 
 ---
 
