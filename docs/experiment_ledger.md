@@ -14,7 +14,7 @@ Source of truth: `/mnt/outputs/v1.0/runs/<name>/run_summary.md` (finished) and `
 > control (Phase-4 RGB control = 0.830), not against earlier phases. Final test is scored once, honestly,
 > on the corrected split (Step 5).
 
-_Last refreshed: 2026-06-24 — **v2 campaign CLOSED (run-complete); repo consolidated to only-`main`.** Encoder verdict (3-seed, peak-epoch val): **sat-DINOv3 ViT-L + NDVI ~0.9224 PR-AUC** (0.9274/0.9199/0.9198) vs EffB5+NDVI **0.9123** — +0.0101 (near-miss on G=0.0112) but **decisive on object metrics: pixel-IoU 0.64 vs 0.51, obj-F1 0.56 vs 0.39**. sat-DINOv3-**RGB** ties +NDVI on PR-AUC (~0.913) with 3 clean ckpts ready; **+NDVI** marginally better (+0.008 PR-AUC, +0.02 obj-F1) — user opted to **include NDVI** and decide solo-vs-ensemble on Val at Phase D. seed42 +NDVI ckpt was lost to the resume-clobber bug (now fixed) → **retraining**. Prior screens all closed: greedy EXTRA=NDVI; F3/F5 heavy fusion loses (F0 locked); mixing-aug 4/4 + EffB3 no-win; web-DINOv3+NDVI 0.9120 ties EffB5 (generic foundation not the lever); SAM2/Hiera 0.590 + 7B-frozen 0.498 non-competitive; ignore-region ablation PAUSED (needs RTS-truth source). (Model = v2; repo RTSmapping_v2.)_
+_Last refreshed: 2026-06-24 — **v2 campaign CLOSED (run-complete); repo consolidated to only-`main`.** All scores below are `best_smoothed` (the SSoT — earlier raw-epoch-peak figures corrected). **Encoder result (3-seed `best_smoothed`):** sat-DINOv3 ViT-L + NDVI **0.9194** (0.9234/0.9199/0.9150) vs EffB5+NDVI **0.9123** → **+0.0071, a sub-gate near-miss on PR-AUC** (G=0.0112); sat-DINOv3-RGB **0.9133** essentially **ties** EffB5. The real differentiator is **object-level** (3-seed mean: pixel-IoU 0.64 vs 0.55, obj-F1 **0.56 vs 0.40**). **⚠ BUT the comparison is NOT a clean A/B:** the sat runs inherit `phase0c` (boundary none + RandomScale on) while EffB5 deploy has the locked ignore_w2 + drop-RandomScale, and `boundary_handling` is applied to **val** → different val labels. A fair verdict needs sat-DINOv3 re-run on the locked recipe (the running seed42 `_rerun` reproduces the old recipe, so it restores the lost seed but does NOT fix this). User opted to **include NDVI**; solo-vs-ensemble decided on Val at Phase D. Prior screens all closed: greedy EXTRA=NDVI; F3/F5 heavy fusion loses (F0 locked); mixing-aug 4/4 + EffB3 + RandAug/TrivialAug/anneal all sub-gate; web-DINOv3+NDVI 0.9121 ties EffB5; SAM2 0.556 + 7B-frozen 0.475 non-competitive; ignore-region ablation **completed** (mean 0.8984, Δ−0.014 → ignore helps, with a counterfactual caveat). (Model = v2; repo RTSmapping_v2.)_
 
 ---
 
@@ -51,13 +51,13 @@ _Last refreshed: 2026-06-24 — **v2 campaign CLOSED (run-complete); repo consol
 | 27 | 06-17 02:11 | phase3_bd_focal_ignore_w2_seed43 | 3 winner seed-confirm | leaky | 0.820 | ✅ |
 | 28 | 06-17 04:25 | phase3_bd_compound_1to2_ignore_w3_seed43 | 3 runner-up confirm | leaky | 0.817 | ✅ |
 | 29 | 06-17 10:13 | phase3_bd_compound_1to2_ignore_w3_seed44 | 3 runner-up confirm | leaky | 0.815 | ✅ |
-| 30 | 06-15 16:13 | phase5_arch_deeplabv3plus | 5 arch sweep | leaky | 0.788 | 🔵 early-stop tail |
-| 31 | 06-16 11:27 | phase5_arch_pspnet | 5 arch sweep | leaky | 0.729 | 🔵 early-stop tail |
+| 30 | 06-15 16:13 | phase5_arch_deeplabv3plus | 5 arch sweep | leaky | 0.788 | ✅ |
+| 31 | 06-16 11:27 | phase5_arch_pspnet | 5 arch sweep | leaky | 0.729 | ✅ |
 | 32 | — | phase5_arch_segformer | 5 arch sweep | leaky | — | ❌ dropped (no run) |
-| 33 | 06-17 11:48 | phase4_extra_rgb_baseline | 4 EXTRA control | corrected | 0.830 | 🔵 early-stop tail |
-| 34 | 06-17 12:50 | **phase4_extra_full** (8-band) | 4 EXTRA | corrected | **0.876** | 🔵 early-stop tail |
+| 33 | 06-17 11:48 | phase4_extra_rgb_baseline | 4 EXTRA control | corrected | 0.830 | ✅ |
+| 34 | 06-17 12:50 | **phase4_extra_full** (8-band) | 4 EXTRA | corrected | **0.876** | ✅ |
 | 35 | 06-18 06:39 | **phase4_extra_ndvi** | 4 EXTRA | corrected | **0.888** | ✅ **best single** |
-| 36 | 06-18 06:48 | phase4_extra_tc (tasseled-cap) | 4 EXTRA | corrected | 0.868 | 🔵 early-stop tail |
+| 36 | 06-18 06:48 | phase4_extra_tc (tasseled-cap) | 4 EXTRA | corrected | 0.868 | ✅ |
 | 37 | 06-18 07:49 | phase4_extra_nbr | 4 EXTRA | corrected | 0.847 | ✅ |
 | 38 | 06-18 08:35 | phase4_extra_se_proto | 4 EXTRA | corrected | 0.847 | ✅ |
 | 39 | 06-18 09:05 | phase4_extra_se_pca | 4 EXTRA | corrected | 0.874 | ✅ |
@@ -86,29 +86,42 @@ _Last refreshed: 2026-06-24 — **v2 campaign CLOSED (run-complete); repo consol
 | 62 | 06-21 | phase4_extra_ndvi_nbr | greedy round-1 ndvi+nbr | corrected | 0.8559 | ✅ < NDVI-alone (no add) |
 | 63 | 06-21 | phase4_extra_ndvi_tc | greedy round-1 ndvi+tc | corrected | 0.8996 | ✅ ≈ NDVI-alone (no add) |
 | 64 | 06-20 | **deploy_v1_ndvi_seed42/43/44** | **I: final-lock 3-seed (v2 recipe)** | corrected | **0.9144 / 0.9068 / 0.9156** | ✅ mean **0.9123** (spread 0.907–0.916; +0.014 over NDVI-alone 0.8985 → boundary+aug additive) — **v2 reference baseline** |
-| 65 | 06-21 | phase4_f3_full | D: F3 dual-encoder late fusion | corrected | ~0.78 (peak) | ✅ losing — ≪ NDVI-alone (still finishing; verdict set) |
-| 66 | 06-21 | phase4_f5_full | D: F5 cross-modal attn (8-band) | corrected | ~0.83 (peak) | ✅ losing — ≪ NDVI-alone (still finishing; verdict set) |
-| 67 | 06-21 | phase4_f5_ndvi_seproto | D: F5 cross-modal attn (pair) | corrected | ~0.87 (peak) | ✅ losing — < NDVI-alone |
-| 68 | 06-21 | effb3_deploy | E: EffB3 capacity-down probe | corrected | 0.9050 | ✅ Δ−0.0072 vs EffB5 0.9123 → **no-win** (capacity isn't the lever; B5 stays; B3 a ~0.7%-cheaper deploy fallback if needed) |
-| 69 | 06-21 | aug_copypaste_deploy | F: copy-paste screen | corrected | 0.8930 | ✅ Δ−0.0192 → **worst aug arm** (instance-paste breaks spatial-context/shadow cues) |
-| 70 | 06-21 | aug_mosaic_deploy | F: mosaic screen | corrected | 0.9069 | ✅ Δ−0.0054 → no-win (within deploy seed spread) |
-| 71 | 06-21 | aug_cutmix_deploy | F: cutmix screen | corrected | 0.9014 | ✅ Δ−0.0109 → no-win |
-| 72 | 06-22 | aug_mixup_deploy | F: mixup screen | corrected | 0.9028 | ✅ Δ−0.0095 → no-win — **completes mixing-aug family at 4/4 no-win** |
-| 73 | 06-22 | phase4_fm_dinov3_ndvi | D/E: web DINOv3+NDVI (fair foundation test) | corrected | 0.9120 | ✅ **ties EffB5+NDVI 0.9123 (Δ−0.0003)** — the DINOv3-RGB edge (0.873>0.830) **vanishes once NDVI is added**; web foundation ≯ EffB5 with NDVI |
-| 74 | 06-22 | aug_trivialaugment_deploy | F: TrivialAugment (shadow-safe pool) | corrected | 0.9167 | ✅ Δ+0.0045 (sub-gate) → no-win; see #80/#80b (3-seed F-closure) |
-| 75 | 06-22 | aug_randaugment_deploy | F: RandAugment num_ops=2 (shadow-safe pool) | corrected | 0.9089 | ✅ Δ−0.0034 → no-win; see #79 |
-| — | — | aug_anneal_deploy (+seed43/44) | F: aug-strength annealing 3-seed | corrected | done | ✅ ran (feat/aug-anneal, merged); no-win vs deploy 0.9123 — F closed |
-| 76 | 06-22 | fm_sam2_rgb | E: SAM2/Hiera foundation encoder, RGB-only | corrected | **0.590** | ✅ **non-competitive** (≪ EffB5-RGB 0.830); hierarchical Hiera features weak for RTS |
-| 77 | 06-22 | **phase4_fm_dinov3_ndvi** | D/E: web-DINOv3+NDVI (fair foundation test) | corrected | **0.9120** | ✅ **ties EffB5+NDVI 0.9123** (best_epoch 40) — generic web foundation is NOT the lever once NDVI is added |
-| 78 | 06-22 | aug_mixup_deploy | F: mixup screen | corrected | 0.9028 | ✅ Δ−0.0095 → no-win (mixing-aug family now 4/4 struck out) |
-| 79 | 06-22 | aug_randaugment_deploy | F: RandAugment (shadow-safe pool) | corrected | 0.9089 | ✅ Δ−0.0034 → no-win (best_smoothed; peak 0.914 was a single-epoch tail) |
-| 80 | 06-22 | **aug_trivialaugment_deploy** | F: TrivialAugment (shadow-safe pool) | corrected | **0.9167** | ✅ **Δ+0.0045** (best_smoothed) → best aug arm but **below G=0.0112** → 3-seed confirm launched (seed43/44) to close F: noise or small real gain? |
-| 80b | 06-22 | aug_trivialaugment_deploy_seed43/44 | F: TrivialAugment seed-confirm | corrected | 0.9216 / 0.9270 | ✅ 3-seed (with #80 0.9167) **mean 0.9218, 3/3 > deploy 0.9123** but Δ+0.0095 **sub-gate (<G)** → best aug arm, **not locked** (F-closure) |
-| 81 | 06-22 | **fm_dinov3sat_l_rgb** | E: satellite-DINOv3 ViT-L (SAT-493M), RGB-only | corrected | **0.9320** (seed42) | ✅ **+0.020 over deploy 0.9123 on RGB-ONLY → BREAKOUT.** v2 encoder bet (user go 06-22); seed43/44 ran (numbers to harvest in close-out) |
-| 82 | 06-22 | **fm_dinov3sat_l_ndvi** | E: satellite-DINOv3 ViT-L + NDVI | corrected | **0.9274 / 0.9199 / 0.9198** | ✅ 3-seed mean **~0.9224** (logged smoothed peaks; runs terminated post-peak 06-24) — **+0.010 over deploy 0.9123** (just under G); big object-level gains (IoU_rts ~0.69 vs 0.56, obj-F1 ~0.62 vs 0.40). seed42 best ckpt lost to the resume-clobber bug → retrain for a clean deploy set |
-| 83 | 06-22 | fm_dinov3_rgb_imagenet | E control: web-DINOv3 RGB + native ImageNet norm | corrected | 0.884 | ✅ de-confounds norm: ImageNet-norm 0.884 > z-score 0.873 → norm matters; still ≪ sat ViT-L |
-| 84 | 06-22 | ❌ fm_dinov3sat_7b_frozen | E: satellite-DINOv3 7B frozen linear-probe | corrected | 0.498 (peak) | ❌ **killed** — diverged (constant frozen_lr=1e-3, no anneal; val 0.498→0.0028) AND non-competitive; frozen sat-7B features need fine-tuning |
-| 85 | 06-22 | ablation_noignore_ndvi_seed42/43/44 | C: **ignore-region ablation** (train-only, no manual ignore) | corrected | — | ⏸ PAUSED — needs a separate RTS-truth source (positives overwrite ignore); code on `main`, ablation deferred |
+| 65 | 06-21 | phase4_f1_full | D: F1 smart-stem-init fusion (8-band) | corrected | 0.8904 | ✅ ≈ NDVI-alone 0.8985 (no gain over F0) |
+| 66 | 06-21 | phase4_f1_ndvi_seproto | D: F1 fusion (ndvi+se_proto) | corrected | 0.8921 | ✅ ≈ NDVI-alone (no gain) |
+| 67 | 06-21 | phase4_f2_full | D: F2 channel-attention (8-band) | corrected | 0.8268 | ✅ collapses — channel-attn hurts on 8-band |
+| 68 | 06-21 | phase4_f2_ndvi_seproto | D: F2 channel-attention (pair) | corrected | 0.8891 | ✅ < NDVI-alone |
+| 69 | 06-21 | phase4_f3_full | D: F3 dual-encoder late fusion (8-band) | corrected | 0.8184 | ✅ losing — ≪ NDVI-alone |
+| 70 | 06-21 | phase4_f5_full | D: F5 residual cross-modal attn (8-band) | corrected | 0.8480 | ✅ losing — ≪ NDVI-alone |
+| 71 | 06-21 | phase4_f5_ndvi_seproto | D: F5 cross-modal attn (pair) | corrected | 0.8544 | ✅ losing — heavy fusion (F3/F5) extracts LESS than the F0 stack |
+| 72 | 06-21 | phase_lock_ndvi_bd_curric | I: early lock attempt (NDVI+boundary+curriculum) | corrected | 0.9063 | ✅ superseded by deploy_v1 (#64) after curriculum rejected |
+| 73 | 06-21 | effb3_deploy | E: EffB3 capacity-down probe | corrected | 0.9050 | ✅ Δ−0.0073 vs EffB5 0.9123 → no-win (capacity isn't the lever; B3 a cheaper fallback) |
+| 74 | 06-21 | aug_copypaste_deploy | F: copy-paste screen | corrected | 0.8930 | ✅ Δ−0.0193 → worst aug arm (instance-paste breaks spatial-context/shadow cues) |
+| 75 | 06-21 | aug_mosaic_deploy | F: mosaic screen | corrected | 0.9069 | ✅ Δ−0.0054 → no-win |
+| 76 | 06-21 | aug_cutmix_deploy | F: cutmix screen | corrected | 0.9014 | ✅ Δ−0.0109 → no-win |
+| 77 | 06-22 | aug_mixup_deploy | F: mixup screen | corrected | 0.9028 | ✅ Δ−0.0095 → no-win — **mixing-aug family 4/4 struck out** |
+| 78 | 06-22 | phase4_fm_dinov3_rgb | E: web-DINOv3 ViT-B RGB-only (z-score norm) | corrected | 0.8734 | ✅ beats EffB5-RGB 0.830 (+0.043) — but RGB-only |
+| 79 | 06-22 | fm_dinov3_rgb_imagenet | E control: web-DINOv3 RGB + native ImageNet norm | corrected | 0.8923 | ✅ norm de-confound: ImageNet-norm 0.892 > z-score 0.873; still ≪ sat ViT-L |
+| 80 | 06-22 | **phase4_fm_dinov3_ndvi** | D/E: web-DINOv3 ViT-B + NDVI (fair foundation test) | corrected | **0.9121** | ✅ **ties EffB5+NDVI 0.9123 (Δ−0.0002)** — the web-DINOv3 RGB edge VANISHES once NDVI is added → generic foundation is NOT the lever |
+| 81 | 06-22 | aug_randaugment_deploy | F: RandAugment (shadow-safe pool) | corrected | 0.9089 | ✅ Δ−0.0034 → no-win |
+| 82 | 06-22 | aug_trivialaugment_deploy (+seed43/44) | F: TrivialAugment (shadow-safe pool), 3-seed | corrected | 0.9167 / 0.9216 / 0.9270 | ✅ **mean 0.9218**, 3/3 > deploy 0.9123 but Δ+0.0095 **sub-gate** → best aug arm, **not locked** (F closed) |
+| 83 | 06-22 | aug_anneal_deploy (+seed43/44) | F: aug-strength annealing, 3-seed | corrected | 0.9074 / 0.9192 / 0.9204 | ✅ **mean 0.9157**, Δ+0.0034 sub-gate → no-win (F closed) |
+| 84 | 06-22 | fm_sam2_rgb | E: SAM2/Hiera foundation encoder, RGB-only | corrected | **0.5558** | ✅ non-competitive (≪ EffB5-RGB 0.830) — Hiera features weak for RTS |
+| 85 | 06-22 | ❌ fm_dinov3sat_7b_frozen | E: satellite-DINOv3 7B frozen linear-probe | corrected | 0.4747 | ❌ **killed** — diverged (constant frozen_lr, no anneal) + non-competitive; frozen sat-7B needs fine-tuning |
+| 86 | 06-22 | ⚠ **fm_dinov3sat_l_rgb** (+seed43/44) | E: satellite-DINOv3 ViT-L (SAT-493M) RGB, 3-seed | corrected | **0.9200 / 0.9195 / 0.9003** | ⚠ **mean 0.9133 ≈ EffB5+NDVI 0.9123 (TIE on PR-AUC)** — NOT a "+0.020 breakout" (0.932 was a single-epoch raw peak, not best_smoothed). ⚠ NOT on the locked recipe — see caveat ↓ |
+| 87 | 06-22 | ⚠ **fm_dinov3sat_l_ndvi** (+seed43/44) | E: satellite-DINOv3 ViT-L + NDVI, 3-seed | corrected | **0.9234 / 0.9199 / 0.9150** | ⚠ **mean 0.9194, Δ+0.0071 vs EffB5 (sub-gate near-miss)**. Large OBJECT-level gains (3-seed mean: pixel-IoU 0.64 vs 0.55, obj-F1 0.56 vs 0.40) — but ⚠ **confounded**, see caveat ↓. seed42 ckpt lost to resume-clobber → retraining (#88) |
+| 88 | 06-24 | 🔵 fm_dinov3sat_l_ndvi_seed42_rerun | E: re-train the lost +NDVI seed42 (post resume-bug fix) | corrected | 🔵 running | restores a clean 3-seed +NDVI set; reproduces the same (non-locked) phase0c recipe as #87 — does NOT fix the caveat |
+| 89 | 06-22 | ablation_noignore_ndvi_seed42/43/44 | C: ignore-region ablation (train-only, no manual ignore) | corrected | **0.8727 / 0.9214 / 0.9012** | ✅ **COMPLETED** — mean 0.8984, Δ−0.0139 vs deploy → ignore regions help (directional; caveat: positives overwrite ignore, so not a clean counterfactual) |
+
+> ⚠️ **Encoder-comparison caveat (fairness + val-scoring confound) — the sat-DINOv3 verdict is NOT yet a clean A/B.**
+> The sat-DINOv3 runs (#86/#87/#88) inherit `phase0c_seed42` → **`boundary_handling: none` + RandomScale ON**,
+> whereas the EffB5 `deploy_v1` baseline (#64) uses **boundary `ignore_w2` + RandomScale OFF** (the two locked
+> recipe wins, ~+0.017 together). Because `boundary_handling` is applied to the **val** dataset
+> (`scripts/train.py:265`), the two are scored on *different val labels* (deploy excludes a 2 px RTS-boundary
+> band; sat scores every boundary pixel) — so neither the PR-AUC nor the IoU/obj-F1 numbers are a clean
+> head-to-head. Direction: deploy is scored on the *easier* (boundary-excluded) labels and sat still wins on
+> objects → sat's edge is **understated**, not inflated. **A fair verdict requires re-running sat-DINOv3 on the
+> locked recipe** (ignore_w2 + drop-RandomScale + base_v2_fast). All sat PR-AUC values above are `best_smoothed`
+> (the ledger SSoT); the earlier 0.932/0.927 figures were single-epoch raw peaks and have been corrected.
 
 ---
 
@@ -148,11 +161,11 @@ Plan: `.claude/plans/elegant-exploring-lemur.md`. Family scheme (replacing the o
 **✅ Locked:** A (μ₀=0.7912, G=0.0112) · B (data plateau) · C (focal·ignore_w2) · D (**EXTRA=NDVI** + **F0** channel-stack) ·
 F (drop-RandomScale; keep photometric+CLAHE) · G (default sampling). Infra: `base_v2_fast` stop-fix · gate policy (mean Δ≥G **and** 3-seed sign-consistency).
 
-**🟢 Encoder verdict (E) — RESOLVED 2026-06-24:** decoders all lose to UNet++ and EffB3 capacity-down is no-win, **but the satellite-pretrained ViT-L is the campaign's biggest win.** sat-DINOv3 ViT-L + NDVI 3-seed **~0.9224** (0.9274/0.9199/0.9198) vs EffB5+NDVI **0.9123** — +0.010 PR-AUC (near-miss on G) but **decisive on object metrics: pixel-IoU 0.64 vs 0.51 (+0.13), obj-F1 0.56 vs 0.39 (+0.17)**. sat-RGB ties +NDVI on PR-AUC (~0.913, 3 clean ckpts). Generic web-DINOv3+NDVI only ties EffB5 (0.9120); SAM2/Hiera 0.590 + 7B-frozen 0.498 non-competitive. **The E (deploy-encoder) choice supersedes EffB5 → sat-DINOv3 ViT-L is the leading deploy**; user opted to **include NDVI** and pick solo-vs-ensemble (vs EffB5+NDVI) on calibrated Val at the final lock (I, pending). **PRs #42 (sat encoder) + #26 (S2/EXTRA doc) merged.**
+**🟡 Encoder result (E) — PROVISIONAL, needs a fair re-run:** decoders all lose to UNet++ and EffB3 capacity-down is no-win; the satellite-pretrained ViT-L is the most promising encoder but **the verdict is not yet clean.** `best_smoothed`: sat-DINOv3 ViT-L + NDVI 3-seed **0.9194** (0.9234/0.9199/0.9150) vs EffB5+NDVI **0.9123** → **+0.0071, sub-gate near-miss on PR-AUC**; sat-RGB **0.9133** ≈ ties EffB5. The differentiator is **object-level** (3-seed mean pixel-IoU 0.64 vs 0.55, obj-F1 0.56 vs 0.40). **⚠ Confound:** the sat runs use `phase0c` (boundary none + RandomScale on) vs EffB5 deploy's locked ignore_w2 + drop-RandomScale, and `boundary_handling` touches the **val** labels → not a clean A/B (sat's edge is *understated*, scored on harder labels). **Fair verdict requires re-running sat-DINOv3 on the locked recipe.** Generic web-DINOv3+NDVI only ties EffB5 (0.9121); SAM2 0.556 + 7B-frozen 0.475 non-competitive. User opted to **include NDVI**; solo-vs-ensemble decided on Val at the final lock (I, pending). **PRs #42 (sat encoder) + #26 (S2/EXTRA doc) merged.**
 
-**🔵 Live:** only **fm_dinov3sat_l_ndvi_seed42_rerun** (GPU0) — restoring the +NDVI seed42 deploy checkpoint lost to the resume-clobber bug. Everything else is run-complete.
+**🔵 Live:** only **fm_dinov3sat_l_ndvi_seed42_rerun** (GPU0) — restoring the +NDVI seed42 checkpoint lost to the resume-clobber bug (reproduces the old `phase0c` recipe; does not fix the confound). Everything else is run-complete.
 
-**✅ Screens all landed (no-win vs deploy 0.9123):** EffB3 0.9050 · copy-paste 0.8930 · mosaic 0.9069 · cutmix 0.9014 · mixup 0.9028 (**mixing-aug family 4/4 struck out**) · aug-anneal 3-seed mean 0.916 · **TrivialAugment 3-seed mean 0.9218** (best aug arm, 3/3 positive but Δ+0.0095 **sub-gate**) · RandAugment 0.9089 — F closed, none earns a lock. SAM2 0.590 + 7B-frozen 0.498 non-competitive.
+**✅ Screens all landed (`best_smoothed`, no-win vs deploy 0.9123):** EffB3 0.9050 · copy-paste 0.8930 · mosaic 0.9069 · cutmix 0.9014 · mixup 0.9028 (**mixing-aug family 4/4 struck out**) · aug-anneal 3-seed mean 0.9157 · **TrivialAugment 3-seed mean 0.9218** (best aug arm, 3/3 positive but Δ+0.0095 **sub-gate**) · RandAugment 0.9089 — F closed, none earns a lock. SAM2 0.556 + 7B-frozen 0.475 non-competitive.
 
 **⏳ To-do before v2 ship (forward plan `.claude/plans/elegant-exploring-lemur.md`):** finish the seed42 retrain → **Phase D**: H calibration (temp + threshold + D4-TTA) on Val + the RGB/+NDVI/ensemble select → **Test-Realistic once** → package. Phase C NDVI-at-inference reader is **built**. Then Phase E inference infra (quad cache, bucket, fleet) → Phase F pre-flight → full inference.
 
@@ -202,14 +215,14 @@ F (drop-RandomScale; keep photometric+CLAHE) · G (default sampling). Infra: `ba
   **0.856** — none clears the gate (all ≤ anchor, within σ) → **greedy terminates, no channel added →
   LOCKED EXTRA = `[NDVI]`** (RGB+NDVI, 4-channel F0 stack).
 - **🔒 Fusion (D) — F0 early channel-stack LOCKED, now evidence-based:** light fusion F0/F1/F2 all tie
-  NDVI-alone; **heavy fusion F3/F5 LOSES** — F3-full ~0.78, F5-full ~0.83, F5-pair ~0.87 (all ≪ 0.8985,
+  NDVI-alone; **heavy fusion F3/F5 LOSES** — F3-full 0.818, F5-full 0.848, F5-pair 0.854 (all ≪ 0.8985,
   below even F0). Dual-encoder / cross-modal attention extract *less* than the simple channel-stack here →
   the skip-condition is confirmed, not assumed. DINOv3+NDVI (fair encoder test) still to run (family E).
-- **🔒 Final-lock (I) — v2 deploy recipe, 3-seed:** RGB+NDVI · F0 · focal·ignore_w2 · default sampling ·
-  aug−RandomScale · base_v2_fast → **0.9144 / ~0.916 / 0.9156 (mean ~0.915)**. That's **+0.017 over
-  NDVI-alone (boundary none) 0.8985** → boundary-ignore + drop-RandomScale are **additive on top of NDVI**,
-  tight across seeds. Pre-ship screens (EffB3, mixing augs, SAM2, DINOv3+NDVI, calibration) run before the
-  one-shot Test-Realistic; recipe re-locks only if a screen earns it.
+- **🔒 Final-lock (I) — v2 deploy recipe, 3-seed (EffB5):** RGB+NDVI · F0 · focal·ignore_w2 · default sampling ·
+  aug−RandomScale · base_v2_fast → **0.9144 / 0.9068 / 0.9156 (mean 0.9123)**. That's **+0.014 over
+  NDVI-alone (boundary none) 0.8985** → boundary-ignore + drop-RandomScale are **additive on top of NDVI**.
+  This is the EffB5 reference; the **sat-DINOv3 encoder (E) is the leading deploy but not yet fairly verified**
+  (see the encoder caveat). Calibration + the one-shot Test-Realistic happen at the final lock on the winner.
 - **Curriculum (Phase 10, corrected):** r20_pf33 best cell single-seed 0.894, **but seed-confirm is
   high-variance: 0.894 / 0.901 / 0.859 → mean ≈0.885 vs base 0.879 (Δ≈0.006), within std ≈0.021.**
   The curriculum "win" is **not distinguishable from seed noise** at 3 seeds — treat as unconfirmed.
