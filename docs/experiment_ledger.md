@@ -103,8 +103,8 @@ _Last refreshed: 2026-06-24 — **v2 campaign CLOSED (run-complete); repo consol
 | 79 | 06-22 | fm_dinov3_rgb_imagenet | E control: web-DINOv3 RGB + native ImageNet norm | corrected | 0.8923 | ✅ norm de-confound: ImageNet-norm 0.892 > z-score 0.873; still ≪ sat ViT-L |
 | 80 | 06-22 | **phase4_fm_dinov3_ndvi** | D/E: web-DINOv3 ViT-B + NDVI (fair foundation test) | corrected | **0.9121** | ✅ **ties EffB5+NDVI 0.9123 (Δ−0.0002)** — the web-DINOv3 RGB edge VANISHES once NDVI is added → generic foundation is NOT the lever |
 | 81 | 06-22 | aug_randaugment_deploy | F: RandAugment (shadow-safe pool) | corrected | 0.9089 | ✅ Δ−0.0034 → no-win |
-| 82 | 06-22 | aug_trivialaugment_deploy (+seed43/44) | F: TrivialAugment (shadow-safe pool), 3-seed | corrected | 0.9167 / 0.9216 / 0.9270 | ✅ **mean 0.9218**, 3/3 > deploy 0.9123 but Δ+0.0095 **sub-gate** → best aug arm, **not locked** (F closed) |
-| 83 | 06-22 | aug_anneal_deploy (+seed43/44) | F: aug-strength annealing, 3-seed | corrected | 0.9074 / 0.9192 / 0.9204 | ✅ **mean 0.9157**, Δ+0.0034 sub-gate → no-win (F closed) |
+| 82 | 06-22 | aug_trivialaugment_deploy (+seed43/44) | F: TrivialAugment (shadow-safe pool), 3-seed | corrected | 0.9167 / 0.9216 / 0.9270 | ✅ **mean 0.9218** — sign-consistent (3/3 > deploy 0.9123) but mean Δ+0.0095 **< G=0.0112** → fails the magnitude half of the lock rule → **not locked**. Strongest aug arm; train-only → borderline, revisit at final calibration on the chosen encoder |
+| 83 | 06-22 | aug_anneal_deploy (+seed43/44) | F: aug-strength annealing, 3-seed | corrected | 0.9074 / 0.9192 / 0.9204 | ✅ **mean 0.9157**, Δ+0.0034 sub-gate → no-win |
 | 84 | 06-22 | fm_sam2_rgb | E: SAM2/Hiera foundation encoder, RGB-only | corrected | **0.5558** | ✅ non-competitive (≪ EffB5-RGB 0.830) — Hiera features weak for RTS |
 | 85 | 06-22 | ❌ fm_dinov3sat_7b_frozen | E: satellite-DINOv3 7B frozen linear-probe | corrected | 0.4747 | ❌ **killed** — diverged (constant frozen_lr, no anneal) + non-competitive; frozen sat-7B needs fine-tuning |
 | 86 | 06-22 | ⚠ **fm_dinov3sat_l_rgb** (+seed43/44) | E: satellite-DINOv3 ViT-L (SAT-493M) RGB, 3-seed | corrected | **0.9200 / 0.9195 / 0.9003** | ⚠ **mean 0.9133 ≈ EffB5+NDVI 0.9123 (TIE on PR-AUC)** — NOT a "+0.020 breakout" (0.932 was a single-epoch raw peak, not best_smoothed). ⚠ NOT on the locked recipe — see caveat ↓ |
@@ -139,8 +139,8 @@ solo-vs-ensemble select on Val → Test-Realistic once → package.
 ## Queued / live training
 
 **Campaign run-complete (2026-06-24) — queue drained; all GPUs idle except the one retrain below.** Every
-formerly-queued experiment ran (sat-DINOv3 RGB/+NDVI seed43/44 → master #81/#82/#106; aug-anneal 3-seed → #74
-note; the earlier aug arms → #55–57). The auto-dispatchers (`autolaunch_satconfirm.sh` etc.) have exited.
+formerly-queued experiment ran (sat-DINOv3 RGB → master #86, +NDVI → #87; TrivialAugment/anneal 3-seed → #82/#83;
+the earlier aug arms → #55–59). The auto-dispatchers (`autolaunch_satconfirm.sh` etc.) have exited.
 
 | Live now | GPU | Notes |
 |----------|-----|-------|
@@ -165,7 +165,7 @@ F (drop-RandomScale; keep photometric+CLAHE) · G (default sampling). Infra: `ba
 
 **🔵 Live:** only **fm_dinov3sat_l_ndvi_seed42_rerun** (GPU0) — restoring the +NDVI seed42 checkpoint lost to the resume-clobber bug (reproduces the old `phase0c` recipe; does not fix the confound). Everything else is run-complete.
 
-**✅ Screens all landed (`best_smoothed`, no-win vs deploy 0.9123):** EffB3 0.9050 · copy-paste 0.8930 · mosaic 0.9069 · cutmix 0.9014 · mixup 0.9028 (**mixing-aug family 4/4 struck out**) · aug-anneal 3-seed mean 0.9157 · **TrivialAugment 3-seed mean 0.9218** (best aug arm, 3/3 positive but Δ+0.0095 **sub-gate**) · RandAugment 0.9089 — F closed, none earns a lock. SAM2 0.556 + 7B-frozen 0.475 non-competitive.
+**✅ Screens all landed (`best_smoothed` vs deploy 0.9123):** EffB3 0.9050 · copy-paste 0.8930 · mosaic 0.9069 · cutmix 0.9014 · mixup 0.9028 (**mixing-aug family 4/4 struck out**) · aug-anneal 3-seed mean 0.9157 (Δ+0.0034) · RandAugment 0.9089 (Δ−0.0034) · **TrivialAugment 3-seed mean 0.9218** (the one near-miss). **Lock rule = mean Δ ≥ G (0.0112) AND 3-seed sign-consistency.** TrivialAugment passes sign-consistency (3/3 > deploy) but its **mean Δ+0.0095 is just under G**, so it fails the magnitude half → not locked (it's the strongest aug arm and train-only/free, so a borderline call worth revisiting at final calibration on the chosen encoder). No other arm is even sign-consistent → so **the augmentation family (F) closes with no new lock** (that's the consequence, not the reason). SAM2 0.556 + 7B-frozen 0.475 non-competitive.
 
 **⏳ To-do before v2 ship (forward plan `.claude/plans/elegant-exploring-lemur.md`):** finish the seed42 retrain → **Phase D**: H calibration (temp + threshold + D4-TTA) on Val + the RGB/+NDVI/ensemble select → **Test-Realistic once** → package. Phase C NDVI-at-inference reader is **built**. Then Phase E inference infra (quad cache, bucket, fleet) → Phase F pre-flight → full inference.
 
@@ -182,10 +182,11 @@ F (drop-RandomScale; keep photometric+CLAHE) · G (default sampling). Infra: `ba
 | RandomScale downscale aug | F | **tested → dropped** — 3-seed A/B: removing it +0.016 (all seeds) |
 | F2 channel-attention (full 8-band) | D | **tested → collapsed** (0.827) |
 | F3 dual-encoder / F5 cross-modal attn | D | **tested → lose to F0** (≪ NDVI-alone) — heavy fusion extracts less than the stack |
-| Mixing augs: copy-paste / mosaic / cutmix / mixup | F | **tested → no-win** (06-22; 0.893 / 0.907 / 0.901 / running vs deploy 0.9123) — copy-paste worst (breaks spatial-context/shadow cues) |
+| Mixing augs: copy-paste / mosaic / cutmix / mixup | F | **tested → no-win** (0.893 / 0.907 / 0.901 / 0.903 vs deploy 0.9123) — copy-paste worst (breaks spatial-context/shadow cues) |
 | EffB3 capacity-down | E | **tested → no-win** (0.9050, Δ−0.007 vs EffB5) — capacity isn't the lever; kept as a cheaper deploy fallback only |
-| RandAugment / TrivialAugment | F | **running 06-22** (user-revived after a brief evidence-based deprioritization) — auto-policy over a shadow-safe pool; gate vs deploy 0.9123 |
-| Aug-strength annealing | F | **TO-DO (queued 06-22 PM)** — needs epoch-aware transform plumbing; building it now (off-by-default, strong→mild by ~ep40) then 3-seed vs deploy 0.9123. (Earlier "deprioritized" note was Claude's audit call, **not** the user's — corrected.) |
+| RandAugment | F | **tested → no-win** (0.9089, Δ−0.0034 vs deploy) — auto-policy over a shadow-safe pool didn't help |
+| TrivialAugment | F | **tested → sign-consistent near-miss, NOT locked** — 3-seed mean 0.9218 (0.9167/0.9216/0.9270), 3/3 > deploy 0.9123 but mean Δ+0.0095 **< G=0.0112** → fails the magnitude half of the lock rule. Strongest aug arm; train-only (no inference cost) → a borderline call, revisit at final calibration **on the chosen encoder** (tested on EffB5; may not transfer to sat-DINOv3) |
+| Aug-strength annealing | F | **tested → no-win** (3-seed mean 0.9157, Δ+0.0034 sub-gate; 0.9074/0.9192/0.9204) — strong→mild by ~ep40 didn't clear the gate |
 | SegFormer (mit_b5) | E | **dropped** — low value on a plateau; foundation is the better transformer bet |
 | EffB7 | E | **dropped** — overfit risk on a plateau (bound-only) |
 | UNet3+ | E | **dropped** — condition unmet (no decoder family moved the gate) |
