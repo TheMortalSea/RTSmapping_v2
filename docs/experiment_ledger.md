@@ -109,7 +109,8 @@ _Last refreshed: 2026-06-24 — **v2 campaign CLOSED (run-complete); repo consol
 | 85 | 06-22 | ❌ fm_dinov3sat_7b_frozen | E: satellite-DINOv3 7B frozen linear-probe | corrected | 0.4747 | ❌ **killed** — diverged (constant frozen_lr, no anneal) + non-competitive; frozen sat-7B needs fine-tuning |
 | 86 | 06-22 | ⚠ **fm_dinov3sat_l_rgb** (+seed43/44) | E: satellite-DINOv3 ViT-L (SAT-493M) RGB, 3-seed | corrected | **0.9200 / 0.9195 / 0.9003** | ⚠ **mean 0.9133 ≈ EffB5+NDVI 0.9123 (TIE on PR-AUC)** — NOT a "+0.020 breakout" (0.932 was a single-epoch raw peak, not best_smoothed). ⚠ NOT on the locked recipe — see caveat ↓ |
 | 87 | 06-22 | ⚠ **fm_dinov3sat_l_ndvi** (+seed43/44) | E: satellite-DINOv3 ViT-L + NDVI, 3-seed | corrected | **0.9234 / 0.9199 / 0.9150** | ⚠ **mean 0.9194, Δ+0.0071 vs EffB5 (sub-gate near-miss)**. OBJECT-level gains (clean same-boundary: pixel-IoU 0.64 vs 0.51 = +0.13, obj-F1 0.56 vs 0.49 = +0.07) — but ⚠ PR-AUC **confounded**, see caveat ↓. seed42 ckpt lost to resume-clobber → retraining (#88) |
-| 88 | 06-24 | 🔵 fm_dinov3sat_l_ndvi_seed42_rerun | E: re-train the lost +NDVI seed42 (post resume-bug fix) | corrected | 🔵 running | restores a clean 3-seed +NDVI set; reproduces the same (non-locked) phase0c recipe as #87 — does NOT fix the caveat |
+| 88 | 06-24 | ❌ fm_dinov3sat_l_ndvi_seed42_rerun | E: re-train lost +NDVI seed42 (old recipe) | corrected | killed | superseded by #90 — it reproduced the old phase0c recipe (didn't fix the confound), so killed in favor of the fair-recipe run |
+| 90 | 06-24 | 🔵 **fm_dinov3sat_l_ndvi_locked** (+seed43/44) | E: **FAIR sat-DINOv3 + NDVI on the LOCKED recipe**, 3-seed | corrected | 🔵 running (GPU 0/1/2) | sat encoder + NDVI + **ignore_w2 + drop-RandomScale + TrivialAugment** (same val labels as EffB5 deploy) → the clean apples-to-apples encoder test. Gate vs EffB5 recipe **0.9218**. Foundation LR/freeze kept. |
 | 89 | 06-22 | ablation_noignore_ndvi_seed42/43/44 | C: ignore-region ablation (train-only, no manual ignore) | corrected | **0.8727 / 0.9214 / 0.9012** | ✅ **COMPLETED** — mean 0.8984, Δ−0.0139 vs deploy → ignore regions help (directional; caveat: positives overwrite ignore, so not a clean counterfactual) |
 
 > ⚠️ **Encoder-comparison caveat (fairness + val-scoring confound) — the sat-DINOv3 verdict is NOT yet a clean A/B.**
@@ -193,7 +194,7 @@ the earlier aug arms → #55–59). The auto-dispatchers (`autolaunch_satconfirm
 
 | Live now | GPU | Notes |
 |----------|-----|-------|
-| **fm_dinov3sat_l_ndvi_seed42_rerun** | 0 | Re-training the +NDVI seed42 whose `best_deployment.pth` was lost to the resume-clobber bug (now fixed) → restores a clean 3-seed `+NDVI` deploy set for the Phase-D Val compare. |
+| **fm_dinov3sat_l_ndvi_locked** (+seed43/44) | 0/1/2 | **Fair sat-DINOv3 + NDVI on the full locked recipe** (ignore_w2 + drop-RandomScale + TrivialAugment) → the clean encoder A/B vs EffB5 deploy 0.9218 (#90). Replaces the killed off-recipe `_rerun`. Peaks ~ep40; feeds the Phase-D encoder decision. |
 
 **Not run (deferred by decision — do NOT gate v2):** Stage-0.2 bootstrap 1:50/1:100 high-ratio metric ·
 Stage-0.3 v1.0 re-stage (+28 pos / −49 black) · MAE SSL · hard-neg mining · the optional C3 ignore_w re-confirm.
