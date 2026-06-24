@@ -338,7 +338,10 @@ Run before training:
 - [ ] All negative tiles contain no RTS pixels (label sum = 0)
 - [ ] RGB values are in valid range (0-255 for uint8)
 - [ ] All tiles have matching image and label dimensions
-- [ ] No NaN or infinite values in EXTRA channels
+- [ ] No *unexpected* NaN/inf in EXTRA channels — NaN is the deliberate NoData sentinel for
+      no-coverage pixels (cloud/edge gaps in S2; all-zero SE vectors), dropped by
+      `compute_normalization_stats.py` and neutralized by `apply_norm` (§5 / data/extra_channels.py).
+      The check is that *covered* pixels are finite, not that NaN is absent.
 - [ ] GeoTIFF metadata (CRS, bounds) is consistent across tiles
 - [ ] metadata.csv has entries for all tiles
 - [ ] Spatial blocking is respected (no region spans train/val/test)

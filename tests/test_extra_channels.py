@@ -62,3 +62,19 @@ def test_se_bands_nan_propagates(monkeypatch):
     out = ec.se_bands((0, 0, 1, 1), {}, 2024, artifacts)
     assert np.isnan(out[2][0, 0]) and np.isnan(out[5][0, 0])
     assert np.isfinite(out[2][1, 1]) and np.isfinite(out[5][1, 1])
+
+
+def test_se_bands_zero_vector_is_nan(monkeypatch):
+    """No-coverage SE pixels come back as an all-zero vector (not NaN). Both SE_PCA and
+    SE_PROTO must be NaN there — otherwise (0 - pca_mean) @ comps.T leaks a nonzero artifact."""
+    h = w = 3
+    n = ec.SE_N_BANDS
+    se = np.ones((n, h, w), dtype="float32")
+    se[:, 0, 0] = 0.0                                    # no-coverage zero vector
+    monkeypatch.setattr(ec, "fetch_se_raw", lambda b, g, y: se)
+    artifacts = {"pca_components": np.ones((3, n), "float32"),
+                 "pca_mean": np.full(n, 0.5, "float32"),  # nonzero mean → artifact risk
+                 "prototype": np.ones(n, "float32")}
+    out = ec.se_bands((0, 0, 1, 1), {}, 2024, artifacts)
+    assert np.isnan(out[2][0, 0]) and np.isnan(out[5][0, 0])
+    assert np.isfinite(out[2][1, 1]) and np.isfinite(out[5][1, 1])

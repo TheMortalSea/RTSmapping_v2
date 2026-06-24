@@ -40,6 +40,14 @@ S2_BANDS = ["B2", "B3", "B4", "B8", "B11", "B12"]
 TC_BRIGHTNESS = [0.2381, 0.2569, 0.2934, 0.3020, 0.1863, 0.0818]
 TC_WETNESS = [0.1825, 0.1763, 0.1615, 0.0486, -0.7020, -0.6424]
 
+# No-coverage sentinel for S2 indices. computePixels fills masked pixels (no valid
+# in-season S2 observation) with 0 — a *valid* NDVI/NBR/TC value — so a cloud/edge gap
+# would silently leak in as a zero and bias the per-channel stats. We unmask to this
+# sentinel in s2_bands and convert it back to NaN so the no-coverage contract (NaN,
+# dropped by compute_normalization_stats + neutralized by apply_norm) holds end-to-end.
+# -9999 is far outside every S2 index range and exactly representable in float32.
+S2_NODATA_SENTINEL = -9999.0
+
 # Satellite Embedding (matches plots/extra_channel_vis/se_sar_plot.py).
 SE_COLLECTION = "GOOGLE/SATELLITE_EMBEDDING/V1/ANNUAL"
 SE_N_BANDS = 64
@@ -141,9 +149,19 @@ def s2_image(bounds, year: int):
 
 
 def s2_bands(bounds, grid: dict, year: int) -> dict[int, np.ndarray]:
-    """Return {band_index: array} for the Sentinel-2 groups (0,1,6,7)."""
-    px = _fetch(s2_image(bounds, year), grid, ["ndvi", "nbr", "tcb", "tcw"])
-    return {0: px["ndvi"], 1: px["nbr"], 6: px["tcb"], 7: px["tcw"]}
+    """Return {band_index: array} for the Sentinel-2 groups (0,1,6,7).
+
+    No-coverage pixels (no valid in-season S2 observation) are masked in Earth Engine;
+    computePixels would fill them with 0, indistinguishable from a real index value. We
+    unmask to ``S2_NODATA_SENTINEL`` and convert it back to NaN here so cloud/edge gaps
+    are honoured as NoData (NaN) throughout the pipeline rather than leaking in as zeros.
+    """
+    img = s2_image(bounds, year).unmask(S2_NODATA_SENTINEL)
+    px = _fetch(img, grid, ["ndvi", "nbr", "tcb", "tcw"])
+    out = {0: px["ndvi"], 1: px["nbr"], 6: px["tcb"], 7: px["tcw"]}
+    for arr in out.values():
+        arr[arr == S2_NODATA_SENTINEL] = np.nan
+    return out
 
 
 # --- Satellite Embedding (SE) → SE_PCA (2,3,4) + SE_PROTO (5) -----------------
@@ -191,7 +209,10 @@ def se_bands(bounds, grid: dict, year: int, artifacts: dict) -> dict[int, np.nda
 
     SE_PCA = (se - pca_mean) @ pca_components.T  (first 3 global axes).
     SE_PROTO = cosine similarity of each pixel's unit SE vector to the unit RTS
-    prototype, ∈ [-1, 1]. NaN where SE has no coverage (propagates like S2).
+    prototype, ∈ [-1, 1]. No-coverage pixels (the SE mosaic returns an all-zero
+    vector there) yield NaN for both SE_PCA and SE_PROTO — without the explicit
+    guard, ``(0 - pca_mean) @ comps.T`` would emit a spurious nonzero SE_PCA. NaN is
+    the NoData contract (dropped by stats, neutralized by apply_norm), matching S2.
     """
     se = fetch_se_raw(bounds, grid, year)        # (64, H, W)
     n, h, w = se.shape
@@ -201,8 +222,10 @@ def se_bands(bounds, grid: dict, year: int, artifacts: dict) -> dict[int, np.nda
     proto = np.asarray(artifacts["prototype"], dtype="float32")      # (64,)
     proto = proto / (np.linalg.norm(proto) + 1e-12)                  # ensure unit
 
-    pca = ((flat - mean) @ comps.T).T.reshape(3, h, w).astype("float32")
     norm = np.linalg.norm(flat, axis=1, keepdims=True)               # (H*W, 1)
+    no_cov = (norm < 1e-12).reshape(h, w)                            # all-zero SE = no coverage
+    pca = ((flat - mean) @ comps.T).T.reshape(3, h, w).astype("float32")
+    pca[:, no_cov] = np.nan
     unit = flat / np.where(norm < 1e-12, np.nan, norm)
     cos = (unit @ proto).reshape(h, w).astype("float32")             # SE_PROTO
     return {2: pca[0], 3: pca[1], 4: pca[2], 5: cos}
