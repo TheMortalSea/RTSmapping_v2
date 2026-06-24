@@ -187,3 +187,48 @@ def test_auto_policy_invalid_mode_raises():
     rgb, _, mask = _make_inputs(seed=4)
     with pytest.raises(ValueError):
         build_train_transforms(tile_size=64, aug_cfg=_auto_cfg("autoaugment"))(image=rgb, mask=mask)
+
+
+# --- Aug-strength annealing (auto_policy.anneal) -----------------------------
+
+def _trivial_brightness_mag(t) -> float:
+    """abs(brightness_limit) of the first pool op (RandomBrightnessContrast) in a
+    TrivialAugment color stage → proxy for the current auto-policy magnitude."""
+    oneof = t._color.transforms[0]          # A.OneOf
+    rbc = oneof.transforms[0]               # RandomBrightnessContrast (pool[0])
+    return abs(rbc.brightness_limit[1])
+
+
+def test_annealed_magnitude_schedule():
+    from data.transforms import _annealed_magnitude
+    an = {"start_magnitude": 1.0, "end_magnitude": 0.2, "end_epoch": 10}
+    assert _annealed_magnitude(1, an) == 1.0           # start
+    assert _annealed_magnitude(10, an) == 0.2          # end
+    assert _annealed_magnitude(99, an) == 0.2          # clamped past end
+    mid = _annealed_magnitude(5, an)                   # strictly between, monotone down
+    assert 0.2 < mid < 1.0
+
+
+def test_set_epoch_noop_without_anneal():
+    """No anneal block → set_epoch must not change the color stage (static auto-policy)."""
+    t = build_train_transforms(tile_size=64, aug_cfg=_auto_cfg("trivialaugment", magnitude=1.0))
+    before = _trivial_brightness_mag(t)
+    t.set_epoch(1); t.set_epoch(40)
+    assert _trivial_brightness_mag(t) == before
+    assert _color_op_names(t) == ["OneOf"]             # structure preserved
+
+
+def test_set_epoch_anneals_magnitude():
+    """anneal block → set_epoch scales the auto-policy magnitude strong→mild."""
+    cfg = _auto_cfg("trivialaugment", magnitude=1.0,
+                    anneal={"start_magnitude": 1.0, "end_magnitude": 0.2, "end_epoch": 10})
+    t = build_train_transforms(tile_size=64, aug_cfg=cfg)
+    t.set_epoch(1);  early = _trivial_brightness_mag(t)
+    t.set_epoch(10); late = _trivial_brightness_mag(t)
+    assert late < early                                # annealed down
+    assert abs(early - 0.4 * 1.0) < 1e-6               # ep1 = start magnitude 1.0 → 0.4
+    assert abs(late - 0.4 * 0.2) < 1e-6                # ep10 = end magnitude 0.2 → 0.08
+    # still a valid one-op TrivialAugment stage after annealing
+    rgb, _, mask = _make_inputs(seed=7)
+    out = t(image=rgb, mask=mask)
+    assert out["image"].shape == rgb.shape

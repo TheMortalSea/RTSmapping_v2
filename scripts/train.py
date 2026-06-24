@@ -833,6 +833,10 @@ def main() -> int:
 
             # Curriculum step.
             data["train_sampler"].set_epoch(epoch)
+            # Aug-strength annealing (no-op unless augmentation.auto_policy.anneal is set).
+            _tf = getattr(data["train_ds"], "transform", None)
+            if hasattr(_tf, "set_epoch"):
+                _tf.set_epoch(epoch)
 
             # Train.
             epoch_t0 = time.time()

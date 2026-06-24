@@ -87,6 +87,22 @@ def _build_color_stage(col: dict, auto: dict) -> A.Compose:
     ])
 
 
+def _annealed_magnitude(epoch: int, anneal: dict) -> float:
+    """Linear strong→mild auto-policy magnitude schedule.
+
+    ``start_magnitude`` at epoch ≤ 1, ``end_magnitude`` at epoch ≥ ``end_epoch``,
+    linear in between. Defaults: 1.0 → 0.3 over 40 epochs.
+    """
+    m0 = float(anneal.get("start_magnitude", 1.0))
+    m1 = float(anneal.get("end_magnitude", 0.3))
+    e_end = int(anneal.get("end_epoch", 40))
+    if epoch <= 1:
+        return m0
+    if epoch >= e_end:
+        return m1
+    return m0 + (m1 - m0) * (epoch - 1) / max(1, e_end - 1)
+
+
 class TrainTransform:
     """Two-stage augmentation: color-only on RGB, then geometric on RGB+EXTRA+mask.
 
@@ -95,9 +111,26 @@ class TrainTransform:
     Geometric ops apply to all three.
     """
 
-    def __init__(self, color_stage: A.Compose, geometric_stage: A.Compose):
+    def __init__(self, color_stage: A.Compose, geometric_stage: A.Compose,
+                 *, col: dict | None = None, auto: dict | None = None):
         self._color = color_stage
         self._geo = geometric_stage
+        # Kept so set_epoch() can rebuild the color stage at an annealed magnitude.
+        self._col = col
+        self._auto = auto or {}
+        self._anneal = (self._auto.get("anneal") if isinstance(self._auto, dict) else None) or None
+
+    def set_epoch(self, epoch: int) -> None:
+        """Anneal the auto-policy magnitude for this epoch (strong→mild).
+
+        No-op unless ``augmentation.auto_policy.anneal`` is configured (so the locked
+        baseline and static auto-policies are unchanged). Rebuilds the RGB color stage
+        at the scheduled magnitude; the geometric stage is untouched.
+        """
+        if not self._anneal or self._col is None:
+            return
+        m = _annealed_magnitude(epoch, self._anneal)
+        self._color = _build_color_stage(self._col, {**self._auto, "magnitude": m})
 
     def __call__(self, *, image, extra=None, mask):
         # Stage 1: color ops on RGB only. mask flows through (Compose passes
@@ -145,7 +178,8 @@ def build_train_transforms(
     pad_fill_mask = ignore_index if ms.get("pad_mask_ignore", False) else 0
 
     # Color stage: hand-tuned ops (default) OR a shadow-safe auto-policy (RandAug/TrivialAug).
-    color_stage = _build_color_stage(col, aug_cfg.get("auto_policy") or {})
+    auto = aug_cfg.get("auto_policy") or {}
+    color_stage = _build_color_stage(col, auto)
 
     geometric_stage = A.Compose(
         [
@@ -179,7 +213,7 @@ def build_train_transforms(
         additional_targets={"extra": "image"},
     )
 
-    return TrainTransform(color_stage, geometric_stage)
+    return TrainTransform(color_stage, geometric_stage, col=col, auto=auto)
 
 
 def build_eval_transforms() -> A.Compose:

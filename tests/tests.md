@@ -198,6 +198,9 @@ selection is reproducible under the run seed (B2).
 | `test_randaugment_runs_with_num_ops` | `mode=randaugment, num_ops=2` → color stage is exactly `[SomeOf]`; runs; mask untouched | real — family-F auto-policy contract |
 | `test_auto_policy_pool_excludes_shadow_scramblers` | op pool omits solarize/invert/posterize/equalize/channel-shuffle/grayscale (shadow-cue safety) | real — the RTS shadow-safety guard |
 | `test_auto_policy_invalid_mode_raises` | unknown `auto_policy.mode` → `ValueError` | shallow |
+| `test_annealed_magnitude_schedule` | `_annealed_magnitude` = start at ep≤1, end at ep≥end_epoch, monotone-decreasing between | real — anneal schedule contract |
+| `test_set_epoch_noop_without_anneal` | no `anneal` block ⇒ `set_epoch` leaves the auto-policy magnitude + structure unchanged (off-by-default) | real — identity guard |
+| `test_set_epoch_anneals_magnitude` | `anneal` block ⇒ `set_epoch(1)` magnitude > `set_epoch(end_epoch)`; exact start/end values; stage still runs | real — family-F annealing contract |
 
 ### [test_train_helpers.py](test_train_helpers.py)
 
