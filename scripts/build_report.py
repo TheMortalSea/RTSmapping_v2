@@ -535,26 +535,30 @@ FAMILY_LEARNINGS = [
                   "0.869. Greedy forward from NDVI added nothing (+se_pca 0.900, +tc 0.900, +se_proto "
                   "0.898, +nbr 0.856 — none clears G). Heavy fusion LOSES: F3-full ~0.78, F5-full ~0.83, "
                   "F5-pair ~0.87 (all ≪ NDVI-alone). LOCKED: EXTRA=[NDVI], F0 early channel-stack."),
-    dict(id="E", name="Architecture & encoder", status="running",
-         learned="Capacity is not the lever (consistent with B/F). No CNN decoder beats the dense-skip "
-                 "UNet++, and scaling capacity down (EffB3) or up doesn't help. The open bet is the "
-                 "ENCODER representation: generic web-DINOv3 helps on RGB but its edge vanishes once NDVI "
-                 "is added; a satellite-pretrained encoder is the live candidate.",
+    dict(id="E", name="Architecture & encoder", status="done",
+         learned="Capacity is not the lever, but the ENCODER is. No CNN decoder beats UNet++ and scaling "
+                 "EffB5 up/down doesn't help — yet a satellite-pretrained ViT-L encoder is the campaign's "
+                 "biggest win, especially on the object-level metrics that matter for a detection survey. "
+                 "Generic (web) foundation models do NOT help once NDVI is in; satellite-domain pretraining "
+                 "does. This is the v2 encoder verdict.",
          evidence="UNet++/EffB5 ≥ FPN (0.794 tie) > DeepLabV3+ > PSPNet ≫ MANet (0.621). EffB3 0.9050 "
-                  "(Δ−0.007, no-win). web-DINOv3+NDVI ties EffB5+NDVI (~0.912) → generic foundation is "
-                  "not the lever. <strong>Satellite DINOv3 ViT-L (SAT-493M) fine-tuned reached 0.9187 @ "
-                  "ep30 (climbing)</strong>; the frozen 7B probe was non-competitive (best 0.498) and "
-                  "diverged (constant frozen_lr) → killed. SAM2/Hiera RGB non-competitive (0.59)."),
-    dict(id="F", name="Augmentation", status="running",
+                  "(Δ−0.007, no-win). web-DINOv3+NDVI ties EffB5+NDVI (~0.912). <strong>Satellite DINOv3 "
+                  "ViT-L (SAT-493M) + NDVI: 3-seed PR-AUC ~0.9224 (0.9274/0.9199/0.9198) vs EffB5+NDVI "
+                  "0.9123 — +0.010 (near-miss on G) but DECISIVE on object metrics: pixel-IoU 0.64 vs 0.51 "
+                  "(+0.13), obj-F1 0.56 vs 0.39 (+0.17)</strong>. sat-DINOv3-RGB ties +NDVI on PR-AUC "
+                  "(~0.913, 3 clean ckpts). 7B-frozen probe killed (0.498, diverged); SAM2/Hiera 0.59. "
+                  "Decision (user): include NDVI; solo-vs-ensemble (vs EffB5) decided on Val at final lock."),
+    dict(id="F", name="Augmentation", status="done",
          learned="Augmentation is NOT the plateau-breaker (the third pillar of the representation-limited "
                  "diagnosis). Photometric aug genuinely helps and must be kept; downscale (RandomScale) "
-                 "HURTS; and the whole sample-mixing family fails to beat the deploy recipe. Auto-policies "
-                 "are the last aug angle being tested.",
+                 "HURTS; and every mixing/auto-policy/annealing arm fails to clear the gate vs the deploy "
+                 "recipe. Family closed.",
          evidence="Geometric-only craters to 0.794 (−0.072) → photometric matters; CLAHE/×1.5 within "
                   "noise → keep, don't strengthen. Drop-RandomScale +0.016, positive in 3/3 seeds → "
-                  "LOCKED drop. Mixing augs all no-win vs deploy 0.9123: copy-paste 0.893 (worst — breaks "
-                  "spatial-context/shadow cues), cutmix 0.901, mosaic 0.907, mixup ~. RandAugment / "
-                  "TrivialAugment (shadow-safe pool) running."),
+                  "LOCKED drop. All no-win vs deploy 0.9123: copy-paste 0.893 (worst), cutmix 0.901, "
+                  "mosaic 0.907, mixup 0.903; aug-anneal 3-seed mean 0.916 (+0.003); TrivialAugment "
+                  "3-seed mean 0.9218 (best aug arm, 3/3 positive but Δ+0.0095 sub-gate), RandAugment "
+                  "0.9089. None earns a lock."),
     dict(id="G", name="Sampling / curriculum", status="done",
          learned="Default balanced sampling is sufficient — the curriculum 'win' did not survive seeds.",
          evidence="Curriculum r20_pf33: 0.894/0.901/0.859 → mean ≈0.885 vs base 0.879 (Δ≈0.006, sign "
@@ -597,10 +601,12 @@ CROSS_CUTTING = [
      "Three components stack additively onto NDVI for the deploy recipe: boundary-ignore_w2 (C), "
      "dropping RandomScale downscale (F, +0.016/3-of-3), and keeping the photometric set (F, geometric-"
      "only is −0.072)."),
-    ("Foundation encoders: generic helps RGB, but satellite-pretraining is the live bet",
+    ("Foundation encoders: generic doesn't help, but satellite-pretraining is the v2 encoder win",
      "web-DINOv3 beats EffB5 on RGB (+0.043) but the edge vanishes once NDVI is added (ties at ~0.912). "
-     "The remaining encoder bet is a satellite-domain model — sat-DINOv3 ViT-L fine-tuned is at 0.92 and "
-     "climbing (E)."),
+     "The win is a satellite-domain model: sat-DINOv3 ViT-L (SAT-493M) + NDVI reaches 3-seed ~0.9224 vs "
+     "EffB5+NDVI 0.9123 — only +0.010 on pixel PR-AUC (near-miss on G) but +0.13 pixel-IoU and +0.17 "
+     "obj-F1, the metrics that matter for a detection survey (E). It is the leading deploy model; the "
+     "final RGB-vs-+NDVI-vs-ensemble pick is made on calibrated Val at the final lock."),
 ]
 
 # Locked decisions — every locked choice + how it was decided.
@@ -612,8 +618,12 @@ LOCKED_DECISIONS = [
     ("Boundary", "Ignore band, width 2", "C",
      "focal·ignore_w2 0.805 (seed-confirmed 0.805–0.820); the gate-clearing win. Tied w/ compound·w3, "
      "kept for simplicity (single loss + narrower discarded band)."),
-    ("Decoder / backbone", "UNet++ / EfficientNet-B5", "E",
-     "No smp decoder beats it (FPN ties, MANet collapses); EffB3 capacity-down is −0.007."),
+    ("Decoder", "UNet++ (dense skips)", "E",
+     "No smp decoder beats it (FPN ties, MANet collapses)."),
+    ("Encoder (deploy)", "sat-DINOv3 ViT-L (SAT-493M) — leading; EffB5 fallback", "E",
+     "Verdict 2026-06-24: sat-DINOv3+NDVI 3-seed ~0.9224 vs EffB5+NDVI 0.9123 — +0.010 PR-AUC (near-miss "
+     "on G) but +0.13 pixel-IoU / +0.17 obj-F1. Supersedes EffB5 for deploy; solo-vs-ensemble final pick on "
+     "Val at the final lock. EffB5 (+NDVI) is the validated fallback; EffB3 capacity-down −0.007."),
     ("EXTRA channels", "NDVI only (4-ch RGB+NDVI)", "D",
      "NDVI 3-seed 0.8985 ≫ RGB 0.830 and > full 8-band 0.869; greedy forward added no channel (all <G)."),
     ("Fusion", "F0 early channel-stack", "D",
