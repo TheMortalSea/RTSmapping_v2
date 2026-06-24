@@ -21,11 +21,16 @@ import rasterio
 from rasterio.windows import from_bounds
 from torch.utils.data import Dataset
 
-from data.normalization import fill_nodata_with_mean
+from data.normalization import apply_norm, build_norm_arrays, fill_nodata_with_mean
 
 logger = logging.getLogger(__name__)
 
 TILE_SIZE_PX = 512  # CLAUDE.md technical constraint; matches training tiles
+
+# Band indices (1-based) in the bulk S2 composite COGs — export order B4,B3,B2,B8
+# (scripts/export_s2_composites.py DEFAULT_BANDS). Red=B4, NIR=B8 → NDVI.
+S2_RED_BAND = 1   # B4
+S2_NIR_BAND = 4   # B8
 
 # Transient-GCS-read retry (same rationale as data/dataset.py).
 _READ_ATTEMPTS = 4
@@ -122,6 +127,72 @@ def read_tile(
     return rgb, ~valid
 
 
+def read_ndvi_tile(
+    bbox: tuple[float, float, float, float],
+    s2_index: pd.DataFrame,
+    tile_size_px: int = TILE_SIZE_PX,
+) -> np.ndarray:
+    """Window NDVI from the bulk S2 composites onto one inference tile.
+
+    Mirrors ``read_tile`` for the EXTRA=NDVI channel: mosaics every intersecting
+    S2 composite cell, computing ``NDVI = (B8 - B4) / (B8 + B4)`` — the same
+    formula training derives server-side from the same ``s2_sr_composite`` recipe
+    (data/extra_channels.s2_image; NDVI is scale-invariant so the /10000
+    reflectance cancels — CLAUDE Rule 3). The 10 m composite is resampled
+    (bilinear) onto the tile's projected grid.
+
+    No-coverage pixels (outside every cell, or cloud/edge gaps the export left as
+    0) yield NaN — the NoData contract honoured downstream by ``apply_norm``
+    (non-finite → 0), matching training's EXTRA handling.
+
+    Args:
+        bbox: (minx, miny, maxx, maxy) in EPSG:3857.
+        s2_index: DataFrame from inference.s2_index (bounds + gcs_path).
+        tile_size_px: output tile edge in pixels.
+
+    Returns:
+        ndvi float32 (H, W); NaN where no S2 coverage / invalid.
+    """
+    from rasterio.enums import Resampling
+
+    minx, miny, maxx, maxy = bbox
+    hits = s2_index[(s2_index["minx"] < maxx) & (s2_index["maxx"] > minx)
+                    & (s2_index["miny"] < maxy) & (s2_index["maxy"] > miny)]
+
+    ndvi = np.full((tile_size_px, tile_size_px), np.nan, dtype=np.float32)
+    for _, cell in hits.iterrows():
+        # Read red (B4) + NIR (B8), resampled to the tile grid; 0-fill outside.
+        last_exc: Exception | None = None
+        for attempt in range(_READ_ATTEMPTS):
+            try:
+                with rasterio.open(cell["gcs_path"]) as src:
+                    window = from_bounds(*bbox, transform=src.transform)
+                    bands = src.read(
+                        indexes=[S2_RED_BAND, S2_NIR_BAND], window=window,
+                        boundless=True, fill_value=0,
+                        out_shape=(2, tile_size_px, tile_size_px),
+                        resampling=Resampling.bilinear).astype(np.float32)
+                break
+            except rasterio.errors.RasterioIOError as exc:
+                last_exc = exc
+                delay = _RETRY_BASE_DELAY_S * 2 ** attempt
+                logger.warning("S2 read failed (%s) attempt %d/%d: %s; retrying in %.0fs",
+                               cell["gcs_path"], attempt + 1, _READ_ATTEMPTS, exc, delay)
+                time.sleep(delay)
+        else:
+            raise last_exc  # type: ignore[misc]
+
+        red, nir = bands[0], bands[1]
+        denom = nir + red
+        with np.errstate(invalid="ignore", divide="ignore"):
+            cell_ndvi = np.where(denom > 0, (nir - red) / denom, np.nan).astype(np.float32)
+        # First-valid-wins mosaic: fill only pixels still uncovered.
+        take = np.isnan(ndvi) & np.isfinite(cell_ndvi)
+        ndvi[take] = cell_ndvi[take]
+
+    return ndvi
+
+
 class InferenceTileDataset(Dataset):
     """Tile-list dataset for batched inference (inference.md §8.1).
 
@@ -134,20 +205,41 @@ class InferenceTileDataset(Dataset):
         self,
         tile_list: pd.DataFrame,
         quad_index: pd.DataFrame,
-        mean: np.ndarray,
-        std: np.ndarray,
+        stats: dict,
         tile_size_px: int = TILE_SIZE_PX,
         scale: float = 1.0,
+        s2_index: pd.DataFrame | None = None,
+        extra_bands: list[dict] | None = None,
     ) -> None:
-        """tile_list needs columns: tile_id, minx, miny, maxx, maxy."""
+        """tile_list needs columns: tile_id, minx, miny, maxx, maxy.
+
+        ``stats`` is the deployment ``normalization_stats.json`` dict; normalization
+        runs through the shared ``apply_norm`` (CLAUDE Rule 3) so RGB(+EXTRA) z-score
+        / clip / NoData-neutralization match training exactly.
+
+        EXTRA=NDVI (the locked v2 channel) is sourced on the fly from the bulk S2
+        composites: pass ``s2_index`` (inference.s2_index) + ``extra_bands`` (the
+        deployment ``model_config.channels.extra`` list). RGB-only when both are None.
+        """
         required = {"tile_id", "minx", "miny", "maxx", "maxy"}
         missing = required - set(tile_list.columns)
         if missing:
             raise ValueError(f"tile list missing columns {sorted(missing)}")
+        self.with_extra = bool(extra_bands)
+        if self.with_extra:
+            names = [c["name"] for c in extra_bands]
+            if names != ["ndvi"]:
+                raise NotImplementedError(
+                    f"inference EXTRA reader supports ndvi only, got {names}")
+            if s2_index is None:
+                raise ValueError("extra_bands=[ndvi] requires an s2_index to window NDVI")
+            if scale != 1.0:
+                raise NotImplementedError("NDVI EXTRA reader supports scale=1.0 only")
         self.tiles = tile_list.reset_index(drop=True)
         self.quad_index = quad_index
-        self.mean = mean.astype(np.float32)
-        self.std = std.astype(np.float32)
+        self.s2_index = s2_index
+        self.norm_params = build_norm_arrays(stats, with_extra=self.with_extra)
+        self.rgb_mean = self.norm_params["mean"][:3]
         self.tile_size_px = tile_size_px
         self.scale = scale
 
@@ -160,16 +252,29 @@ class InferenceTileDataset(Dataset):
         rgb, nodata = read_tile(bbox, self.quad_index, self.tile_size_px,
                                 scale=self.scale)
         all_nodata = bool(nodata.all())
-        if not all_nodata:
-            # Mean-substitute NoData before z-scoring via the shared helper so
+        if all_nodata:
+            # Discarded by the inference loop (§5.3); emit a correctly-shaped zero
+            # tensor so the batch collate (np.stack) doesn't trip on a 3-vs-4
+            # channel mismatch when EXTRA=NDVI is stacked on the kept tiles.
+            n_ch = 4 if self.with_extra else 3
+            image = np.zeros((n_ch, self.tile_size_px, self.tile_size_px), dtype=np.float32)
+        else:
+            # Mean-substitute RGB NoData before z-scoring via the shared helper so
             # training and inference neutralise NoData identically (Rule 3,
             # training.md §4.4); those pixels are masked to -1.0 afterwards (§5.3).
             rgb = fill_nodata_with_mean(rgb, np.broadcast_to(nodata, rgb.shape),
-                                        self.mean, channel_axis=0)
-            rgb = (rgb - self.mean[:, None, None]) / self.std[:, None, None]
+                                        self.rgb_mean, channel_axis=0)
+            if self.with_extra:
+                # NDVI from the S2 composites; no-coverage stays NaN → apply_norm
+                # neutralizes to 0 (the channel mean), exactly as in training.
+                ndvi = read_ndvi_tile(bbox, self.s2_index, self.tile_size_px)
+                stack = np.concatenate([rgb, ndvi[None]], axis=0)
+            else:
+                stack = rgb
+            image = apply_norm(stack, self.norm_params)
         return {
             "tile_id": row["tile_id"],
-            "image": rgb,
+            "image": image,
             "nodata_mask": nodata,
             "all_nodata": all_nodata,
             "bounds": np.array(bbox, dtype=np.float64),

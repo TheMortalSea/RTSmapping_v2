@@ -27,7 +27,10 @@ from inference.quad_index import (
 from inference.predictor import (
     TTA_PASSES, assert_runtime_matches_package, predict_probs,
 )
-from inference.tiles import TILE_SIZE_PX, InferenceTileDataset, read_tile
+from inference.s2_index import load_s2_index
+from inference.tiles import (
+    TILE_SIZE_PX, InferenceTileDataset, read_ndvi_tile, read_tile,
+)
 from inference.writer import (
     NODATA_MASK, NODATA_PROB, Manifest, write_binary_mask, write_probability_tile,
 )
@@ -179,13 +182,18 @@ def test_read_tile_scale05_nodata_stays_crisp(quad_setup):
     assert (rgb[:, :, 128:] == 150).all()
 
 
+def _rgb_stats(mean, std):
+    """Minimal normalization_stats.json dict (RGB-only) for the dataset."""
+    return {"rgb": {"channel_names": ["R", "G", "B"],
+                    "mean": list(map(float, mean)), "std": list(map(float, std))}}
+
+
 def test_dataset_normalizes_and_mean_substitutes(quad_setup):
-    mean = np.array([100.0, 100.0, 100.0], dtype=np.float32)
-    std = np.array([10.0, 10.0, 10.0], dtype=np.float32)
+    stats = _rgb_stats([100.0, 100.0, 100.0], [10.0, 10.0, 10.0])
     b = quad_bounds(QX + 1, QY)  # quad with alpha hole on its left half
     tiles = pd.DataFrame([{"tile_id": "t1", "minx": b[0], "miny": b[1],
                            "maxx": b[2], "maxy": b[3]}])
-    ds = InferenceTileDataset(tiles, quad_setup["index"], mean, std)
+    ds = InferenceTileDataset(tiles, quad_setup["index"], stats)
     item = ds[0]
     assert not item["all_nodata"]
     assert item["nodata_mask"][:, :256].all()
@@ -200,15 +208,112 @@ def test_dataset_flags_all_nodata(quad_setup):
     tiles = pd.DataFrame([{"tile_id": "t1", "minx": b[0], "miny": b[1],
                            "maxx": b[2], "maxy": b[3]}])
     ds = InferenceTileDataset(tiles, quad_setup["index"],
-                              np.ones(3, np.float32), np.ones(3, np.float32))
+                              _rgb_stats([1, 1, 1], [1, 1, 1]))
     assert ds[0]["all_nodata"]
 
 
 def test_dataset_rejects_missing_columns(quad_setup):
     with pytest.raises(ValueError, match="missing columns"):
         InferenceTileDataset(pd.DataFrame({"tile_id": ["a"]}),
-                             quad_setup["index"],
-                             np.ones(3, np.float32), np.ones(3, np.float32))
+                             quad_setup["index"], _rgb_stats([1, 1, 1], [1, 1, 1]))
+
+
+# ---------------------------------------------------------------------------
+# tiles: NDVI from S2 composites (EXTRA=ndvi)
+# ---------------------------------------------------------------------------
+
+def _write_s2_composite(path: Path, x: int, y: int, b4: float, b8: float,
+                        size: int = 256, zero_left: bool = False) -> None:
+    """4-band S2 composite COG (export order B4,B3,B2,B8) over quad cell (x,y).
+
+    Coarser grid (256px over the quad cell) than the Planet tile so read_ndvi_tile
+    must resample (10m→tile grid analogue). zero_left mimics a no-coverage gap
+    (B4=B8=0 → NDVI div-by-zero → NaN)."""
+    minx, miny, maxx, maxy = quad_bounds(x, y)
+    arr = np.zeros((4, size, size), dtype=np.float32)
+    arr[0] = b4   # B4 (red)
+    arr[3] = b8   # B8 (NIR)
+    if zero_left:
+        arr[:, :, : size // 2] = 0.0
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with rasterio.open(
+        path, "w", driver="GTiff", width=size, height=size, count=4,
+        dtype="float32", crs="EPSG:3857",
+        transform=transform_from_bounds(minx, miny, maxx, maxy, size, size),
+    ) as dst:
+        dst.write(arr)
+
+
+@pytest.fixture
+def s2_setup(tmp_path):
+    """One S2 composite cell over quad (QX,QY) with B4=2000,B8=6000 (NDVI=0.5),
+    left half zeroed (no-coverage) + the index CSV."""
+    p = tmp_path / "E0010_N0700.tif"
+    _write_s2_composite(p, QX, QY, b4=2000.0, b8=6000.0, zero_left=True)
+    minx, miny, maxx, maxy = quad_bounds(QX, QY)
+    index = pd.DataFrame([{"cell_id": "E0010_N0700", "gcs_path": str(p),
+                           "minx": minx, "miny": miny, "maxx": maxx, "maxy": maxy}])
+    csv = tmp_path / "s2_index.csv"
+    index.to_csv(csv, index=False)
+    return {"index": index, "csv": csv, "tmp": tmp_path}
+
+
+def test_load_s2_index_validates_columns(tmp_path):
+    bad = tmp_path / "bad.csv"
+    pd.DataFrame({"cell_id": ["a"]}).to_csv(bad, index=False)
+    with pytest.raises(ValueError, match="missing columns"):
+        load_s2_index(bad)
+
+
+def test_read_ndvi_tile_value_and_coregistration(s2_setup):
+    # Tile spanning the whole cell: NDVI=(6000-2000)/(6000+2000)=0.5 on the
+    # covered (right) half; left half was zeroed -> div-by-zero -> NaN.
+    bbox = quad_bounds(QX, QY)
+    ndvi = read_ndvi_tile(bbox, s2_setup["index"])
+    assert ndvi.shape == (512, 512)
+    # Buffer the ±few-px bilinear blend at the synthetic sharp zero-boundary (~col 256).
+    assert np.allclose(ndvi[:, 262:], 0.5, atol=1e-4)
+    assert np.isnan(ndvi[:, :250]).all()
+
+
+def test_read_ndvi_tile_outside_coverage_is_nan(s2_setup):
+    bbox = quad_bounds(QX + 5, QY + 5)  # no intersecting cell
+    ndvi = read_ndvi_tile(bbox, s2_setup["index"])
+    assert np.isnan(ndvi).all()
+
+
+def test_dataset_with_ndvi_extra_stacks_and_neutralizes(quad_setup, s2_setup):
+    # RGB+NDVI: image is 4-channel; NDVI z-scored on the covered half, NoData
+    # (no-coverage NaN) neutralized to 0 by apply_norm.
+    stats = _rgb_stats([100.0, 100.0, 100.0], [10.0, 10.0, 10.0])
+    stats["extra"] = {"channel_names": ["ndvi"], "mean": [0.5], "std": [0.1]}
+    b = quad_bounds(QX, QY)  # fully covered RGB quad (no alpha hole)
+    tiles = pd.DataFrame([{"tile_id": "t1", "minx": b[0], "miny": b[1],
+                           "maxx": b[2], "maxy": b[3]}])
+    ds = InferenceTileDataset(tiles, quad_setup["index"], stats,
+                              s2_index=s2_setup["index"],
+                              extra_bands=[{"name": "ndvi", "band": 0}])
+    item = ds[0]
+    assert item["image"].shape == (4, 512, 512)
+    # NDVI covered half: (0.5 - 0.5)/0.1 = 0; no-coverage half: NaN -> 0.
+    assert np.allclose(item["image"][3], 0.0, atol=1e-4)
+
+
+def test_dataset_extra_requires_s2_index(quad_setup):
+    with pytest.raises(ValueError, match="requires an s2_index"):
+        InferenceTileDataset(pd.DataFrame({"tile_id": ["a"], "minx": [0], "miny": [0],
+                                           "maxx": [1], "maxy": [1]}),
+                             quad_setup["index"], _rgb_stats([1, 1, 1], [1, 1, 1]),
+                             extra_bands=[{"name": "ndvi", "band": 0}])
+
+
+def test_dataset_rejects_non_ndvi_extra(quad_setup, s2_setup):
+    with pytest.raises(NotImplementedError, match="ndvi only"):
+        InferenceTileDataset(pd.DataFrame({"tile_id": ["a"], "minx": [0], "miny": [0],
+                                           "maxx": [1], "maxy": [1]}),
+                             quad_setup["index"], _rgb_stats([1, 1, 1], [1, 1, 1]),
+                             s2_index=s2_setup["index"],
+                             extra_bands=[{"name": "nbr", "band": 1}])
 
 
 # ---------------------------------------------------------------------------

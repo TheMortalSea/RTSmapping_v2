@@ -9,9 +9,15 @@
 > appear under several order UUIDs). Tiles are therefore 512×512 **windowed reads** that may
 > straddle quad boundaries (`inference/tiles.py` mosaics intersecting quads per tile). The §14
 > calibration-mismatch assertion is implemented (`inference/predictor.py:assert_runtime_matches_package`).
-> Deferred, per spec gates: multi-scale (§6.4), TTA validation (§7.4/8.5b), EXTRA channels
-> (definition pending upstream), final calibration (threshold/temperature still null). Smoke
+> Deferred, per spec gates: multi-scale (§6.4), TTA validation (§7.4/8.5b),
+> final calibration (threshold/temperature still null). Smoke
 > evidence: `/mnt/outputs/inference/` (dev package from phase0c_seed42 with DEV-ONLY threshold).
+>
+> **EXTRA=NDVI implemented (2026-06-24).** The locked v2 recipe is RGB+NDVI; NDVI is windowed
+> on the fly from the bulk S2 composites (§3.3) — `inference/s2_index.py` +
+> `inference.tiles.read_ndvi_tile`, stacked and normalized through the shared `apply_norm`
+> (CLAUDE Rule 3). `scripts/inference.py --s2-index` is required when the deployment package
+> declares EXTRA channels.
 
 ## 1. Inference Objective
 
@@ -141,6 +147,24 @@ coverage-gap QA by `scripts/check_coverage_gaps.py`).
 > **Domain note:** the inference domain extends to ~45°N at the boreal margin (not just 60–74°N) and is
 > bounded on the north (~74–76°N) by PlanetScope's coverage guarantee — the permafrost region north of
 > that (`circumpolar_north_domain.geojson`) has no 2025 Planet basemap and is excluded.
+
+### 3.3 EXTRA channel source — NDVI from S2 composites (on the fly)
+
+The locked v2 recipe is **RGB + NDVI**. Per-tile EXTRA materialization was abandoned for inference
+scale (~45 TB / ~192 VM-days for 41.57M tiles; diary 2026-06-24). Instead NDVI is derived **on the fly**,
+mirroring how RGB is mosaicked from Planet quads:
+
+| Item | Value |
+|------|-------|
+| Source | Bulk Jul–Sep `s2_sr_composite` (`data/extra_channels`), bands B4,B3,B2,B8, EPSG:3857, 10 m, COG — exported by `scripts/export_s2_composites.py` to `gs://rts-mapping-v2-usw1/S2_RGB/2025_south/` |
+| Index | `scripts/build_s2_index.py` → `inference/s2_index.py` (cell bounds + GCS path; one-time GCS scan) |
+| Reader | `inference.tiles.read_ndvi_tile`: window intersecting cells, `NDVI=(B8−B4)/(B8+B4)` (band 1 / band 4), bilinear-resample 10 m → tile grid, mosaic; no-coverage → NaN |
+| Consistency | Same composite recipe + NDVI formula as training (`s2_image`); NDVI is scale-invariant so the /10000 cancels. Stacked as channel 4 and normalized via the shared `apply_norm` — NaN → 0, identical to training EXTRA (CLAUDE Rule 3) |
+| Invocation | `scripts/inference.py --s2-index s2_index_2025_south.csv` (required when the package declares EXTRA) |
+
+The S2 composite is read per tile alongside the Planet quads, so the §11.3 quad-cache (A1.1) should
+cache composite reads too. NoData: only the **RGB** mask drives the output NoData (§5.3); NDVI gaps are
+neutralized to 0, not propagated.
 
 ---
 

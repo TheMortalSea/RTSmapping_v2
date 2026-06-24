@@ -42,6 +42,7 @@ from inference.predictor import (  # noqa: E402
     assert_runtime_matches_package, load_deployment_package, predict_probs,
 )
 from inference.quad_index import load_quad_index  # noqa: E402
+from inference.s2_index import load_s2_index  # noqa: E402
 from inference.tiles import InferenceTileDataset  # noqa: E402
 from inference.writer import NODATA_PROB, Manifest, write_probability_tile  # noqa: E402
 from utils.config import load_config  # noqa: E402
@@ -80,6 +81,9 @@ def main() -> int:
     p.add_argument("--config", default="configs/deployment.yaml")
     p.add_argument("--tile-list", required=True)
     p.add_argument("--quad-index", required=True)
+    p.add_argument("--s2-index", default=None,
+                   help="S2 composite index CSV (scripts/build_s2_index.py); "
+                        "required iff the package declares EXTRA=NDVI")
     p.add_argument("--package", required=True,
                    help="deployment package dir (local or gs://)")
     p.add_argument("--output", required=True,
@@ -100,9 +104,15 @@ def main() -> int:
     pkg = load_deployment_package(args.package, device)
     dep_cfg = pkg["dep_cfg"]
     assert_runtime_matches_package(run_cfg, dep_cfg)
-    if pkg["n_channels"] != 3:
-        raise NotImplementedError("EXTRA channels at inference await the final "
-                                  "EXTRA definition (RGB-only for now)")
+
+    # EXTRA=NDVI is windowed from the bulk S2 composites on the fly (inference.md §5).
+    extra_bands = (pkg["model_cfg"].get("channels") or {}).get("extra") or []
+    s2_index = None
+    if extra_bands:
+        if not args.s2_index:
+            raise ValueError("package declares EXTRA channels but --s2-index was not "
+                             "provided (needed to window NDVI from the S2 composites)")
+        s2_index = load_s2_index(args.s2_index)
 
     quad_index = load_quad_index(args.quad_index)
     tiles = pd.read_csv(args.tile_list)
@@ -133,8 +143,8 @@ def main() -> int:
         manifest.save()
         return 0
 
-    dataset = InferenceTileDataset(todo, quad_index, pkg["mean"], pkg["std"],
-                                   scale=args.scale)
+    dataset = InferenceTileDataset(todo, quad_index, pkg["stats"], scale=args.scale,
+                                   s2_index=s2_index, extra_bands=extra_bands)
     loader = DataLoader(dataset, batch_size=run_cfg["inference"]["batch_size"],
                         num_workers=args.num_workers, collate_fn=_collate)
 

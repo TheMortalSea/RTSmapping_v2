@@ -385,7 +385,7 @@ Forward-path tests for `models/foundation.py` (FoundationSegmenter: DINOv3/ViT e
 
 ### [test_inference_pipeline.py](test_inference_pipeline.py)
 
-Inference pipeline (`inference/` + grid/merge entry scripts), GPU-free. Fixture: synthetic 512px RGBA quads written on the **real zoom-15 mosaic grid** (production grid constants, small rasters), so quad-bounds math is exercised against an observed Planet quad coordinate.
+Inference pipeline (`inference/` + grid/merge entry scripts), GPU-free. Fixtures: synthetic 512px RGBA quads written on the **real zoom-15 mosaic grid** (production grid constants, small rasters), so quad-bounds math is exercised against an observed Planet quad coordinate; plus synthetic 4-band S2 composite COGs (B4,B3,B2,B8 export order) for the EXTRA=NDVI windowed reader.
 
 | Test | Checks | Strictness |
 |---|---|---|
@@ -398,6 +398,12 @@ Inference pipeline (`inference/` + grid/merge entry scripts), GPU-free. Fixture:
 | `test_dataset_normalizes_and_mean_substitutes` | NoData pixels mean-substituted pre-z-score (normalize to 0); valid pixels z-scored | real — §5.3/§4.4 parity |
 | `test_dataset_flags_all_nodata` | all-NoData tile flagged for skip+manifest | real |
 | `test_dataset_rejects_missing_columns` | tile-list schema guard | shallow |
+| `test_load_s2_index_validates_columns` | missing S2-index columns → ValueError | shallow |
+| `test_read_ndvi_tile_value_and_coregistration` | NDVI=(B8−B4)/(B8+B4) from a composite cell, resampled to the tile grid; no-coverage (zeroed) → NaN | real — §5 NDVI reader / Rule 3 |
+| `test_read_ndvi_tile_outside_coverage_is_nan` | tile with no intersecting S2 cell → all-NaN | real — §5 |
+| `test_dataset_with_ndvi_extra_stacks_and_neutralizes` | RGB+NDVI → 4-ch image; NDVI z-scored via shared `apply_norm`; no-coverage NaN → 0 | real — §5 / Rule 3 EXTRA parity |
+| `test_dataset_extra_requires_s2_index` | EXTRA declared but no s2_index → ValueError | shallow |
+| `test_dataset_rejects_non_ndvi_extra` | EXTRA other than ndvi → NotImplementedError | shallow |
 | `test_tile_grid_counts_and_determinism` | deterministic ids, unique, every tile intersects a quad, tile = 512 px | real — §4.4 |
 | `test_tile_grid_aoi_filter` | AOI subset preserves global grid alignment | real |
 | `test_tta_inverse_correctness` | flip/rot-equivariant model ⇒ TTA mean == identity pass (exposes wrong inverse) | real — §7.2 |
