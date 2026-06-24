@@ -38,12 +38,13 @@ of truth: always read the relevant doc before implementing (see [CLAUDE.md](CLAU
 | [training/training.md](training/training.md) | Model, loss, metrics, training loop, train–inference consistency contract |
 | [training/experiments.md](training/experiments.md) | The phased experimentation plan (sequential elimination + multi-seed lock) |
 | [docs/baseline_unetpp_effb5.md](docs/baseline_unetpp_effb5.md) | Living experiment record for the UNet++/EfficientNet-B5 baseline |
+| [docs/optimization_roadmap.md](docs/optimization_roadmap.md) | Cross-aspect optimization roadmap (training/inference/infra) + experiment-fairness & validity audit |
 
 ### Inference & post-inference
 | Document | Purpose |
 |----------|---------|
 | [inference/inference.md](inference/inference.md) | Deployment workflow — tiling, overlap aggregation, merging, vectorization |
-| [post-inference/post-inference.md](post-inference/post-inference.md) | Post-processing, QC, evaluation, threshold tuning *(spec in progress)* |
+| [post-inference/post-inference.md](post-inference/post-inference.md) | Post-processing, QC, evaluation, threshold tuning *(spec complete; multi-scale fusion deferred)* |
 
 ### Computing
 | Document | Purpose |
@@ -69,7 +70,7 @@ This repo follows a single-source-of-truth standard. Where each kind of fact liv
 
 | Concern | Source of truth |
 |---------|-----------------|
-| Config values — hyperparameters, paths, thresholds | `configs/*.yaml` (`configs/baseline.yaml` is primary) |
+| Config values — hyperparameters, paths, thresholds | `configs/*.yaml` (`configs/base_v2_fast.yaml` is the canonical base for current experiments; `configs/baseline.yaml` records the original Phase-0/1 baseline + shared infra keys) |
 | MLflow tracking URI | `configs/baseline.yaml:mlflow.tracking_uri` |
 | Core constants — CRS, tile size, label values, seed | [CLAUDE.md](CLAUDE.md) §Technical Constraints |
 | Data disk layout & EXTRA bands | [data/data.md](data/data.md) (§9 for bands) |

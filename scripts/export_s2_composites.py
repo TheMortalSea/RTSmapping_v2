@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import re
 import sys
 import time
 from pathlib import Path
@@ -89,16 +90,23 @@ def domain_cells(domain: gpd.GeoDataFrame, dlat: float, dlon: float):
     return out
 
 
+# EE appends a "-<10digits>-<10digits>" tile suffix to multi-part (oversized) exports.
+# cell_id() uses only letters/digits/underscore, so stripping this can't clobber a real id.
+_EE_TILE_SUFFIX = re.compile(r"-\d{10}-\d{10}$")
+
+
 def _existing_cell_ids(bucket: str, prefix: str) -> set[str]:
-    """Cell ids already exported under gs://bucket/prefix (resume support)."""
+    """Cell ids already exported under gs://bucket/prefix (resume support).
+
+    EE writes ``<cid>.tif`` for single-file exports but splits an oversized cell into
+    ``<cid>-XXXXXXXXXX-YYYYYYYYYY.tif``; strip that tile suffix so a completed multi-part
+    cell is recognised as done and not re-exported.
+    """
     from google.cloud import storage
     client = storage.Client()
     ids = set()
     for blob in client.list_blobs(bucket, prefix=prefix.rstrip("/") + "/"):
-        name = Path(blob.name).stem
-        if name.endswith(".tif"):
-            name = name[:-4]
-        ids.add(name)
+        ids.add(_EE_TILE_SUFFIX.sub("", Path(blob.name).stem))
     return ids
 
 

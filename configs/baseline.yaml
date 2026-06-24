@@ -1,6 +1,14 @@
 # Baseline config for RTS Segmentation v2 — data pipeline (Phase 0) + training loop (Phase 1).
 # See training/training.md and inference/inference.md for field semantics and
 # train-inference consistency contract (§4 of training.md).
+#
+# SCOPE NOTE (2026-06-24): this file records the ORIGINAL Phase-0/1 baseline. Its
+# lr_schedule (frozen_lr 1e-3 / base_lr 1e-4) predates the Phase-0b LR re-tune; the
+# LOCKED learning rates (frozen_lr 3e-3 / base_lr 1e-3) and the canonical base for every
+# current experiment live in configs/base_v2_fast.yaml (children inherit via
+# `base: base_v2_fast.yaml`) / configs/phase0c_seed42.yaml. Do NOT start new runs from
+# baseline.yaml — use base_v2_fast.yaml. This file remains the documented single source
+# for shared infra keys only (mlflow.tracking_uri, data paths).
 
 seed: 42
 deterministic: false   # exploration runs; set true in configs/final_seed.yaml for the [42,43,44] triplet

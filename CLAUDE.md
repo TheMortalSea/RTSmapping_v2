@@ -107,7 +107,7 @@ This repo follows SSoT standard, if one variable is mentioned multiple places, r
 
 Process and results go in `docs/` as living markdowns. Each major experiment has a single md document (major model version). For each sub-experiment (minor model version) iteration records: design decision, implementation details, results, and analysis on the same md document.
 
-All critical milestone, decision, progress, current status should go to the living document current_working_status.md, this is the dairy and roadmap of this project.
+All critical milestone, decision, progress, current status should go to the living document current_working_status.md, this is the diary and roadmap of this project.
 
 ## andrej-karpathy rules
 

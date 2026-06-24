@@ -287,7 +287,13 @@ def build_model(cfg: dict) -> nn.Module:
         from models.foundation import FoundationSegmenter
 
         # RGB or RGB+EXTRA (early fusion via a widened, EXTRA-zero-init patch-embed conv).
-        model = FoundationSegmenter(backbone=backbone, pretrained=pretrained, in_channels=in_channels)
+        # FPN width / tap count are config knobs (defaults preserve prior behavior) so a
+        # larger ViT can be paired with a wider pyramid without editing code.
+        model = FoundationSegmenter(
+            backbone=backbone, pretrained=pretrained, in_channels=in_channels,
+            dim=int(cfg["model"].get("fpn_dim", 256)),
+            n_taps=int(cfg["model"].get("n_taps", 4)),
+        )
     else:
         raise ValueError(
             f"Unsupported model.architecture: {arch!r}. "

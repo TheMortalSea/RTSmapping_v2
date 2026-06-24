@@ -339,9 +339,12 @@ Total inference passes per tile location: n_scales × n_tta_transforms
 
 ### 7.4 TTA Cost–Benefit
 
-Pan-arctic cost analysis for the §3.2 tile count (~7.5M at default stride 344) on A100 (~$3.67/hr on-demand):
+Pan-arctic cost analysis on A100 (~$3.67/hr on-demand). **Note:** the wallclock / GPU-hr / cost
+columns below were computed against the *superseded* ~7.5M-tile estimate; the measured count is
+**41.57M** (§3.2, stride 344), so scale those absolute figures **~5.5×**. The per-config
+*ratios* (passes/tile, throughput) — the point of this table — are unchanged.
 
-| Config | Passes/tile | Throughput (tiles/s) | Wallclock @ 7.5M | GPU-hrs | Cost |
+| Config | Passes/tile | Throughput (tiles/s) | Wallclock @ ~7.5M (superseded est.) | GPU-hrs | Cost |
 |--------|-------------|----------------------|------------------|---------|------|
 | No TTA | 1 | ~150 | 14 hr | 14 | ~$50 |
 | Minimal (identity, hflip) | 2 | ~75 | 28 hr | 28 | ~$100 |
@@ -525,7 +528,10 @@ Performed before releasing results (detailed in post-inference.md):
 A100-80GB, bf16, no TTA, scale 1.0, 552-tile Banks Island AOI, quads streamed from GCS via
 windowed reads, no caching:
 
-| Configuration | Tiles/s (measured) | §3.2 pan-arctic 7.5M tiles |
+Extrapolations below use the *superseded* ~7.5M-tile estimate; the measured count is **41.57M**
+(§3.2), so scale them **~5.5×** (e.g. the 8-worker row → ~1100 GPU-h ≈ 137 h on the 8×A100 node).
+
+| Configuration | Tiles/s (measured) | Extrapolation @ ~7.5M (superseded est.) |
 |---------------|--------------------|----------------------------|
 | batch 64, 4 workers | 6.4 | — |
 | **batch 64, 8 workers** | **10.5** | **~198 GPU-h ≈ 25 h on the 8×A100 node** |
