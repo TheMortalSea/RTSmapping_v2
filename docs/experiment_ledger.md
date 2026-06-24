@@ -103,7 +103,7 @@ _Last refreshed: 2026-06-24 — **v2 campaign CLOSED (run-complete); repo consol
 | 79 | 06-22 | fm_dinov3_rgb_imagenet | E control: web-DINOv3 RGB + native ImageNet norm | corrected | 0.8923 | ✅ norm de-confound: ImageNet-norm 0.892 > z-score 0.873; still ≪ sat ViT-L |
 | 80 | 06-22 | **phase4_fm_dinov3_ndvi** | D/E: web-DINOv3 ViT-B + NDVI (fair foundation test) | corrected | **0.9121** | ✅ **ties EffB5+NDVI 0.9123 (Δ−0.0002)** — the web-DINOv3 RGB edge VANISHES once NDVI is added → generic foundation is NOT the lever |
 | 81 | 06-22 | aug_randaugment_deploy | F: RandAugment (shadow-safe pool) | corrected | 0.9089 | ✅ Δ−0.0034 → no-win |
-| 82 | 06-22 | aug_trivialaugment_deploy (+seed43/44) | F: TrivialAugment (shadow-safe pool), 3-seed | corrected | 0.9167 / 0.9216 / 0.9270 | ✅ **mean 0.9218** — sign-consistent (3/3 > deploy 0.9123) but mean Δ+0.0095 **< G=0.0112** → fails the magnitude half of the lock rule → **not locked**. Strongest aug arm; train-only → borderline, revisit at final calibration on the chosen encoder |
+| 82 | 06-22 | **aug_trivialaugment_deploy** (+seed43/44) | F: TrivialAugment (shadow-safe pool), 3-seed | corrected | **0.9167 / 0.9216 / 0.9270** | 🔒 **LOCKED** (user call 2026-06-24) — mean **0.9218**, sign-consistent 3/3 > deploy. Mean Δ+0.0095 is a hair under G=0.0112, but locked on judgment: a parameter-free auto-policy that **replaces** the hand-tuned color stage is more elegant + lighter, and the gain is consistent. **This becomes the v2 color stage → EffB5 recipe 3-seed rises 0.9123→0.9218.** Confirm on the chosen encoder at final lock. |
 | 83 | 06-22 | aug_anneal_deploy (+seed43/44) | F: aug-strength annealing, 3-seed | corrected | 0.9074 / 0.9192 / 0.9204 | ✅ **mean 0.9157**, Δ+0.0034 sub-gate → no-win |
 | 84 | 06-22 | fm_sam2_rgb | E: SAM2/Hiera foundation encoder, RGB-only | corrected | **0.5558** | ✅ non-competitive (≪ EffB5-RGB 0.830) — Hiera features weak for RTS |
 | 85 | 06-22 | ❌ fm_dinov3sat_7b_frozen | E: satellite-DINOv3 7B frozen linear-probe | corrected | 0.4747 | ❌ **killed** — diverged (constant frozen_lr, no anneal) + non-competitive; frozen sat-7B needs fine-tuning |
@@ -159,13 +159,13 @@ Plan: `.claude/plans/elegant-exploring-lemur.md`. Family scheme (replacing the o
 **F** Augmentation · **G** Sampling · **H** Calibration/TTA · **I** Final-lock/Test · **J** Deploy/inference · **K** Deferred.
 
 **✅ Locked:** A (μ₀=0.7912, G=0.0112) · B (data plateau) · C (focal·ignore_w2) · D (**EXTRA=NDVI** + **F0** channel-stack) ·
-F (drop-RandomScale; keep photometric+CLAHE) · G (default sampling). Infra: `base_v2_fast` stop-fix · gate policy (mean Δ≥G **and** 3-seed sign-consistency).
+F (drop-RandomScale; **TrivialAugment color stage** — parameter-free auto-policy replacing the hand-tuned photometric ops, locked 2026-06-24) · G (default sampling). Infra: `base_v2_fast` stop-fix · gate policy (mean Δ≥G **and** 3-seed sign-consistency).
 
 **🟡 Encoder result (E) — PROVISIONAL, needs a fair re-run:** decoders all lose to UNet++ and EffB3 capacity-down is no-win; the satellite-pretrained ViT-L is the most promising encoder but **the verdict is not yet clean.** `best_smoothed`: sat-DINOv3 ViT-L + NDVI 3-seed **0.9194** (0.9234/0.9199/0.9150) vs EffB5+NDVI **0.9123** → **+0.0071, sub-gate near-miss on PR-AUC**; sat-RGB **0.9133** ≈ ties EffB5. The differentiator is **object-level** (3-seed mean pixel-IoU 0.64 vs 0.55, obj-F1 0.56 vs 0.40). **⚠ Confound:** the sat runs use `phase0c` (boundary none + RandomScale on) vs EffB5 deploy's locked ignore_w2 + drop-RandomScale, and `boundary_handling` touches the **val** labels → not a clean A/B (sat's edge is *understated*, scored on harder labels). **Fair verdict requires re-running sat-DINOv3 on the locked recipe.** Generic web-DINOv3+NDVI only ties EffB5 (0.9121); SAM2 0.556 + 7B-frozen 0.475 non-competitive. User opted to **include NDVI**; solo-vs-ensemble decided on Val at the final lock (I, pending). **PRs #42 (sat encoder) + #26 (S2/EXTRA doc) merged.**
 
 **🔵 Live:** only **fm_dinov3sat_l_ndvi_seed42_rerun** (GPU0) — restoring the +NDVI seed42 checkpoint lost to the resume-clobber bug (reproduces the old `phase0c` recipe; does not fix the confound). Everything else is run-complete.
 
-**✅ Screens all landed (`best_smoothed` vs deploy 0.9123):** EffB3 0.9050 · copy-paste 0.8930 · mosaic 0.9069 · cutmix 0.9014 · mixup 0.9028 (**mixing-aug family 4/4 struck out**) · aug-anneal 3-seed mean 0.9157 (Δ+0.0034) · RandAugment 0.9089 (Δ−0.0034) · **TrivialAugment 3-seed mean 0.9218** (the one near-miss). **Lock rule = mean Δ ≥ G (0.0112) AND 3-seed sign-consistency.** TrivialAugment passes sign-consistency (3/3 > deploy) but its **mean Δ+0.0095 is just under G**, so it fails the magnitude half → not locked (it's the strongest aug arm and train-only/free, so a borderline call worth revisiting at final calibration on the chosen encoder). No other arm is even sign-consistent → so **the augmentation family (F) closes with no new lock** (that's the consequence, not the reason). SAM2 0.556 + 7B-frozen 0.475 non-competitive.
+**✅ Screens all landed (`best_smoothed` vs deploy 0.9123):** EffB3 0.9050 · copy-paste 0.8930 · mosaic 0.9069 · cutmix 0.9014 · mixup 0.9028 (**mixing-aug family 4/4 struck out**) · aug-anneal 3-seed mean 0.9157 (Δ+0.0034) · RandAugment 0.9089 (Δ−0.0034) · **TrivialAugment 3-seed mean 0.9218 → 🔒 LOCKED**. The strict lock rule (mean Δ≥G AND sign-consistency) was a near-miss (Δ+0.0095 just under G=0.0112, but 3/3 sign-consistent); **locked by user judgment 2026-06-24** — a parameter-free auto-policy that replaces the hand-tuned color stage is more elegant + lighter and the gain is consistent, so it's not numbers-only. It becomes the v2 color stage (EffB5 recipe → 0.9218). SAM2 0.556 + 7B-frozen 0.475 non-competitive.
 
 **⏳ To-do before v2 ship (forward plan `.claude/plans/elegant-exploring-lemur.md`):** finish the seed42 retrain → **Phase D**: H calibration (temp + threshold + D4-TTA) on Val + the RGB/+NDVI/ensemble select → **Test-Realistic once** → package. Phase C NDVI-at-inference reader is **built**. Then Phase E inference infra (quad cache, bucket, fleet) → Phase F pre-flight → full inference.
 
@@ -185,8 +185,9 @@ F (drop-RandomScale; keep photometric+CLAHE) · G (default sampling). Infra: `ba
 | Mixing augs: copy-paste / mosaic / cutmix / mixup | F | **tested → no-win** (0.893 / 0.907 / 0.901 / 0.903 vs deploy 0.9123) — copy-paste worst (breaks spatial-context/shadow cues) |
 | EffB3 capacity-down | E | **tested → no-win** (0.9050, Δ−0.007 vs EffB5) — capacity isn't the lever; kept as a cheaper deploy fallback only |
 | RandAugment | F | **tested → no-win** (0.9089, Δ−0.0034 vs deploy) — auto-policy over a shadow-safe pool didn't help |
-| TrivialAugment | F | **tested → sign-consistent near-miss, NOT locked** — 3-seed mean 0.9218 (0.9167/0.9216/0.9270), 3/3 > deploy 0.9123 but mean Δ+0.0095 **< G=0.0112** → fails the magnitude half of the lock rule. Strongest aug arm; train-only (no inference cost) → a borderline call, revisit at final calibration **on the chosen encoder** (tested on EffB5; may not transfer to sat-DINOv3) |
 | Aug-strength annealing | F | **tested → no-win** (3-seed mean 0.9157, Δ+0.0034 sub-gate; 0.9074/0.9192/0.9204) — strong→mild by ~ep40 didn't clear the gate |
+
+_(TrivialAugment is **not** dropped — it's **locked** into the v2 recipe (F); see master #82 and the Locked decisions.)_
 | SegFormer (mit_b5) | E | **dropped** — low value on a plateau; foundation is the better transformer bet |
 | EffB7 | E | **dropped** — overfit risk on a plateau (bound-only) |
 | UNet3+ | E | **dropped** — condition unmet (no decoder family moved the gate) |
@@ -220,10 +221,12 @@ F (drop-RandomScale; keep photometric+CLAHE) · G (default sampling). Infra: `ba
   below even F0). Dual-encoder / cross-modal attention extract *less* than the simple channel-stack here →
   the skip-condition is confirmed, not assumed. DINOv3+NDVI (fair encoder test) still to run (family E).
 - **🔒 Final-lock (I) — v2 deploy recipe, 3-seed (EffB5):** RGB+NDVI · F0 · focal·ignore_w2 · default sampling ·
-  aug−RandomScale · base_v2_fast → **0.9144 / 0.9068 / 0.9156 (mean 0.9123)**. That's **+0.014 over
-  NDVI-alone (boundary none) 0.8985** → boundary-ignore + drop-RandomScale are **additive on top of NDVI**.
-  This is the EffB5 reference; the **sat-DINOv3 encoder (E) is the leading deploy but not yet fairly verified**
-  (see the encoder caveat). Calibration + the one-shot Test-Realistic happen at the final lock on the winner.
+  aug−RandomScale · base_v2_fast → **0.9144 / 0.9068 / 0.9156 (mean 0.9123, +0.014 over NDVI-alone 0.8985)**.
+  **With TrivialAugment locked (F, 2026-06-24) the color stage changes → EffB5 recipe 3-seed rises to 0.9167 /
+  0.9216 / 0.9270 = 0.9218** (the `aug_trivialaugment_deploy` runs are exactly this recipe). That 0.9218 is the
+  **current EffB5 reference**; the **sat-DINOv3 encoder (E) is the leading deploy but not yet fairly verified**
+  (its runs predate ignore_w2 + drop-RandomScale + TrivialAugment — see the encoder caveat). The fair sat
+  re-run must use this full recipe. Calibration + the one-shot Test-Realistic happen at the final lock on the winner.
 - **Curriculum (Phase 10, corrected):** r20_pf33 best cell single-seed 0.894, **but seed-confirm is
   high-variance: 0.894 / 0.901 / 0.859 → mean ≈0.885 vs base 0.879 (Δ≈0.006), within std ≈0.021.**
   The curriculum "win" is **not distinguishable from seed noise** at 3 seeds — treat as unconfirmed.

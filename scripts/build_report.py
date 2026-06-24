@@ -552,16 +552,16 @@ FAMILY_LEARNINGS = [
                   "different val labels (sat scored on the harder set → edge understated). Fair verdict "
                   "needs sat re-run on the locked recipe. 7B-frozen killed (0.475); SAM2 0.556 non-competitive."),
     dict(id="F", name="Augmentation", status="done",
-         learned="Augmentation is NOT the plateau-breaker (the third pillar of the representation-limited "
-                 "diagnosis). Photometric aug genuinely helps and must be kept; downscale (RandomScale) "
-                 "HURTS; and every mixing/auto-policy/annealing arm fails to clear the gate vs the deploy "
-                 "recipe. Family closed.",
-         evidence="Geometric-only craters to 0.794 (−0.072) → photometric matters; CLAHE/×1.5 within "
-                  "noise → keep, don't strengthen. Drop-RandomScale +0.016, positive in 3/3 seeds → "
-                  "LOCKED drop. All no-win vs deploy 0.9123: copy-paste 0.893 (worst), cutmix 0.901, "
-                  "mosaic 0.907, mixup 0.903; aug-anneal 3-seed mean 0.916 (+0.003); TrivialAugment "
-                  "3-seed mean 0.9218 (best aug arm, 3/3 positive but Δ+0.0095 sub-gate), RandAugment "
-                  "0.9089. None earns a lock."),
+         learned="Augmentation is not a plateau-breaker, but two cheap wins lock in: dropping the RandomScale "
+                 "downscale, and replacing the hand-tuned color stack with TrivialAugment (a parameter-free "
+                 "auto-policy) — lighter, more elegant, and a consistent small gain. The mixing/annealing/"
+                 "RandAugment arms all fail.",
+         evidence="Geometric-only craters to 0.794 (−0.072) → photometric matters. Drop-RandomScale +0.016, "
+                  "3/3 seeds → LOCKED. <strong>TrivialAugment 3-seed mean 0.9218, 3/3 > deploy 0.9123 "
+                  "(Δ+0.0095, just under G) → LOCKED by judgment (elegance + consistency, not numbers-only); "
+                  "becomes the v2 color stage, EffB5 recipe → 0.9218.</strong> No-win: copy-paste 0.893, "
+                  "cutmix 0.901, mosaic 0.907, mixup 0.903 (mixing 4/4 out); aug-anneal 0.9157 (+0.003); "
+                  "RandAugment 0.9089 (−0.003)."),
     dict(id="G", name="Sampling / curriculum", status="done",
          learned="Default balanced sampling is sufficient — the curriculum 'win' did not survive seeds.",
          evidence="Curriculum r20_pf33: 0.894/0.901/0.859 → mean ≈0.885 vs base 0.879 (Δ≈0.006, sign "
@@ -635,8 +635,11 @@ LOCKED_DECISIONS = [
      "F0/F1/F2 tie; heavy F3/F5 lose (≪ NDVI-alone) → simplest fusion locked, evidence-based."),
     ("Augmentation — scale", "Drop RandomScale downscale", "F",
      "3-seed A/B +0.016, positive in all 3 seeds (sign-consistent)."),
-    ("Augmentation — photometric", "Keep photometric set + CLAHE", "F",
-     "Geometric-only is −0.072; dropping CLAHE / ×1.5 are within noise → keep as-is."),
+    ("Augmentation — color", "TrivialAugment (parameter-free auto-policy)", "F",
+     "Replaces the hand-tuned photometric stack with one random shadow-safe op/image (random strength). "
+     "3-seed mean 0.9218, 3/3 > deploy 0.9123 (Δ+0.0095, a hair under G). Locked by judgment 2026-06-24: "
+     "more elegant + lighter than hand-tuning and the gain is consistent. Geometric-only is −0.072 (photometric "
+     "aug matters); RandomScale downscale dropped (+0.016, 3/3). EffB5 recipe → 0.9218 with TrivialAugment."),
     ("Sampling", "Default balanced (no curriculum)", "G",
      "Curriculum r20_pf33 mean Δ≈0.006 with a flipped seed → within noise, rejected."),
     ("Stop schedule", "base_v2_fast (patience 5, start 45, max 120)", "—",
