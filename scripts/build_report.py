@@ -546,7 +546,8 @@ FAMILY_LEARNINGS = [
                   "(Δ−0.007, no-win). web-DINOv3+NDVI 0.9121 ties EffB5+NDVI 0.9123. <strong>Satellite "
                   "DINOv3 ViT-L (SAT-493M) + NDVI: 3-seed best_smoothed 0.9194 (0.9234/0.9199/0.9150) vs "
                   "EffB5+NDVI 0.9123 — +0.0071, a sub-gate near-miss on PR-AUC; sat-RGB 0.9133 ties EffB5. "
-                  "Object-level (3-seed mean): pixel-IoU 0.64 vs 0.55, obj-F1 0.56 vs 0.40</strong>. "
+                  "Object-level, clean same-boundary comparison: pixel-IoU 0.64 vs 0.51 (+0.13), obj-F1 "
+                  "0.56 vs 0.49 (+0.07)</strong>. "
                   "<strong>⚠ Confound:</strong> sat inherits phase0c (boundary none + RandomScale on) vs "
                   "EffB5 deploy's ignore_w2 + drop-RandomScale, and boundary_handling touches the val set → "
                   "different val labels (sat scored on the harder set → edge understated). Fair verdict "
@@ -607,8 +608,8 @@ CROSS_CUTTING = [
     ("Foundation encoders: generic doesn't help; satellite-pretraining is promising but unconfirmed",
      "web-DINOv3 beats EffB5 on RGB (+0.043) but the edge vanishes once NDVI is added (ties at 0.912). "
      "A satellite-domain model is the live bet: sat-DINOv3 ViT-L (SAT-493M) + NDVI reaches 3-seed "
-     "best_smoothed 0.9194 vs EffB5+NDVI 0.9123 — only +0.0071 on PR-AUC (sub-gate near-miss) but +0.09 "
-     "pixel-IoU and +0.16 obj-F1, the metrics that matter for a detection survey (E). ⚠ The comparison is "
+     "best_smoothed 0.9194 vs EffB5+NDVI 0.9123 — only +0.0071 on PR-AUC (sub-gate near-miss) but +0.13 "
+     "pixel-IoU and +0.07 obj-F1 (clean same-boundary), the metrics that matter for a detection survey (E). ⚠ The comparison is "
      "confounded (sat lacks the locked recipe; different val-label treatment), so it is the leading but "
      "NOT-yet-verified deploy encoder — a fair re-run on the locked recipe + the final Val pick are pending."),
 ]
@@ -626,7 +627,7 @@ LOCKED_DECISIONS = [
      "No smp decoder beats it (FPN ties, MANet collapses)."),
     ("Encoder (deploy)", "PROVISIONAL — sat-DINOv3 ViT-L leading; EffB5 validated fallback", "E",
      "sat-DINOv3+NDVI 3-seed best_smoothed 0.9194 vs EffB5+NDVI 0.9123 — +0.0071 PR-AUC (sub-gate near-miss) "
-     "but +0.09 pixel-IoU / +0.16 obj-F1. ⚠ NOT a clean A/B (sat lacks the locked ignore_w2 + drop-RandomScale "
+     "but +0.13 pixel-IoU / +0.07 obj-F1 (clean same-boundary). ⚠ NOT a clean A/B (sat lacks the locked ignore_w2 + drop-RandomScale "
      "and is scored on different val labels) → needs a fair re-run on the locked recipe before it can be locked. "
      "EffB5 (+NDVI) remains the validated baseline; EffB3 capacity-down −0.007."),
     ("EXTRA channels", "NDVI only (4-ch RGB+NDVI)", "D",
