@@ -147,6 +147,33 @@ def test_dataset_label_values_in_set(synthetic_dataset):
         assert set(np.unique(label).tolist()).issubset({0, 1, 255})
 
 
+def test_mixing_is_seed_reproducible(synthetic_dataset):
+    """Sample-mixing augs must be reproducible (CLAUDE.md seed constraint): the same
+    (seed, idx) yields identical output, and a different seed changes it — proving the
+    RNG is actually seeded, not just fixed."""
+    metadata = load_metadata(f"{synthetic_dataset['root']}/metadata.csv")
+    splits = load_splits_yaml(f"{synthetic_dataset['root']}/splits.yaml")
+    ids = get_tile_ids("train", metadata, splits)
+    aug_cfg = {**BASE_AUG_CFG, "mixing": {"copy_paste": {"p": 1.0, "max_instances": 2}}}
+
+    def make(seed):
+        return RTSDataset(
+            tile_ids=ids, metadata=metadata, data_root=synthetic_dataset["root"],
+            rgb_dir="PLANET-RGB", extra_dir="EXTRA", labels_dir="labels",
+            extra_channels=[], norm_stats_path=None,
+            transform=build_eval_transforms(), tile_size=64,
+            aug_cfg=aug_cfg, seed=seed,
+        )
+
+    ds_a = make(42)
+    img1 = ds_a[0]["image"].numpy()
+    img2 = ds_a[0]["image"].numpy()
+    np.testing.assert_array_equal(img1, img2)          # deterministic per (seed, idx)
+
+    img3 = make(43)[0]["image"].numpy()
+    assert not np.array_equal(img1, img3)              # seed actually drives the RNG
+
+
 def test_boundary_dilation_adds_ignore():
     label = np.zeros((32, 32), dtype=np.uint8)
     label[10:20, 10:20] = 1

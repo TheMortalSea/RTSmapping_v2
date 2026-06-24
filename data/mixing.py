@@ -26,7 +26,9 @@ import numpy as np
 from scipy import ndimage
 
 # A sampler returns one source tile: (rgb HWC uint8, extra HWC float32 | None, label HW uint8).
-SampleFn = Callable[[bool], tuple[np.ndarray, "np.ndarray | None", np.ndarray]]
+# It takes (positive_only, rng); the rng is threaded through so source-tile selection is
+# reproducible under the run seed (CLAUDE.md reproducibility constraint).
+SampleFn = Callable[[bool, "np.random.Generator"], tuple[np.ndarray, "np.ndarray | None", np.ndarray]]
 
 
 def _blend(dst: np.ndarray, src: np.ndarray, alpha) -> np.ndarray:
@@ -132,7 +134,7 @@ def mixup(rgb, extra, label, src_rgb, src_extra, src_label, rng, *, alpha: float
 class MixingAugmenter:
     """Stochastically applies at most one mixing op per sample, per config probabilities.
 
-    `sample_fn(positive_only)` returns one source tile; the dataset supplies it as a
+    `sample_fn(positive_only, rng)` returns one source tile; the dataset supplies it as a
     closure over its tile reads. Default config (all p=0) ⇒ identity passthrough.
     """
 
@@ -153,19 +155,19 @@ class MixingAugmenter:
     def __call__(self, rgb, extra, label, rng):
         # priority order; at most one op fires per sample (they conflict spatially)
         if float(self.cp.get("p", 0.0)) > 0.0 and rng.random() < self.cp["p"]:
-            s_rgb, s_extra, s_lab = self.sample_fn(True)
+            s_rgb, s_extra, s_lab = self.sample_fn(True, rng)
             return copy_paste(rgb, extra, label, s_rgb, s_extra, s_lab, rng,
                               max_instances=int(self.cp.get("max_instances", 3)),
                               blend_sigma=float(self.cp.get("blend_sigma", 2.0)),
                               ignore_index=self.ignore_index)
         if float(self.mosaic.get("p", 0.0)) > 0.0 and rng.random() < self.mosaic["p"]:
-            tiles = [(rgb, extra, label)] + [self.sample_fn(True) for _ in range(3)]
+            tiles = [(rgb, extra, label)] + [self.sample_fn(True, rng) for _ in range(3)]
             return mosaic(tiles, rng, self.tile_size, self.ignore_index)
         if float(self.cutmix.get("p", 0.0)) > 0.0 and rng.random() < self.cutmix["p"]:
-            s_rgb, s_extra, s_lab = self.sample_fn(False)
+            s_rgb, s_extra, s_lab = self.sample_fn(False, rng)
             return cutmix(rgb, extra, label, s_rgb, s_extra, s_lab, rng, ignore_index=self.ignore_index)
         if float(self.mixup.get("p", 0.0)) > 0.0 and rng.random() < self.mixup["p"]:
-            s_rgb, s_extra, s_lab = self.sample_fn(False)
+            s_rgb, s_extra, s_lab = self.sample_fn(False, rng)
             return mixup(rgb, extra, label, s_rgb, s_extra, s_lab, rng,
                          alpha=float(self.mixup.get("alpha", 0.2)), ignore_index=self.ignore_index)
         return rgb, extra, label

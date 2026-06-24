@@ -94,7 +94,7 @@ def test_mixup_blends_and_unions_labels():
 
 
 def _sample_fn_factory():
-    def fn(positive_only):
+    def fn(positive_only, rng):
         return _tile(99, pos_block=(10, 10, 16, 16) if positive_only else None)
     return fn
 

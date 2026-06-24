@@ -135,6 +135,7 @@ class RTSDataset(Dataset):
         boundary_ignore_width: int = 3,
         nodata_handling: bool = False,      # §4.4: zero→mean input + 255 label for all-band-zero
         aug_cfg: dict | None = None,        # train-only; enables sample-mixing augs (data/mixing.py)
+        seed: int = 42,                     # base seed for reproducible sample-mixing RNG
     ):
         if boundary_handling == "soft_labels":
             raise NotImplementedError(
@@ -158,6 +159,7 @@ class RTSDataset(Dataset):
         self.boundary_handling = boundary_handling
         self.boundary_ignore_width = boundary_ignore_width
         self.nodata_handling = nodata_handling
+        self.seed = seed
 
         if norm_stats_path is not None:
             stats = load_stats(norm_stats_path)
@@ -199,9 +201,9 @@ class RTSDataset(Dataset):
         # Train-only: enabled iff aug_cfg declares an `augmentation.mixing` block with p>0.
         self._positive_ids = [t for t in self.tile_ids if self.is_positive(t)]
 
-        def _sample_source(positive_only: bool):
+        def _sample_source(positive_only: bool, rng: np.random.Generator):
             pool = self._positive_ids if (positive_only and self._positive_ids) else self.tile_ids
-            tid = pool[int(np.random.default_rng().integers(len(pool)))]
+            tid = pool[int(rng.integers(len(pool)))]
             s_rgb = self._read_rgb(tid)
             s_lab = self._read_label(tid)
             s_extra = self._read_extra(tid) if self.extra_channels else None
@@ -252,8 +254,11 @@ class RTSDataset(Dataset):
 
         # Sample-mixing augs (train-only, default-off) on raw arrays, BEFORE boundary
         # dilation + transform so pasted/mixed pixels get the same downstream treatment.
+        # Per-sample RNG seeded from (base seed, idx) so mixing is reproducible across
+        # runs/workers (CLAUDE.md seed constraint); deterministic given (seed, idx).
         if self._mixing.enabled:
-            rgb, extra, label = self._mixing(rgb, extra, label, np.random.default_rng())
+            rng = np.random.default_rng([self.seed, idx])
+            rgb, extra, label = self._mixing(rgb, extra, label, rng)
 
         if self.nodata_handling:                              # §4.4 (before boundary/aug)
             rgb, label = substitute_nodata(rgb, label, self.mean, self.label_ignore_index)

@@ -151,6 +151,16 @@ class CheckpointManager:
 
     # ------------------------------------------------------------------ best tracking
 
+    def restore_best(self, best_smoothed: float) -> None:
+        """Seed best-so-far after a resume so the resumed run does not overwrite a
+        good ``best_deployment.pth`` with a worse post-resume checkpoint.
+
+        The resume payload does not carry this threshold; the early stopper persists
+        the authoritative smoothed-best across resume (``EarlyStopping.best_smoothed``),
+        so seed from that to keep deployment-checkpoint selection consistent with
+        stopping (plan risk #6)."""
+        self._best_smoothed = float(best_smoothed)
+
     def update_best(self, smoothed_metric: float) -> bool:
         """Track best-so-far by the smoothed metric. Returns True iff improved."""
         if smoothed_metric > self._best_smoothed:

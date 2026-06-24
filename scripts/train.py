@@ -257,6 +257,7 @@ def _setup_data(cfg: dict) -> dict:
             boundary_ignore_width=boundary_w,
             nodata_handling=cfg["data"].get("nodata_handling", False),
             aug_cfg=aug_cfg,
+            seed=int(cfg.get("seed", 42)),
         )
 
     # Mixing augs are train-only → pass aug_cfg to train, never to val.
@@ -789,8 +790,12 @@ def main() -> int:
         )
         if ema is not None and start_epoch > freeze_epochs + 1:
             freeze_mod.unfreeze_backbone(model)
-        logger.info("Resumed from %s at epoch %d (ema=%s)",
-                    args.resume, start_epoch, ema is not None)
+        # The resume payload doesn't carry the checkpoint manager's best-so-far; seed
+        # it from the early stopper's restored smoothed-best so a post-peak resume does
+        # not overwrite best_deployment.pth with a worse post-resume checkpoint.
+        ckpt_mgr.restore_best(es.best_smoothed)
+        logger.info("Resumed from %s at epoch %d (ema=%s, best_smoothed=%.5f)",
+                    args.resume, start_epoch, ema is not None, es.best_smoothed)
 
     # Pre-warm positive tiles once (epoch 1 only) — only when gcsfuse is active.
     # Without gcsfuse the reads hit GCS directly with no caching benefit; skip.

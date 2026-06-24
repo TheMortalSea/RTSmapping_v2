@@ -97,6 +97,7 @@ EXTRA derivation SSoT (`data/extra_channels.py`). SE math only — Earth Engine 
 | `test_band_norm_mode` | `band_norm_mode` returns "zscore" for NDVI/SE_PCA/TC and "fixed_scale" for SE_PROTO; unknown band → `ValueError` | real — §9 SSoT |
 | `test_se_bands_projection_and_cosine` | With `fetch_se_raw` mocked: `se_bands` returns {2,3,4,5} of shape (H,W); SE_PROTO ∈ [-1,1]; SE_PCA1 == manual `flat @ component[0]` projection | real — SE derivation math |
 | `test_se_bands_nan_propagates` | A no-coverage (NaN) SE pixel yields NaN SE bands; finite pixels stay finite (matches S2 NaN handling) | real |
+| `test_se_bands_zero_vector_is_nan` | A no-coverage SE pixel arriving as an all-zero vector (not NaN) → NaN SE_PCA *and* SE_PROTO, so `(0-pca_mean)@comps.T` can't leak a nonzero artifact | real — B1 NoData contract |
 
 ### [test_generate_extra_tiles.py](test_generate_extra_tiles.py)
 
@@ -156,6 +157,7 @@ Covers the bulk S2 export grid/domain geometry (doc §3); EE + GCS not exercised
 | `test_dataset_rgb_only` | `(3, 64, 64) float32` image, `(64, 64) int64` label, str `tile_id`; negative tiles return synthetic all-zero label (no label file needed) | real — end-to-end plumbing |
 | `test_dataset_with_variable_extra` | Bands [0, 2] + arbitrary names → `(5, 64, 64)` | real — flexible-EXTRA end-to-end |
 | `test_dataset_label_values_in_set` | Every label's unique values ⊂ {0, 1, 255} | real |
+| `test_mixing_is_seed_reproducible` | With copy-paste `p=1`: same `(seed, idx)` → identical `__getitem__` output; a different `seed` changes it (proves the mixing RNG is seeded, not fixed) | real — B2 reproducibility lock |
 | `test_boundary_dilation_adds_ignore` | Width=2 dilation creates 255 band and preserves interior 1s | real |
 | `test_substitute_nodata_all_band_zero_becomes_ignore_and_mean` | §4.4: all-band-zero pixel → label 255 + per-channel mean; single-band dropout → mean substitution only (label kept); non-zero untouched | real — pure-function NoData logic |
 | `test_substitute_nodata_noop_when_no_zeros` | No zeros → rgb and label returned unchanged | real |
@@ -167,6 +169,8 @@ Covers the bulk S2 export grid/domain geometry (doc §3); EE + GCS not exercised
 ### [test_mixing.py](test_mixing.py)
 
 Sample-mixing augs (`data/mixing.py`, family F). Pure array ops; synthetic tiles + fake sampler.
+The sampler callback is `sample_fn(positive_only, rng)` — the rng is threaded through so source-tile
+selection is reproducible under the run seed (B2).
 
 | Test | Checks | Strictness |
 |---|---|---|

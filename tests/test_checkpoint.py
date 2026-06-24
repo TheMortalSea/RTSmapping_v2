@@ -100,3 +100,17 @@ def test_update_best_tracks_smoothed_monotone():
     assert mgr.update_best(0.2) is True
     assert mgr.update_best(0.15) is False
     assert mgr.best_smoothed == 0.2
+
+
+def test_restore_best_prevents_post_resume_clobber():
+    """A fresh manager (as built on resume) must not treat a worse post-resume
+    value as a new best once seeded from the early stopper's restored best."""
+    resumed = CheckpointManager(".", keep_last_n=1)
+    assert resumed.update_best(0.90) is True            # bug: clobbers without seeding
+    # seed from the restored historical best (EarlyStopping.best_smoothed)
+    resumed2 = CheckpointManager(".", keep_last_n=1)
+    resumed2.restore_best(0.925)
+    assert resumed2.update_best(0.90) is False          # declining post-resume val
+    assert resumed2.update_best(0.92) is False
+    assert resumed2.update_best(0.93) is True           # only a true new peak saves
+    assert resumed2.best_smoothed == 0.93
