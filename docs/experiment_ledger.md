@@ -242,14 +242,21 @@ aug-anneal 0.916.
 **G — Sampling.** Default balanced sampling is sufficient — the curriculum r20_pf33 "win" (0.894
 single-seed) did not survive seeds (0.894/0.901/0.859, sign-flipped) → rejected as noise.
 
-**H — Calibration & TTA (pending).** Temperature + threshold + D4-TTA held for the final lock; adopt
-D4-TTA if ≥1% PR-AUC at ≤0.5% precision cost. Scale-TTA gated on a scale-transfer test.
+**H — Calibration & TTA (DONE 2026-06-25, on Val-Realistic).** `scripts/calibrate.py` on the 3 EffB5 seeds:
+**TTA → none** (D4-TTA *hurt* 0.9302→0.9234; hflip +0.0014 < 1% gate). **Temperature T≈0.51–0.54** (<1 — the
+focal-trained model is *under*-confident, so calibration sharpens logits; threshold lands low ~0.12–0.16).
+Per-seed PR-AUC-geomean 0.9161 / 0.9216 / 0.9302 (P≈0.80/R≈0.86–0.88). **3-seed mean-prob ensemble = 0.9393**
+(P=0.800/R=0.896). **Deploy = the 3-seed ensemble** (T=0.5123, thr=0.1224, tta=none → `configs/deployment.yaml`):
+chosen for robustness against an unlucky single seed (0.916 vs 0.930), not the marginal +0.0091 (which is
+sub-gate). Threshold selected at 1:20 (val negative-pool limit); realized precision at 1:200–1000 deployment
+prevalence will be lower — Test-Realistic gives the honest number.
 
-**I — Final lock.** **Encoder decided = EffB5** (the fair sat-DINOv3 re-run tied, 0.9191 vs 0.9218, with
-equal object metrics → no benefit at ~4× the cost). v2 recipe (RGB+NDVI · F0 · focal·ignore_w2 · default
-sampling · aug−RandomScale · **TrivialAugment** · base_v2_fast) 3-seed **0.9218** (= `aug_trivialaugment_deploy`,
-3 clean checkpoints). Remaining at the final lock: H calibration (temperature + threshold + D4-TTA on Val)
-→ the one-shot Test-Realistic → package. No foundation adapter needed.
+**I — Final lock.** **Encoder = EffB5** (fair sat-DINOv3 re-run tied, 0.9191 vs 0.9218, equal object metrics →
+no benefit at ~4× cost). v2 recipe (RGB+NDVI · F0 · focal·ignore_w2 · default sampling · aug−RandomScale ·
+**TrivialAugment** · base_v2_fast) 3-seed **0.9218** (= `aug_trivialaugment_deploy`, 3 clean checkpoints),
+deployed as a **3-seed ensemble** (calibration in H). Remaining: build the ensemble deploy/eval path
+(per-seed packages + fusion manifest; `predictor.py`/`evaluate_test.py` multi-model) → the one-shot
+Test-Realistic → package. No foundation adapter needed.
 <!-- FINDINGS:END -->
 
 ---

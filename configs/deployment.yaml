@@ -11,13 +11,28 @@
 # evaluate_test.py refuses to run if threshold or temperature is null
 # (plan Step 8: "calibrate on val first, then test").
 
-# Binary decision threshold on sigmoid probability. null until calibration
-# (training.md §12.2) writes it back.
-threshold: null
+# Binary decision threshold on sigmoid probability. Calibrated on Val-Realistic
+# (training.md §12.2) for the 3-seed ensemble — see `ensemble` block below.
+threshold: 0.122401
 
 # Temperature scaling parameter learned on val (training.md §12.1).
-# probability = sigmoid(logit / temperature). null until calibration.
-temperature: null
+# probability = sigmoid(logit / temperature). Calibrated for the fused ensemble.
+temperature: 0.512321
+
+# 3-seed deployment ensemble (Phase D decision 2026-06-25 — robustness over a
+# single lucky/unlucky seed, not the marginal +0.0091 PR-AUC). Fusion recipe
+# (must match scripts/calibrate.py): per seed sigmoid(logit) at T=1, arithmetic
+# mean across seeds, then the temperature+threshold above applied to the fused
+# prob. Val-Realistic: PR-AUC-geomean 0.9393, precision 0.800 / recall 0.896.
+# Threshold was selected at 1:20 prevalence (max the val negative pool supports);
+# realized precision at true 1:200–1000 deployment prevalence will be lower —
+# Test-Realistic gives the honest number.
+ensemble:
+  fusion: mean_prob
+  members:
+    - aug_trivialaugment_deploy          # seed42
+    - aug_trivialaugment_deploy_seed43   # seed43
+    - aug_trivialaugment_deploy_seed44   # seed44
 
 # Must match the training run's effective precision. See training.md §4.6.
 precision: "bf16"           # bf16 | fp16 | fp32

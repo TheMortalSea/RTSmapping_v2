@@ -28,21 +28,23 @@ for inference. Docker `rts-train:v2`. Data in `gs://abrupt_thaw/` + `gs://rts-ma
 ## Rolling progress
 
 ### Just completed
-**Fair encoder A/B settled → EffB5.** The sat-DINOv3 + NDVI re-run on the *full locked recipe* (the only
-clean comparison) tied EffB5 across PR-AUC + object metrics, collapsing the earlier confounded "sat edge"
-→ EffB5 is the v2 encoder (cheaper, equal). This closes the modeling campaign (every planned screen run;
-recipe + per-family verdicts in `docs/experiment_ledger.md`). Earlier: repo consolidated to only-`main`;
-the three living docs rebuilt around one SSoT + score-harvest (see `CLAUDE.md`).
+**Phase D calibration done → deploy a 3-seed EffB5 ensemble.** Built+tested `scripts/calibrate.py`
+(TTA-select → temperature → threshold on Val-Realistic, reusing the deploy-path `predict_probs` for parity);
+calibrated all 3 EffB5 seeds. TTA → **none** (D4 hurt, hflip sub-gate); **T≈0.51–0.54** (focal model is
+under-confident → calibration sharpens). 3-seed mean-prob ensemble PR-AUC-geomean **0.9393** (vs best single
+0.9302), P=0.800/R=0.896. **Decision: ensemble** — for robustness against a single unlucky seed (seed42 0.916
+vs seed44 0.930), not the marginal gain. Calibrated values written to `configs/deployment.yaml`. Prior step:
+fair encoder A/B settled → EffB5 (sat-DINOv3 tied, dropped).
 
 <!-- NOW:BEGIN -->
 ### Now
-**Encoder DECIDED = EffB5** — the modeling campaign is fully closed. The fair sat-DINOv3 + NDVI re-run on
-the locked recipe finished (3-seed `best_smoothed` 0.9221/0.9286/0.9067 = **0.9191**) and **ties** EffB5
-(**0.9218**) on PR-AUC *and* object metrics (IoU 0.612, obj-F1 ≈0.44 both) — the earlier sat "edge" was a
-boundary-treatment confound that vanished on the matched recipe. So the v2 deploy encoder is **EffB5**
-(= `aug_trivialaugment_deploy`, 3 clean checkpoints, 0.9218), ~4× cheaper than the ViT-L at no accuracy
-cost; ensemble dropped (sat adds nothing). Immediate next: **Phase D** — H calibration (temperature +
-threshold + D4-TTA) on Val-Realistic → 3-seed final → **Test-Realistic once** → package.
+**Phase D — calibrated, ensemble selected; building the ensemble deploy/eval path next.** Calibration on
+Val-Realistic is complete (`/mnt/outputs/v1.0/calibration/effb5_trivialaug/calibration_report.json`): deploy =
+**3-seed EffB5 ensemble** (mean-prob fusion, **T=0.5123, thr=0.1224, tta=none**), Val PR-AUC-geomean **0.9393**,
+P=0.800/R=0.896. Caveat: threshold selected at 1:20 prevalence (val pool limit); realized precision at 1:200–1000
+deployment prevalence will be lower — Test-Realistic gives the honest number. **Immediate next:** add 3-model
+ensemble support to the deploy path (`package_model.py` per-seed packages + a fusion manifest, `predictor.py`
+multi-model load + fuse, `evaluate_test.py` ensemble) → then **Test-Realistic ONCE** (held for explicit go) → package.
 <!-- NOW:END -->
 
 ### Future plans
