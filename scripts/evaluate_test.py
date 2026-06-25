@@ -50,12 +50,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from data.dataset import RTSDataset, parse_extra_spec  # noqa: E402
 from data.splits import get_tile_ids, load_metadata, load_splits_yaml  # noqa: E402
 from data.transforms import build_eval_transforms  # noqa: E402
+from inference.predictor import predict_probs_ensemble  # noqa: E402
 from models import build_model  # noqa: E402
+from scripts.calibrate import load_checkpoint  # noqa: E402
 from training import metrics as metrics_mod  # noqa: E402
 from utils.config import load_config, resolve_path  # noqa: E402
 from utils.logging import setup_logging  # noqa: E402
 
 logger = logging.getLogger(__name__)
+
+_EPS = 1e-6
 
 
 def _assert_deployment_package_complete(pkg: Path) -> tuple[dict, dict, dict]:
@@ -264,18 +268,121 @@ def evaluate_test(
     return cleaned
 
 
+@torch.no_grad()
+def evaluate_test_ensemble(
+    checkpoints: dict[str, str],
+    config: Path,
+    deployment_yaml: Path,
+    output_path: Path | None = None,
+    device: str | None = None,
+) -> dict:
+    """One-shot Test-Realistic for the N-seed mean-prob ensemble (Phase D deploy).
+
+    Mirrors the single-package `evaluate_test` guards + accumulator, but fuses N
+    checkpoints with the deployed recipe (`inference.predictor.predict_probs_ensemble`:
+    per-seed sigmoid at T=1 → mean → temperature on the fused prob). The members
+    share one architecture + normalization (all EffB5 seeds), so the dataset is
+    built once from `config`. Touched ONCE, on explicit go (training.md §10.3).
+    """
+    cfg = load_config(config)
+    dep_cfg = yaml.safe_load(Path(deployment_yaml).read_text())
+    if dep_cfg.get("threshold") is None or dep_cfg.get("temperature") is None:
+        raise ValueError("deployment.yaml has null threshold/temperature — calibrate first.")
+    if dep_cfg.get("scales", [1.0]) != [1.0]:
+        raise ValueError("evaluate_test is the 1×-only contract; deployment scales != [1.0].")
+    if len(checkpoints) < 2:
+        raise ValueError("ensemble mode needs ≥2 checkpoints; use --deployment-package for single-model.")
+
+    device_t = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
+    precision = dep_cfg.get("precision", "bf16")
+    tta = dep_cfg.get("tta", "none")
+    temperature = float(dep_cfg["temperature"])
+    threshold = float(dep_cfg["threshold"])
+    logger.info("ENSEMBLE Test-Realistic: %d members %s | T=%.4f thr=%.3f min_blob=%d tta=%s precision=%s",
+                len(checkpoints), list(checkpoints), temperature, threshold,
+                int(dep_cfg.get("min_blob_size_px", 10)), tta, precision)
+
+    # Data: test_realistic, boundary none (never ignore at test time).
+    metadata = load_metadata(resolve_path(cfg["data"]["data_root"], cfg["data"]["metadata_csv"]))
+    splits = load_splits_yaml(resolve_path(cfg["data"]["data_root"], cfg["data"]["splits_yaml"]))
+    test_ids = get_tile_ids("test_realistic", metadata, splits)
+    logger.info("Evaluating on %d test_realistic tiles", len(test_ids))
+    ds = RTSDataset(
+        tile_ids=test_ids, metadata=metadata, data_root=cfg["data"]["data_root"],
+        rgb_dir=cfg["data"]["rgb_dir"], extra_dir=cfg["data"]["extra_dir"],
+        labels_dir=cfg["data"]["labels_dir"],
+        extra_channels=parse_extra_spec(cfg["channels"].get("extra", [])),
+        norm_stats_path=cfg["data"]["normalization_stats_path"],
+        transform=build_eval_transforms(), tile_size=int(cfg["data"]["tile_size"]),
+        label_ignore_index=int(cfg["data"]["label_ignore_index"]),
+        boundary_handling="none",
+    )
+    loader = torch.utils.data.DataLoader(
+        ds, batch_size=int(cfg["training"]["batch_size"]), shuffle=False,
+        num_workers=int(cfg["training"]["num_workers"]), pin_memory=True,
+    )
+
+    models = [load_checkpoint(cfg, path, device_t) for path in checkpoints.values()]
+
+    acc_cfg = {
+        "data": {"label_ignore_index": int(cfg["data"]["label_ignore_index"])},
+        "metrics": {
+            "reporting_threshold": threshold,
+            "min_blob_size_px": int(dep_cfg.get("min_blob_size_px", 10)),
+            "object_iou_threshold": float(cfg["metrics"]["object_iou_threshold"]),
+        },
+    }
+    acc = metrics_mod.ValidationAccumulator(acc_cfg, ratios=[200, 500, 1000])
+
+    for batch in loader:
+        images = batch["image"].to(device_t, non_blocking=True)
+        labels = batch["label"].to(device_t, non_blocking=True)
+        # Deployed fusion: (B,H,W) calibrated ensemble prob. Feed the accumulator a
+        # pseudo-logit so sigmoid()==prob → reporting_threshold + PR-AUC are exact.
+        probs = predict_probs_ensemble(models, images, temperature=temperature,
+                                       tta=tta, precision=precision).float()
+        probs = probs.clamp(_EPS, 1 - _EPS)
+        pseudo_logits = torch.log(probs / (1 - probs)).unsqueeze(1)
+        acc.update(pseudo_logits, labels, batch["tile_id"])
+
+    metrics = acc.compute()
+    metrics.update({"_ensemble_members": list(checkpoints), "_tta": tta,
+                    "_threshold": threshold, "_temperature": temperature,
+                    "_min_blob_size_px": int(dep_cfg.get("min_blob_size_px", 10)), "_scale": 1.0})
+    output_path = Path(output_path) if output_path else Path("test_metrics_ensemble.json")
+    cleaned = {k: (float(v) if isinstance(v, (int, float, np.floating)) else v)
+               for k, v in metrics.items()}
+    output_path.write_text(json.dumps(cleaned, indent=2))
+    logger.info("Wrote ensemble test metrics to %s", output_path)
+    logger.info("\n%s", json.dumps(cleaned, indent=2))
+    return cleaned
+
+
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    p.add_argument("--deployment-package", type=Path, required=True)
-    p.add_argument("--training-config", type=Path, required=True,
-                   help="Training config for data split info (typically configs/baseline.yaml)")
+    p.add_argument("--deployment-package", type=Path, default=None,
+                   help="single-model package dir (single-model mode)")
+    p.add_argument("--checkpoint", action="append", default=None, metavar="NAME=PATH",
+                   help="ensemble member checkpoint; repeatable (ensemble mode)")
+    p.add_argument("--config", type=Path, default=None,
+                   help="training/deploy config for model+data (ensemble mode)")
+    p.add_argument("--deployment-yaml", type=Path, default=Path("configs/deployment.yaml"),
+                   help="deployment.yaml with calibrated threshold/temperature/tta (ensemble mode)")
+    p.add_argument("--training-config", type=Path, default=None,
+                   help="Training config for data split info (single-model mode)")
     p.add_argument("--output", type=Path, default=None,
-                   help="Where to write test_metrics.json; default: inside the package")
+                   help="Where to write test_metrics.json; default: inside the package / cwd")
     p.add_argument("--device", default=None, help="cuda|cpu; default auto")
     args = p.parse_args()
 
     setup_logging(level="INFO")
-    evaluate_test(args.deployment_package, args.training_config, args.output, args.device)
+    if args.checkpoint:
+        ckpts = dict(c.split("=", 1) for c in args.checkpoint)
+        evaluate_test_ensemble(ckpts, args.config, args.deployment_yaml, args.output, args.device)
+    elif args.deployment_package:
+        evaluate_test(args.deployment_package, args.training_config, args.output, args.device)
+    else:
+        p.error("provide either --deployment-package (single) or --checkpoint... + --config (ensemble)")
     return 0
 
 

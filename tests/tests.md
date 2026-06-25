@@ -433,6 +433,10 @@ Inference pipeline (`inference/` + grid/merge entry scripts), GPU-free. Fixtures
 | `test_temperature_applied_to_logits_before_sigmoid` | sigmoid(logit/T), not T on probabilities | real — §7.3 |
 | `test_tta_pass_counts` | none/minimal/standard/full = 1/2/4/8 passes | shallow |
 | `test_predict_probs_rejects_unknown_tta` | bad tta config → ValueError | shallow |
+| `test_ensemble_single_member_equals_predict_probs` | 1-member ensemble at T reduces to `predict_probs(·, T)` (fused-prob temperature inversion is exact) | real — Phase-D ensemble recipe |
+| `test_ensemble_mean_prob_then_temperature_math` | 2 const-logit models → mean of per-model sigmoids, then T on the fused logit (matches deployment.yaml recipe) | real |
+| `test_ensemble_identical_members_equal_single` | N identical members == single model | shallow |
+| `test_ensemble_empty_raises` | empty model list → ValueError | shallow |
 | `test_runtime_package_mismatch_aborts` | runtime vs package precision/tta mismatch aborts; null defers | real — §14 calibration-mismatch guard |
 | `test_probability_tile_roundtrip` | float32, NoData −1.0, EPSG:3857 roundtrip | real — §9.1 |
 | `test_binary_mask_roundtrip` | uint8, NoData 255 roundtrip | real — §9.2 |

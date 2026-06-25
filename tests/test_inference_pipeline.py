@@ -26,6 +26,7 @@ from inference.quad_index import (
 )
 from inference.predictor import (
     TTA_PASSES, assert_runtime_matches_package, predict_probs,
+    predict_probs_ensemble,
 )
 from inference.s2_index import load_s2_index
 from inference.tiles import (
@@ -450,6 +451,51 @@ def test_tta_pass_counts():
 def test_predict_probs_rejects_unknown_tta():
     with pytest.raises(ValueError, match="Unknown tta"):
         predict_probs(_Bias(), torch.zeros(1, 3, 4, 4), 1.0, tta="bogus")
+
+
+class _ConstLogit(torch.nn.Module):
+    """Emits a constant logit regardless of input (known-prob ensemble math)."""
+    def __init__(self, value: float):
+        super().__init__()
+        self.value = value
+
+    def forward(self, x):
+        return torch.full((x.shape[0], 1, x.shape[-2], x.shape[-1]), self.value)
+
+
+def test_ensemble_single_member_equals_predict_probs():
+    # 1 member at temperature T must reduce to predict_probs(model, T): the
+    # fused-prob temperature inversion is the exact inverse of the per-model sigmoid.
+    images = torch.randn(2, 3, 8, 8)
+    for T in (1.0, 0.5, 2.0):
+        solo = predict_probs(_Bias(), images, temperature=T, tta="none")
+        ens = predict_probs_ensemble([_Bias()], images, temperature=T, tta="none")
+        assert torch.allclose(ens, solo, atol=1e-5), T
+
+
+def test_ensemble_mean_prob_then_temperature_math():
+    # m1 logit=2, m2 logit=0 → per-model probs 0.8808, 0.5 → mean 0.6904
+    # → fused logit 0.8023 → with T=2: sigmoid(0.4012) = 0.5990.
+    images = torch.zeros(1, 3, 4, 4)
+    out = predict_probs_ensemble([_ConstLogit(2.0), _ConstLogit(0.0)],
+                                 images, temperature=2.0, tta="none")
+    mean_p = (torch.sigmoid(torch.tensor(2.0)) + torch.sigmoid(torch.tensor(0.0))) / 2
+    fused_logit = torch.log(mean_p / (1 - mean_p))
+    expected = torch.sigmoid(fused_logit / 2.0)
+    assert torch.allclose(out, expected.expand_as(out), atol=1e-5)
+
+
+def test_ensemble_identical_members_equal_single():
+    images = torch.randn(1, 3, 8, 8)
+    solo = predict_probs(_Bias(), images, temperature=0.7, tta="none")
+    ens = predict_probs_ensemble([_Bias(), _Bias(), _Bias()],
+                                 images, temperature=0.7, tta="none")
+    assert torch.allclose(ens, solo, atol=1e-5)
+
+
+def test_ensemble_empty_raises():
+    with pytest.raises(ValueError, match="at least one model"):
+        predict_probs_ensemble([], torch.zeros(1, 3, 4, 4), temperature=1.0)
 
 
 def test_runtime_package_mismatch_aborts():

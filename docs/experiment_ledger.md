@@ -246,10 +246,19 @@ single-seed) did not survive seeds (0.894/0.901/0.859, sign-flipped) → rejecte
 **TTA → none** (D4-TTA *hurt* 0.9302→0.9234; hflip +0.0014 < 1% gate). **Temperature T≈0.51–0.54** (<1 — the
 focal-trained model is *under*-confident, so calibration sharpens logits; threshold lands low ~0.12–0.16).
 Per-seed PR-AUC-geomean 0.9161 / 0.9216 / 0.9302 (P≈0.80/R≈0.86–0.88). **3-seed mean-prob ensemble = 0.9393**
-(P=0.800/R=0.896). **Deploy = the 3-seed ensemble** (T=0.5123, thr=0.1224, tta=none → `configs/deployment.yaml`):
+(P=0.800/R=0.896). **Deploy = the 3-seed ensemble** (T=0.5123, tta=none → `configs/deployment.yaml`):
 chosen for robustness against an unlucky single seed (0.916 vs 0.930), not the marginal +0.0091 (which is
-sub-gate). Threshold selected at 1:20 (val negative-pool limit); realized precision at 1:200–1000 deployment
-prevalence will be lower — Test-Realistic gives the honest number.
+sub-gate).
+
+**H.2 — Object operating point (DONE 2026-06-25, `scripts/tune_object_operating_point.py`, Val-Realistic).**
+The calibrate.py threshold (0.1224) is tuned for *pixel* precision and is the **wrong operating point for an
+object product**: at thr 0.1224 / min_blob 10 the ensemble scores obj-F1 **0.304** (obj-P 0.189, 443 FP objects,
+424 of them no-overlap speckle). Sweeping threshold × min_blob × morph-close picks the **obj-F1 argmax at the
+pixel-P≥0.8 floor: thr 0.30 + min_blob 80 + morph off** → obj-F1 **0.567** (obj-P 0.489 / obj-R 0.674, pixel-P
+0.931, FP objects 443→93). Robust plateau (obj-F1≈0.56 over thr 0.30–0.35; morph radius 0/1/2 identical →
+off). Precision-leaning alternative: thr 0.65 → obj-P 0.61 / obj-R 0.44 (obj-F1 0.511). **Adopted thr 0.30 /
+min_blob 80** into `deployment.yaml` (precision-over-recall, balanced obj-F1). Report-only tool; the operating
+point is frozen on Val and reversible before the one-shot. Test-Realistic (held) gives the honest number.
 
 **I — Final lock.** **Encoder = EffB5** (fair sat-DINOv3 re-run tied, 0.9191 vs 0.9218, equal object metrics →
 no benefit at ~4× cost). v2 recipe (RGB+NDVI · F0 · focal·ignore_w2 · default sampling · aug−RandomScale ·

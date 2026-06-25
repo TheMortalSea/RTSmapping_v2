@@ -40,6 +40,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from inference.predictor import (  # noqa: E402
     assert_runtime_matches_package, load_deployment_package, predict_probs,
+    predict_probs_ensemble,
 )
 from inference.quad_index import load_quad_index  # noqa: E402
 from inference.s2_index import load_s2_index  # noqa: E402
@@ -84,8 +85,9 @@ def main() -> int:
     p.add_argument("--s2-index", default=None,
                    help="S2 composite index CSV (scripts/build_s2_index.py); "
                         "required iff the package declares EXTRA=NDVI")
-    p.add_argument("--package", required=True,
-                   help="deployment package dir (local or gs://)")
+    p.add_argument("--package", required=True, action="append",
+                   help="deployment package dir (local or gs://); repeat for the "
+                        "N-seed mean-prob ensemble (configs/deployment.yaml `ensemble`)")
     p.add_argument("--output", required=True,
                    help="output dir for probability tiles + inference_log.json")
     p.add_argument("--device", default=None)
@@ -101,9 +103,25 @@ def main() -> int:
     device = torch.device(args.device or ("cuda" if torch.cuda.is_available() else "cpu"))
     run_cfg = load_config(args.config)
 
-    pkg = load_deployment_package(args.package, device)
+    pkgs = [load_deployment_package(pp, device) for pp in args.package]
+    pkg = pkgs[0]                       # reference for stats / model_cfg / dep_cfg
     dep_cfg = pkg["dep_cfg"]
+    ensemble = len(pkgs) > 1
+    if ensemble:
+        # Members must share the calibration + channel layout (fusion is on the
+        # final calibrated prob); otherwise the fused threshold is meaningless.
+        for other in pkgs[1:]:
+            for k in ("temperature", "threshold", "tta", "precision"):
+                if other["dep_cfg"].get(k) != dep_cfg.get(k):
+                    raise ValueError(f"ensemble member {k} mismatch: "
+                                     f"{other['dep_cfg'].get(k)} != {dep_cfg.get(k)}")
+            if other["n_channels"] != pkg["n_channels"]:
+                raise ValueError("ensemble member channel count mismatch")
+        logger.info("ENSEMBLE inference: %d members, T=%.4f thr=%.3f tta=%s",
+                    len(pkgs), dep_cfg["temperature"], dep_cfg["threshold"],
+                    dep_cfg.get("tta", "none"))
     assert_runtime_matches_package(run_cfg, dep_cfg)
+    models = [p["model"] for p in pkgs]
 
     # EXTRA=NDVI is windowed from the bulk S2 composites on the fly (inference.md §5).
     extra_bands = (pkg["model_cfg"].get("channels") or {}).get("extra") or []
@@ -119,9 +137,10 @@ def main() -> int:
     out = args.output.rstrip("/")
 
     manifest = Manifest(f"{out}/inference_log.json", run_metadata={
-        "model_version": Path(str(args.package).rstrip("/")).name,
-        "deployment_package_path": str(args.package),
-        "model_checkpoint_sha": _weights_sha256(str(args.package)),
+        "model_version": "+".join(Path(str(pp).rstrip("/")).name for pp in args.package),
+        "deployment_package_path": [str(pp) for pp in args.package],
+        "model_checkpoint_sha": [_weights_sha256(str(pp)) for pp in args.package],
+        "ensemble_members": len(pkgs),
         "inference_date": datetime.now(timezone.utc).isoformat(),
         "scales_used": dep_cfg.get("scales", [1.0]),
         "tta_config": dep_cfg.get("tta", "none"),
@@ -156,10 +175,16 @@ def main() -> int:
                 manifest.mark(batch["tile_id"][i], "all_nodata")
         if keep:
             images = batch["image"][keep].to(device)
-            probs = predict_probs(pkg["model"], images,
-                                  temperature=dep_cfg["temperature"],
-                                  tta=dep_cfg.get("tta", "none"),
-                                  precision=dep_cfg.get("precision", "fp32"))
+            if ensemble:
+                probs = predict_probs_ensemble(models, images,
+                                               temperature=dep_cfg["temperature"],
+                                               tta=dep_cfg.get("tta", "none"),
+                                               precision=dep_cfg.get("precision", "fp32"))
+            else:
+                probs = predict_probs(pkg["model"], images,
+                                      temperature=dep_cfg["temperature"],
+                                      tta=dep_cfg.get("tta", "none"),
+                                      precision=dep_cfg.get("precision", "fp32"))
             probs = probs.clamp_(0.0, 1.0).cpu().numpy()  # §10.1 range guard
             for j, i in enumerate(keep):
                 prob = probs[j]

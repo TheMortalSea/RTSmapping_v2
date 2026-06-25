@@ -153,3 +153,36 @@ def predict_probs(
             probs = torch.rot90(probs, 2, dims=(-2, -1))
         acc = probs if acc is None else acc + probs
     return (acc / len(TTA_PASSES[tta])).squeeze(1)
+
+
+@torch.no_grad()
+def predict_probs_ensemble(
+    models: list[torch.nn.Module],
+    images: torch.Tensor,
+    temperature: float,
+    tta: str = "none",
+    precision: str = "fp32",
+) -> torch.Tensor:
+    """Mean-prob fuse N models, then temperature-scale the fused probability.
+
+    The deployed 3-seed-ensemble recipe (configs/deployment.yaml `ensemble`,
+    and scripts/calibrate.py / tune_object_operating_point.py): each model
+    contributes `sigmoid(logit)` at **T=1** (per-model TTA fusion via
+    `predict_probs`), the per-model probabilities are arithmetic-averaged, and
+    the single calibrated `temperature` is applied to the *fused* probability
+    (via its logit). Keeping temperature on the fused prob — not per model —
+    matches how `temperature` was fit on val (calibrate.py fits T on the fused
+    pseudo-logit).
+
+    Returns:
+        (B, H, W) float32 calibrated ensemble probabilities in [0, 1].
+    """
+    if not models:
+        raise ValueError("predict_probs_ensemble needs at least one model")
+    acc: torch.Tensor | None = None
+    for m in models:
+        p = predict_probs(m, images, temperature=1.0, tta=tta, precision=precision)
+        acc = p if acc is None else acc + p
+    mean_p = (acc / len(models)).clamp(1e-6, 1 - 1e-6)
+    logit = torch.log(mean_p / (1 - mean_p))          # invert the fused sigmoid
+    return torch.sigmoid(logit / temperature)         # temperature on the fused prob

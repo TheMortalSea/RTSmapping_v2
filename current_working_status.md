@@ -38,13 +38,15 @@ fair encoder A/B settled → EffB5 (sat-DINOv3 tied, dropped).
 
 <!-- NOW:BEGIN -->
 ### Now
-**Phase D — calibrated, ensemble selected; building the ensemble deploy/eval path next.** Calibration on
-Val-Realistic is complete (`/mnt/outputs/v1.0/calibration/effb5_trivialaug/calibration_report.json`): deploy =
-**3-seed EffB5 ensemble** (mean-prob fusion, **T=0.5123, thr=0.1224, tta=none**), Val PR-AUC-geomean **0.9393**,
-P=0.800/R=0.896. Caveat: threshold selected at 1:20 prevalence (val pool limit); realized precision at 1:200–1000
-deployment prevalence will be lower — Test-Realistic gives the honest number. **Immediate next:** add 3-model
-ensemble support to the deploy path (`package_model.py` per-seed packages + a fusion manifest, `predictor.py`
-multi-model load + fuse, `evaluate_test.py` ensemble) → then **Test-Realistic ONCE** (held for explicit go) → package.
+**Phase D — calibrated + object operating-point settled; building the ensemble deploy/eval path.** Deploy =
+**3-seed EffB5 ensemble** (mean-prob fusion, T=0.5123, tta=none), Val PR-AUC-geomean **0.9393**. The object
+operating-point tuner (`tune_object_operating_point.py`) showed the pixel-precision threshold (0.1224) is wrong
+for an object product (obj-F1 0.30, 443 speckle FPs); adopted the **obj-F1 argmax at pixel-P≥0.8: thr 0.30 +
+min_blob 80** (obj-F1 **0.567**, obj-P 0.489/obj-R 0.674) into `configs/deployment.yaml`. User also landed Phase-E
+inference efficiency (quad LRU cache + STRtree, `inference/tiles.py`). **Immediate next:** 3-model ensemble support
+in the deploy/eval path (`predictor.py` multi-model load + mean-prob fuse, `evaluate_test.py` ensemble, per-seed
+packaging) → then **Test-Realistic ONCE** (held for explicit go) → package → full inference. Operating point is
+frozen on Val and reversible before the one-shot.
 <!-- NOW:END -->
 
 ### Future plans
