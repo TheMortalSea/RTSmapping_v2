@@ -266,9 +266,17 @@ Test-Realistic gives the honest number.
 **I — Final lock.** **Encoder = EffB5** (fair sat-DINOv3 re-run tied, 0.9191 vs 0.9218, equal object metrics →
 no benefit at ~4× cost). v2 recipe (RGB+NDVI · F0 · focal·ignore_w2 · default sampling · aug−RandomScale ·
 **TrivialAugment** · base_v2_fast) 3-seed **0.9218** (= `aug_trivialaugment_deploy`, 3 clean checkpoints),
-deployed as a **3-seed ensemble** (calibration in H). Remaining: build the ensemble deploy/eval path
-(per-seed packages + fusion manifest; `predictor.py`/`evaluate_test.py` multi-model) → the one-shot
-Test-Realistic → package. No foundation adapter needed.
+deployed as a **3-seed ensemble** (calibration in H) at the precision-leaning operating point (H.2).
+
+**J — Test-Realistic (SHIPPED v2 NUMBER, one-shot 2026-06-25).** 3-seed EffB5 ensemble, frozen op-point
+(thr 0.65 · min_blob 80 · T 0.5123 · tta none · scale 1.0), held-out test split (107 pos / 2050 neg tiles):
+**object precision 0.584 / recall 0.437 / F1 0.500** (IoU≥0.3) · pixel IoU 0.432 / F1 0.604 · **PR-AUC
+0.855 / 0.833 / 0.812 at 1:200 / 500 / 1000** (geomean 0.833, deployment-realistic prevalence). The op-point
+generalized cleanly — object metrics ≈ Val (obj-F1 0.511→0.500, obj-R 0.439→0.437, obj-P 0.611→0.584), no
+val-overfit. (PR-AUC looks below the Val 0.9393 only because that was at 1:5/10/20; this is the harder, correct
+1:200–1000 regime.) `/mnt/outputs/v1.0/test_realistic/effb5_ensemble_metrics.json`. Touched once — frozen.
+Remaining to ship: package the 3 per-seed deployment packages → Phase E (bucket/fleet) → Phase F (pre-flight
+→ full pan-Arctic inference).
 <!-- FINDINGS:END -->
 
 ---

@@ -45,8 +45,10 @@ for an object product (obj-F1 0.30, 443 speckle FPs). **Deployed operating point
 thr 0.65 + min_blob 80** — the grid's object-precision maximum, **obj-P 0.611 / obj-R 0.439** (pixel-P 0.987) —
 for a survey favouring few false slumps. 3-model ensemble eval/inference plumbing built + tested (predict_probs_
 ensemble, evaluate_test_ensemble, inference.py multi-package; 51 tests pass). User also landed Phase-E inference
-efficiency (quad LRU cache + STRtree). **Now running the one-shot Test-Realistic** on the frozen operating point
-(go given). Next: package the 3 per-seed deployment packages → Phase E fleet/bucket → Phase F pre-flight → full inference.
+efficiency (quad LRU cache + STRtree). **Test-Realistic DONE (one-shot, shipped v2 number):** obj-P 0.584 /
+obj-R 0.437 / obj-F1 0.500 (IoU≥0.3), pixel IoU 0.432 / F1 0.604, PR-AUC 0.855/0.833/0.812 at 1:200/500/1000.
+Op-point generalized cleanly (obj metrics ≈ Val). **Next:** package the 3 per-seed deployment packages → Phase E
+(output bucket + L4 fleet) → Phase F (drift check + Banks Island RGB+NDVI end-to-end) → full pan-Arctic inference.
 <!-- NOW:END -->
 
 ### Future plans
