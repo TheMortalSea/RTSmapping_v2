@@ -452,6 +452,18 @@ Inference pipeline (`inference/` + grid/merge entry scripts), GPU-free. Fixtures
 > (see inference.md §13 pre-inference checklist), not unit tests — they are
 > thin glue over the tested modules.
 
+### [test_tune_object_operating_point.py](test_tune_object_operating_point.py)
+
+Tier-1 object operating-point tuner (`scripts/tune_object_operating_point.py`, report-only). GPU-free; synthetic prob/label maps with known objects. Load-bearing test is parity with the training object metric.
+
+| Test | Checks | Strictness |
+|---|---|---|
+| `test_parity_with_validation_accumulator` | at defaults (thr 0.5, min_blob 10, no morph) the tuner's obj_tp/fp/fn == `ValidationAccumulator` for identical input | real — parity guarantee |
+| `test_min_blob_filters_small_predictions` | raising `min_blob_size` drops sub-size FP blobs | real |
+| `test_morph_closing_merges_fragments` | morph-close radius bridges a 1-px gap → fragment FP removed (1 TP, 0 FP/FN) | real — morphology lever |
+| `test_decompose_categories` | object-error decomposition routes a no-overlap FP → `fp_no_overlap`, an unpredicted GT → `fn_missed` | real |
+| `test_evaluate_grid_shape_and_threshold_monotonicity` | grid yields one row per cell; raising threshold past the prob drops obj_tp to 0 | real |
+
 ### [test_train_smoke.py](test_train_smoke.py)
 
 End-to-end training loop on the synthetic fixture (~130 s, still Tier 1 — no GCS, no GPU). Asserts the hardened criteria from the plan Step 7a.
