@@ -41,12 +41,12 @@ fair encoder A/B settled → EffB5 (sat-DINOv3 tied, dropped).
 **Phase D — calibrated + object operating-point settled; building the ensemble deploy/eval path.** Deploy =
 **3-seed EffB5 ensemble** (mean-prob fusion, T=0.5123, tta=none), Val PR-AUC-geomean **0.9393**. The object
 operating-point tuner (`tune_object_operating_point.py`) showed the pixel-precision threshold (0.1224) is wrong
-for an object product (obj-F1 0.30, 443 speckle FPs); adopted the **obj-F1 argmax at pixel-P≥0.8: thr 0.30 +
-min_blob 80** (obj-F1 **0.567**, obj-P 0.489/obj-R 0.674) into `configs/deployment.yaml`. User also landed Phase-E
-inference efficiency (quad LRU cache + STRtree, `inference/tiles.py`). **Immediate next:** 3-model ensemble support
-in the deploy/eval path (`predictor.py` multi-model load + mean-prob fuse, `evaluate_test.py` ensemble, per-seed
-packaging) → then **Test-Realistic ONCE** (held for explicit go) → package → full inference. Operating point is
-frozen on Val and reversible before the one-shot.
+for an object product (obj-F1 0.30, 443 speckle FPs). **Deployed operating point (precision-leaning, user choice):
+thr 0.65 + min_blob 80** — the grid's object-precision maximum, **obj-P 0.611 / obj-R 0.439** (pixel-P 0.987) —
+for a survey favouring few false slumps. 3-model ensemble eval/inference plumbing built + tested (predict_probs_
+ensemble, evaluate_test_ensemble, inference.py multi-package; 51 tests pass). User also landed Phase-E inference
+efficiency (quad LRU cache + STRtree). **Now running the one-shot Test-Realistic** on the frozen operating point
+(go given). Next: package the 3 per-seed deployment packages → Phase E fleet/bucket → Phase F pre-flight → full inference.
 <!-- NOW:END -->
 
 ### Future plans

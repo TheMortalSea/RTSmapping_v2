@@ -255,10 +255,13 @@ The calibrate.py threshold (0.1224) is tuned for *pixel* precision and is the **
 object product**: at thr 0.1224 / min_blob 10 the ensemble scores obj-F1 **0.304** (obj-P 0.189, 443 FP objects,
 424 of them no-overlap speckle). Sweeping threshold × min_blob × morph-close picks the **obj-F1 argmax at the
 pixel-P≥0.8 floor: thr 0.30 + min_blob 80 + morph off** → obj-F1 **0.567** (obj-P 0.489 / obj-R 0.674, pixel-P
-0.931, FP objects 443→93). Robust plateau (obj-F1≈0.56 over thr 0.30–0.35; morph radius 0/1/2 identical →
-off). Precision-leaning alternative: thr 0.65 → obj-P 0.61 / obj-R 0.44 (obj-F1 0.511). **Adopted thr 0.30 /
-min_blob 80** into `deployment.yaml` (precision-over-recall, balanced obj-F1). Report-only tool; the operating
-point is frozen on Val and reversible before the one-shot. Test-Realistic (held) gives the honest number.
+0.931, FP objects 443→93). Robust plateau (obj-F1≈0.56 over thr 0.30–0.35; morph radius 0/1/2 identical → off).
+**DEPLOYED operating point (user choice 2026-06-25, precision-leaning): thr 0.65 + min_blob 80 + morph off** →
+the object-precision MAXIMUM of the grid, **obj-P 0.611 / obj-R 0.439 (obj-F1 0.511), pixel-P 0.987** (beyond
+0.65 both obj-P and obj-R fall — recall collapses faster than precision rises). Chosen for a pan-Arctic survey
+favouring few false slumps over completeness (project §1 precision-over-recall). The obj-F1-argmax alternative
+was thr 0.30 (obj-F1 0.567, obj-P 0.489/obj-R 0.674). Frozen in `deployment.yaml` before the one-shot;
+Test-Realistic gives the honest number.
 
 **I — Final lock.** **Encoder = EffB5** (fair sat-DINOv3 re-run tied, 0.9191 vs 0.9218, equal object metrics →
 no benefit at ~4× cost). v2 recipe (RGB+NDVI · F0 · focal·ignore_w2 · default sampling · aug−RandomScale ·

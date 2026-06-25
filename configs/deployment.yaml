@@ -15,13 +15,14 @@
 # OBJECT-tuned, not pixel-tuned (scripts/tune_object_operating_point.py on
 # Val-Realistic, 2026-06-25): the pixel-precision calibrate.py threshold (0.1224)
 # is the wrong operating point for an object-detection product — it spews speckle
-# FPs (obj-F1 0.30, 443 FP objects). Sweeping thr×min_blob picks the obj-F1
-# argmax at the pixel-precision≥0.8 floor: thr 0.30 + min_blob 80 (morph off —
-# no effect) → obj-F1 0.567, obj-P 0.489 / obj-R 0.674, pixel-P 0.931. Robust
-# plateau (obj-F1≈0.56 over thr 0.30–0.35). For a more precision-leaning map,
-# thr 0.65 gives obj-P 0.61 / obj-R 0.44 (obj-F1 0.511).
-# (Pixel-calibrated value for reference: threshold 0.122401.)
-threshold: 0.30
+# FPs (obj-F1 0.30, 443 FP objects). PRECISION-LEANING choice (user, 2026-06-25):
+# thr 0.65 + min_blob 80 (morph off) → the object-precision MAXIMUM of the grid,
+# obj-P 0.611 / obj-R 0.439 (obj-F1 0.511), pixel-P 0.987 — beyond 0.65 both
+# obj-P and obj-R fall. A pan-Arctic survey map favouring few false slumps over
+# completeness, per the project's precision-over-recall priority.
+# (obj-F1-argmax alternative was thr 0.30: obj-F1 0.567, obj-P 0.489/obj-R 0.674.
+#  Pixel-calibrated value for reference: 0.122401.)
+threshold: 0.65
 
 # Temperature scaling parameter learned on val (training.md §12.1).
 # probability = sigmoid(logit / temperature). Calibrated for the fused ensemble.
