@@ -28,24 +28,27 @@ for inference. Docker `rts-train:v2`. Data in `gs://abrupt_thaw/` + `gs://rts-ma
 ## Rolling progress
 
 ### Just completed
-**v2 modeling campaign — run-complete; repo consolidated to only-`main`; docs system re-designed.** Every
-planned screen has a run (channels, fusion, augmentation, sampling, encoders). The locked v2 recipe and
-all per-family verdicts are in `docs/experiment_ledger.md`. The three living docs (ledger / this diary /
-`report.html`) were rebuilt around one SSoT + a score-harvest mechanism (see `CLAUDE.md`).
+**Fair encoder A/B settled → EffB5.** The sat-DINOv3 + NDVI re-run on the *full locked recipe* (the only
+clean comparison) tied EffB5 across PR-AUC + object metrics, collapsing the earlier confounded "sat edge"
+→ EffB5 is the v2 encoder (cheaper, equal). This closes the modeling campaign (every planned screen run;
+recipe + per-family verdicts in `docs/experiment_ledger.md`). Earlier: repo consolidated to only-`main`;
+the three living docs rebuilt around one SSoT + score-harvest (see `CLAUDE.md`).
 
 <!-- NOW:BEGIN -->
 ### Now
-Encoder decision is the one open modeling question: the **fair sat-DINOv3 + NDVI re-run on the locked
-recipe** (`fm_dinov3sat_l_ndvi_locked*`) is **incomplete** — it was killed ~ep30 and is not a verdict
-(ledger family E). Until it finishes, the v2 encoder is **EffB5 (validated, 0.9218 with TrivialAugment)**
-with sat-DINOv3 ViT-L as the leading-but-unverified alternative. Immediate next: finish that re-run, then
-Phase D — H calibration (temperature + threshold + D4-TTA) on Val + solo-vs-ensemble select.
+**Encoder DECIDED = EffB5** — the modeling campaign is fully closed. The fair sat-DINOv3 + NDVI re-run on
+the locked recipe finished (3-seed `best_smoothed` 0.9221/0.9286/0.9067 = **0.9191**) and **ties** EffB5
+(**0.9218**) on PR-AUC *and* object metrics (IoU 0.612, obj-F1 ≈0.44 both) — the earlier sat "edge" was a
+boundary-treatment confound that vanished on the matched recipe. So the v2 deploy encoder is **EffB5**
+(= `aug_trivialaugment_deploy`, 3 clean checkpoints, 0.9218), ~4× cheaper than the ViT-L at no accuracy
+cost; ensemble dropped (sat adds nothing). Immediate next: **Phase D** — H calibration (temperature +
+threshold + D4-TTA) on Val-Realistic → 3-seed final → **Test-Realistic once** → package.
 <!-- NOW:END -->
 
 ### Future plans
-1. **Finish the fair sat-DINOv3 + NDVI re-run** (locked recipe) → clean encoder A/B vs EffB5 0.9218.
-2. **Phase D — calibrate + select** (family H/I): temperature + threshold + D4-TTA on Val-Realistic;
-   pick encoder (EffB5 vs sat-DINOv3 vs ensemble) → 3-seed final → **Test-Realistic once** → package.
+1. **Phase D — calibrate EffB5 + lock** (family H/I): temperature + threshold + D4-TTA on Val-Realistic on
+   the EffB5 recipe (`aug_trivialaugment_deploy`, 3-seed 0.9218) → **Test-Realistic once** → package.
+   (Encoder already decided = EffB5; sat-DINOv3 tied on the fair re-run, ensemble dropped.)
 3. **Inference build-out**: NDVI-at-inference reader (built); quad-level LRU cache + spatial hit-test
    (`docs/optimization_roadmap.md`); output bucket; pre-flight on the 32× L4 fleet → full pan-arctic pass
    (309,100 quads → 41.57M tiles, 20.68M km²).

@@ -115,9 +115,9 @@ sign-flipped → rejected).
 | fm_dinov3sat_l_ndvi_seed43 | E | corrected | 0.9199 | done | seed-confirm |
 | fm_dinov3sat_l_ndvi_seed44 | E | corrected | 0.9150 | done | seed-confirm (mean 0.9194, Δ+0.0071 sub-gate) |
 | fm_dinov3sat_l_ndvi_seed42_rerun | E | corrected | — | crashed | off-recipe rerun (superseded by _locked) |
-| fm_dinov3sat_l_ndvi_locked | E | corrected | 0.7923 | incomplete | **FAIR sat re-run (locked recipe) — killed ~ep30, NOT a verdict** |
-| fm_dinov3sat_l_ndvi_locked_seed43 | E | corrected | 0.6322 | incomplete | killed mid-training |
-| fm_dinov3sat_l_ndvi_locked_seed44 | E | corrected | 0.8138 | incomplete | killed mid-training |
+| fm_dinov3sat_l_ndvi_locked | E | corrected | 0.9221 | done | **FAIR sat re-run (locked recipe), seed42 — peak ep40** |
+| fm_dinov3sat_l_ndvi_locked_seed43 | E | corrected | 0.9286 | done | seed-confirm — peak ep40 |
+| fm_dinov3sat_l_ndvi_locked_seed44 | E | corrected | 0.9067 | done | seed-confirm — peak ep35 (**mean 0.9191 ≈ EffB5 0.9218 → TIE → deploy EffB5**) |
 | aug_ref | F | corrected | 0.8661 | done | aug control |
 | aug_ref_seed43 | F | corrected | 0.8468 | done | seed-confirm |
 | aug_ref_seed44 | F | corrected | 0.8808 | done | seed-confirm (ref mean 0.865) |
@@ -160,7 +160,7 @@ sign-flipped → rejected).
 | Channels | RGB + **NDVI** (4-ch), F0 early channel-stack | D | NDVI 0.8985 ≫ RGB 0.830; greedy adds nothing; F1/F2 tie, F3/F5 lose |
 | Normalization | per-dataset z-score (Arm A) | A | Arm A > B/C |
 | Decoder | **UNet++** (dense skips) | E | UNet++ ≥ FPN > DeepLabV3+ > PSPNet ≫ MAnet — none beats it |
-| Encoder | ⏳ **PENDING** — EffB5 (validated) vs sat-DINOv3 ViT-L (leading; fair re-run incomplete) | E | EffB5 0.9123 vs sat off-recipe 0.9194 |
+| Encoder | **EffB5** (UNet++/EfficientNet-B5) | E | fair re-run: sat-DINOv3 ViT-L **ties** (0.9191 vs 0.9218, obj metrics equal) → no benefit, EffB5 ~4× cheaper |
 | Loss + boundary | focal + **ignore_w2** | C | boundary factorial, seed-confirmed |
 | Sampling | default balanced (no curriculum) | G | curriculum rejected (sign-flipped) |
 | Augmentation | geometric + **TrivialAugment** − **RandomScale** | F | drop-scale +0.016 3/3; TrivialAugment 0.9218 |
@@ -182,7 +182,7 @@ calibration, still null)*; stride 344 px (~33% overlap); overlap fusion = distan
 | + NDVI | 0.8985 | +0.069 | +0.069 |
 | + boundary ignore_w2 + drop-RandomScale (= deploy_v1) | 0.9123 | +0.014 | +0.082 |
 | + TrivialAugment (current EffB5 recipe) | 0.9218 | +0.0095 | +0.092 |
-| + sat-DINOv3 encoder | *pending fair re-run* | — | — |
+| sat-DINOv3 encoder (fair re-run, same recipe) | 0.9191 | −0.003 (tie) | — → **EffB5 deployed** (sat no benefit, 4× costlier) |
 <!-- BUILDUP-TABLE:END -->
 
 ---
@@ -211,27 +211,26 @@ Greedy forward from NDVI adds nothing (+SE-PCA 0.900, +TC 0.900, +SE-proto 0.898
 clears G). Heavy fusion **loses**: F3-full 0.818, F5-full 0.848, F5-pair 0.854 (all ≪ NDVI-alone; below
 even the F0 stack). **LOCKED: EXTRA=[NDVI], F0 early channel-stack.**
 
-**E — Architecture & encoder (PROVISIONAL — fair re-run incomplete).** Capacity is not the lever; the
-encoder may be. No CNN decoder beats UNet++ (FPN 0.794 ties > DeepLabV3+ 0.788 > PSPNet 0.729 ≫ MAnet
-0.621); EffB3 capacity-down is no-win (0.9050). Generic web-DINOv3+NDVI only **ties** EffB5 (0.9121 vs
-0.9123) → generic foundation is not the lever. The **satellite-pretrained DINOv3 ViT-L** is the most
-promising encoder: off-recipe +NDVI 3-seed **0.9194** vs EffB5 0.9123 (Δ+0.0071, sub-gate near-miss);
-sat-RGB 0.9133 ≈ ties EffB5. The real edge is **object-level** (see table below). **⚠ But the comparison
-is not a clean A/B** — see the caveat. SAM2 (0.556) and sat-7B-frozen (0.475) are non-competitive.
+**E — Architecture & encoder (RESOLVED 2026-06-25 → EffB5).** Capacity is not the lever, and neither is
+the encoder. No CNN decoder beats UNet++ (FPN 0.794 ties > DeepLabV3+ 0.788 > PSPNet 0.729 ≫ MAnet 0.621);
+EffB3 capacity-down no-win (0.9050). Generic web-DINOv3+NDVI ties EffB5 (0.9121 vs 0.9123). The
+satellite-pretrained DINOv3 ViT-L *looked* like a breakout off-recipe (+NDVI 0.9194 + big object metrics)
+— **but that was the confound**: sat ran on `phase0c` (boundary-none val labels, no TrivialAugment) and was
+compared to the pre-TrivialAugment EffB5 0.9123. The **fair re-run on the full locked recipe** (ignore_w2 +
+drop-RandomScale + TrivialAugment, *identical* val labels) settles it — **a dead tie**:
 
-| Encoder (+NDVI, boundary **none**, 3-seed best epoch) | pixel-IoU | obj-F1 |
-|---|---:|---:|
-| EffB5 | 0.51 | 0.49 |
-| sat-DINOv3 ViT-L | **0.64** | **0.56** |
-| Δ (sat − EffB5) | **+0.13** | **+0.07** |
+| 3-seed, **locked recipe** (identical val labels) | PR-AUC | pixel-IoU | obj-F1 |
+|---|---:|---:|---:|
+| EffB5 (= `aug_trivialaugment_deploy`) | **0.9218** | 0.612 | 0.438 |
+| sat-DINOv3 ViT-L (= `fm_dinov3sat_l_ndvi_locked`) | 0.9191 | 0.612 | 0.437 |
+| Δ (sat − EffB5) | −0.0027 | ≈0 | ≈0 |
 
-> **⚠ Encoder caveat — the sat-DINOv3 verdict is NOT yet clean.** The sat +NDVI runs
-> (`fm_dinov3sat_l_ndvi*`) inherit `phase0c` (**boundary none + RandomScale on**) while EffB5 `deploy_v1`
-> uses the locked **ignore_w2 + drop-RandomScale**. Because `boundary_handling` is applied to the **val**
-> set (`scripts/train.py`), the two are scored on *different val labels* — sat on the harder
-> boundary-included set, so its edge is **understated**, not inflated. The **fair re-run on the locked
-> recipe** (`fm_dinov3sat_l_ndvi_locked*`) was launched but is **INCOMPLETE — killed ~ep30** (0.79/0.63/0.81,
-> still climbing; not a verdict). **A clean encoder A/B still requires finishing that re-run.**
+> **Verdict: DEPLOY EffB5.** On the matched recipe the satellite ViT-L gives **no benefit** on any metric,
+> and EffB5 (CNN) is ~4× cheaper/faster across the 41.57M-tile pass. The off-recipe "sat edge"
+> (+0.13 IoU / +0.07 obj-F1 on boundary-none labels) **collapses** once both use the same recipe + val
+> labels — a textbook confound, caught by the fair A/B. SAM2 (0.556) and sat-7B-frozen (0.475)
+> non-competitive. The sat re-run (`fm_dinov3sat_l_ndvi_locked*`) ran to ep60, peaked ep35–40
+> (best_smoothed 0.9221/0.9286/0.9067), terminated in the overfit tail — a complete verdict.
 
 **F — Augmentation.** Not a plateau-breaker, but two cheap wins lock in: **drop RandomScale** (+0.016,
 3/3 seeds) and replace the hand-tuned color stack with **TrivialAugment** (3-seed mean 0.9218, 3/3 >
@@ -246,10 +245,11 @@ single-seed) did not survive seeds (0.894/0.901/0.859, sign-flipped) → rejecte
 **H — Calibration & TTA (pending).** Temperature + threshold + D4-TTA held for the final lock; adopt
 D4-TTA if ≥1% PR-AUC at ≤0.5% precision cost. Scale-TTA gated on a scale-transfer test.
 
-**I — Final lock.** EffB5 v2 recipe (RGB+NDVI · F0 · focal·ignore_w2 · default sampling · aug−RandomScale
-· base_v2_fast) 3-seed **0.9123**; with TrivialAugment **0.9218** (the current EffB5 reference). The
-**sat-DINOv3 encoder is the leading deploy but not yet fairly verified** — the fair re-run must finish on
-this full recipe. Calibration + the one-shot Test-Realistic happen here, on the winning encoder.
+**I — Final lock.** **Encoder decided = EffB5** (the fair sat-DINOv3 re-run tied, 0.9191 vs 0.9218, with
+equal object metrics → no benefit at ~4× the cost). v2 recipe (RGB+NDVI · F0 · focal·ignore_w2 · default
+sampling · aug−RandomScale · **TrivialAugment** · base_v2_fast) 3-seed **0.9218** (= `aug_trivialaugment_deploy`,
+3 clean checkpoints). Remaining at the final lock: H calibration (temperature + threshold + D4-TTA on Val)
+→ the one-shot Test-Realistic → package. No foundation adapter needed.
 <!-- FINDINGS:END -->
 
 ---
