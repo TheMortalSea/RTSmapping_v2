@@ -383,6 +383,29 @@ Forward-path tests for `models/foundation.py` (FoundationSegmenter: DINOv3/ViT e
 > when packaging misbehaves on a real run, or by feeding the smoke test's
 > synthetic MLflow run into `package_model()` end-to-end.
 
+### [test_calibrate.py](test_calibrate.py)
+
+Covers the GPU-free math in `scripts/calibrate.py` (Phase D calibration). The
+forward-pass / checkpoint-load paths need GPU + real checkpoints and are
+exercised by the live calibration run, not here.
+
+| Test | Checks | Strictness |
+|---|---|---|
+| `test_logit_sigmoid_roundtrip` | `_sigmoid(_logit(p)) ≈ p` | shallow |
+| `test_fit_temperature_recovers_known_scaling` | logits inflated ×2 → fitted T ∈ (1.6, 2.4) | real |
+| `test_fit_temperature_bounds` | T stays within the [0.25, 5] search bounds | shallow |
+| `test_pr_auc_geomean_separable_is_high` | separable signal → geomean > 0.8; higher ratio ≤ lower | real |
+| `test_pr_auc_geomean_empty_returns_zero` | no positive tiles → 0.0 | shallow |
+| `test_precision_at_threshold_monotone` | raising the threshold does not lower precision (separable) | real |
+| `test_select_threshold_meets_target_when_separable` | finds a threshold with precision ≥ 0.8, `target_met=True` | real |
+| `test_select_threshold_falls_back_to_f1_when_unreachable` | unreachable target → max-F1 fallback, `target_met=False` | real |
+
+> **Coverage gap (acknowledged 2026-06-25):** the forward-pass collection
+> (`collect_probs`, `load_checkpoint`), TTA selection, and single-vs-ensemble
+> orchestration in `main()` are validated only by the live Val-Realistic run
+> (`/mnt/outputs/v1.0/calibration/effb5_trivialaug/`), whose fresh PR-AUC
+> reproduced each run's training `best_smoothed` (parity check). Not unit-tested.
+
 ### [test_inference_pipeline.py](test_inference_pipeline.py)
 
 Inference pipeline (`inference/` + grid/merge entry scripts), GPU-free. Fixtures: synthetic 512px RGBA quads written on the **real zoom-15 mosaic grid** (production grid constants, small rasters), so quad-bounds math is exercised against an observed Planet quad coordinate; plus synthetic 4-band S2 composite COGs (B4,B3,B2,B8 export order) for the EXTRA=NDVI windowed reader.
@@ -419,6 +442,10 @@ Inference pipeline (`inference/` + grid/merge entry scripts), GPU-free. Fixtures
 | `test_merge_ignores_missing_tiles` | absent (skipped) tile rasters don't break the merge | real |
 | `test_read_tile_scale05_expands_fov` | scale=0.5 decimated read: 2× ground bbox → same px dims, values survive bilinear | real — §6.2 scale path |
 | `test_read_tile_scale05_nodata_stays_crisp` | alpha resampled nearest: NoData boundary exact under decimation | real |
+| `test_bbox_index_matches_boolean_mask` | `_BBoxIndex` STRtree hits == boolean-mask rows (interior/straddle/outside) | real — §11.3 spatial hit-test parity |
+| `test_read_tile_hits_path_identical_to_mask` | spatial-index `hits=` path byte-identical to full-scan mask path | real — §11.3 cache must not change pixels |
+| `test_open_dataset_cache_reuses_handle` | two reads of one quad → `rasterio.open` called once (per-worker LRU) | real — §11.3 quad-cache |
+| `test_spatial_sort_permutes_without_dropping_tiles` | `_spatial_sort` keeps the tile set, groups same-quad tiles contiguously | real — §11.3 cache-locality ordering |
 
 > Not covered (deliberate): `scripts/inference.py` main loop and
 > `vectorize_predictions.py` are exercised by the Tier-2 real-data smoke

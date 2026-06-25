@@ -568,7 +568,19 @@ with no reuse. **Highest-value optimization before the production run**: quad-le
 a per-worker LRU of decoded quads, or restructuring the loop to process all tiles of a
 quad-block per fetch; expected ~10–30× (toward the original ~150 tiles/s estimate ⇒ a full
 pass at ~14 GPU-h). Cheaper GPUs (L4) are viable since the GPU idles at current throughput.
-Re-benchmark after the caching change and update this table.
+
+**Implemented (2026-06-25, `inference/tiles.py`):** the three I/O fixes are now in code —
+(a) a per-worker LRU of **open** rasterio handles (`_OpenDatasetCache`) so an overlapping
+quad is opened once, not ~36×, and GDAL's block cache serves the repeated windows;
+(b) an **STRtree spatial index** (`_BBoxIndex`) replacing the O(N) per-tile boolean scan over
+the ~309k-row quad/S2 index; (c) **spatial tile ordering** (`_spatial_sort`) so a batch's
+tiles share quads and hit the cache. All three are bit-identical to the prior mask path
+(candidates re-filtered with the exact strict-overlap test in original order;
+`tests/test_inference_pipeline.py::test_read_tile_hits_path_identical_to_mask`).
+**Still TODO — Tier-2 re-benchmark:** rerun the 552-tile Banks Island AOI on the L4/A100 VM
+with real 2025 quads, confirm tiles/s rises toward the ~150 ceiling and GPU util climbs, and
+replace the table above. Consider raising `GDAL_CACHEMAX` and `--num-workers` once GPU-bound
+(§11.2). Quad-handle cache size is `_OPEN_CACHE_SIZE` (default 16/worker).
 
 ---
 

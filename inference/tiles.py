@@ -14,14 +14,17 @@ from __future__ import annotations
 
 import logging
 import time
+from collections import OrderedDict
 
 import numpy as np
 import pandas as pd
 import rasterio
 from rasterio.windows import from_bounds
+from shapely import STRtree, box
 from torch.utils.data import Dataset
 
 from data.normalization import apply_norm, build_norm_arrays, fill_nodata_with_mean
+from inference.quad_index import QUAD_SIZE_M, WORLD_MIN
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +39,82 @@ S2_NIR_BAND = 4   # B8
 _READ_ATTEMPTS = 4
 _RETRY_BASE_DELAY_S = 1.0
 
+# --- Per-worker open-dataset cache (inference.md §11.3 quad-cache) -----------
+# At stride 344 each quad is re-opened by ~36 overlapping tiles; over /vsigs/
+# every open is a GCS auth + COG-header round-trip that dominated throughput
+# (10.5 tiles/s, GPU idle). Caching the open handle removes the reopen and lets
+# GDAL's per-dataset block cache serve the overlapping windows. The cache is
+# module-level so each DataLoader worker process gets its own; handles never
+# cross the fork because the parent process never reads tiles.
+_OPEN_CACHE_SIZE = 16  # quads/cells kept open per worker; spatial tile ordering
+#                        keeps the working set well under this.
+
+
+class _OpenDatasetCache:
+    """LRU of open rasterio datasets keyed by path, evictable on read error."""
+
+    def __init__(self, maxsize: int) -> None:
+        self.maxsize = maxsize
+        self._cache: "OrderedDict[str, rasterio.DatasetReader]" = OrderedDict()
+
+    def get(self, path: str) -> rasterio.DatasetReader:
+        ds = self._cache.get(path)
+        if ds is not None:
+            self._cache.move_to_end(path)
+            return ds
+        ds = self._open_with_retry(path)
+        self._cache[path] = ds
+        if len(self._cache) > self.maxsize:
+            _, evicted = self._cache.popitem(last=False)
+            evicted.close()
+        return ds
+
+    def evict(self, path: str) -> None:
+        """Drop (and close) a handle so a possibly-stale one is reopened."""
+        ds = self._cache.pop(path, None)
+        if ds is not None:
+            ds.close()
+
+    def clear(self) -> None:
+        """Close and drop every cached handle (test isolation / shutdown)."""
+        for ds in self._cache.values():
+            ds.close()
+        self._cache.clear()
+
+    @staticmethod
+    def _open_with_retry(path: str) -> rasterio.DatasetReader:
+        last_exc: Exception | None = None
+        for attempt in range(_READ_ATTEMPTS):
+            try:
+                return rasterio.open(path)
+            except rasterio.errors.RasterioIOError as exc:
+                last_exc = exc
+                delay = _RETRY_BASE_DELAY_S * 2 ** attempt
+                logger.warning("Open failed (%s) attempt %d/%d: %s; retrying in %.0fs",
+                               path, attempt + 1, _READ_ATTEMPTS, exc, delay)
+                time.sleep(delay)
+        raise last_exc  # type: ignore[misc]
+
+
+_DATASET_CACHE = _OpenDatasetCache(_OPEN_CACHE_SIZE)
+
+
+def _read_with_cache(path: str, read_fn):
+    """Run ``read_fn(dataset)`` on a cached open dataset, retrying transient GCS
+    errors (evicting the handle between attempts so a stale one is reopened)."""
+    last_exc: Exception | None = None
+    for attempt in range(_READ_ATTEMPTS):
+        try:
+            return read_fn(_DATASET_CACHE.get(path))
+        except rasterio.errors.RasterioIOError as exc:
+            last_exc = exc
+            _DATASET_CACHE.evict(path)
+            delay = _RETRY_BASE_DELAY_S * 2 ** attempt
+            logger.warning("Read failed (%s) attempt %d/%d: %s; retrying in %.0fs",
+                           path, attempt + 1, _READ_ATTEMPTS, exc, delay)
+            time.sleep(delay)
+    raise last_exc  # type: ignore[misc]
+
 
 def _read_window_with_retry(
     path: str,
@@ -46,33 +125,72 @@ def _read_window_with_retry(
 
     With `out_size`, the window is decimated/resampled to (out_size, out_size):
     RGB bands bilinear, alpha band (if present) nearest — so the NoData mask
-    stays crisp instead of blending validity at coverage edges.
+    stays crisp instead of blending validity at coverage edges. The dataset is
+    served from the per-worker open-handle cache (§11.3).
     """
-    last_exc: Exception | None = None
-    for attempt in range(_READ_ATTEMPTS):
-        try:
-            with rasterio.open(path) as src:
-                window = from_bounds(*bounds, transform=src.transform)
-                if out_size is None:
-                    return src.read(window=window, boundless=True, fill_value=0)
-                from rasterio.enums import Resampling
-                rgb = src.read(indexes=list(range(1, min(src.count, 3) + 1)),
-                               window=window, boundless=True, fill_value=0,
-                               out_shape=(min(src.count, 3), out_size, out_size),
-                               resampling=Resampling.bilinear)
-                if src.count >= 4:
-                    alpha = src.read(indexes=[4], window=window, boundless=True,
-                                     fill_value=0, out_shape=(1, out_size, out_size),
-                                     resampling=Resampling.nearest)
-                    return np.concatenate([rgb, alpha], axis=0)
-                return rgb
-        except rasterio.errors.RasterioIOError as exc:
-            last_exc = exc
-            delay = _RETRY_BASE_DELAY_S * 2 ** attempt
-            logger.warning("Read failed (%s) attempt %d/%d: %s; retrying in %.0fs",
-                           path, attempt + 1, _READ_ATTEMPTS, exc, delay)
-            time.sleep(delay)
-    raise last_exc  # type: ignore[misc]
+    def _read(src: rasterio.DatasetReader) -> np.ndarray:
+        window = from_bounds(*bounds, transform=src.transform)
+        if out_size is None:
+            return src.read(window=window, boundless=True, fill_value=0)
+        from rasterio.enums import Resampling
+        rgb = src.read(indexes=list(range(1, min(src.count, 3) + 1)),
+                       window=window, boundless=True, fill_value=0,
+                       out_shape=(min(src.count, 3), out_size, out_size),
+                       resampling=Resampling.bilinear)
+        if src.count >= 4:
+            alpha = src.read(indexes=[4], window=window, boundless=True,
+                             fill_value=0, out_shape=(1, out_size, out_size),
+                             resampling=Resampling.nearest)
+            return np.concatenate([rgb, alpha], axis=0)
+        return rgb
+
+    return _read_with_cache(path, _read)
+
+
+class _BBoxIndex:
+    """STRtree over row bounding boxes for O(log N) tile→row lookup.
+
+    Replaces the O(N) per-tile boolean mask over the full quad/S2 index
+    (inference.md §11.3 spatial hit-test) — at 41.57M tiles × ~309k quads the
+    linear scan is itself a real cost. The tree is built lazily on first query
+    so each DataLoader worker builds its own (read-only GEOS state never crosses
+    the fork). Candidates are re-filtered with the exact strict-inequality
+    overlap test, in original row order, so the result is identical to the mask.
+    """
+
+    def __init__(self, df: pd.DataFrame) -> None:
+        self.df = df.reset_index(drop=True)
+        self._tree: STRtree | None = None
+
+    def _ensure_tree(self) -> None:
+        if self._tree is None:
+            self._tree = STRtree(
+                [box(r.minx, r.miny, r.maxx, r.maxy) for r in self.df.itertuples()])
+
+    def hits(self, bbox: tuple[float, float, float, float]) -> pd.DataFrame:
+        self._ensure_tree()
+        minx, miny, maxx, maxy = bbox
+        cand = self._tree.query(box(minx, miny, maxx, maxy))
+        if len(cand) == 0:
+            return self.df.iloc[:0]
+        sub = self.df.iloc[sorted(cand)]
+        return sub[(sub["minx"] < maxx) & (sub["maxx"] > minx)
+                   & (sub["miny"] < maxy) & (sub["maxy"] > miny)]
+
+
+def _spatial_sort(tiles: pd.DataFrame) -> pd.DataFrame:
+    """Order tiles so spatially-adjacent ones are processed consecutively.
+
+    Tiles overlapping the same quad then fall in the same batch and hit the
+    per-worker open-handle cache (§11.3) instead of each re-opening the quad.
+    Sort is by Planet quad grid cell (row then column), then position within the
+    cell; output is unaffected — each tile is written independently by tile_id.
+    """
+    qy = ((tiles["miny"] - WORLD_MIN) // QUAD_SIZE_M).astype("int64")
+    qx = ((tiles["minx"] - WORLD_MIN) // QUAD_SIZE_M).astype("int64")
+    order = np.lexsort((tiles["minx"].to_numpy(), tiles["miny"].to_numpy(),
+                        qx.to_numpy(), qy.to_numpy()))
+    return tiles.iloc[order]
 
 
 def read_tile(
@@ -80,6 +198,7 @@ def read_tile(
     quad_index: pd.DataFrame,
     tile_size_px: int = TILE_SIZE_PX,
     scale: float = 1.0,
+    hits: pd.DataFrame | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Read one inference tile by mosaicking the intersecting quads.
 
@@ -90,14 +209,18 @@ def read_tile(
         scale: inference scale per inference.md §6.2 — at scale s the bbox
             covers tile_size_px/s native pixels and the read is decimated to
             tile_size_px (e.g. s=0.5 → 2× GSD, 4× ground area, same 512²).
+        hits: pre-filtered intersecting quads (``InferenceTileDataset`` supplies
+            these from a spatial index, §11.3); when None the intersecting quads
+            are found by scanning ``quad_index`` directly.
 
     Returns:
         (rgb, nodata_mask): rgb float32 (3, H, W) raw values [0, 255];
         nodata_mask bool (H, W), True where no valid imagery exists.
     """
     minx, miny, maxx, maxy = bbox
-    hits = quad_index[(quad_index["minx"] < maxx) & (quad_index["maxx"] > minx)
-                      & (quad_index["miny"] < maxy) & (quad_index["maxy"] > miny)]
+    if hits is None:
+        hits = quad_index[(quad_index["minx"] < maxx) & (quad_index["maxx"] > minx)
+                          & (quad_index["miny"] < maxy) & (quad_index["maxy"] > miny)]
 
     rgb = np.zeros((3, tile_size_px, tile_size_px), dtype=np.float32)
     valid = np.zeros((tile_size_px, tile_size_px), dtype=bool)
@@ -131,6 +254,7 @@ def read_ndvi_tile(
     bbox: tuple[float, float, float, float],
     s2_index: pd.DataFrame,
     tile_size_px: int = TILE_SIZE_PX,
+    hits: pd.DataFrame | None = None,
 ) -> np.ndarray:
     """Window NDVI from the bulk S2 composites onto one inference tile.
 
@@ -156,32 +280,22 @@ def read_ndvi_tile(
     from rasterio.enums import Resampling
 
     minx, miny, maxx, maxy = bbox
-    hits = s2_index[(s2_index["minx"] < maxx) & (s2_index["maxx"] > minx)
-                    & (s2_index["miny"] < maxy) & (s2_index["maxy"] > miny)]
+    if hits is None:
+        hits = s2_index[(s2_index["minx"] < maxx) & (s2_index["maxx"] > minx)
+                        & (s2_index["miny"] < maxy) & (s2_index["maxy"] > miny)]
+
+    def _read(src: rasterio.DatasetReader) -> np.ndarray:
+        # Read red (B4) + NIR (B8), resampled to the tile grid; 0-fill outside.
+        window = from_bounds(*bbox, transform=src.transform)
+        return src.read(
+            indexes=[S2_RED_BAND, S2_NIR_BAND], window=window,
+            boundless=True, fill_value=0,
+            out_shape=(2, tile_size_px, tile_size_px),
+            resampling=Resampling.bilinear).astype(np.float32)
 
     ndvi = np.full((tile_size_px, tile_size_px), np.nan, dtype=np.float32)
     for _, cell in hits.iterrows():
-        # Read red (B4) + NIR (B8), resampled to the tile grid; 0-fill outside.
-        last_exc: Exception | None = None
-        for attempt in range(_READ_ATTEMPTS):
-            try:
-                with rasterio.open(cell["gcs_path"]) as src:
-                    window = from_bounds(*bbox, transform=src.transform)
-                    bands = src.read(
-                        indexes=[S2_RED_BAND, S2_NIR_BAND], window=window,
-                        boundless=True, fill_value=0,
-                        out_shape=(2, tile_size_px, tile_size_px),
-                        resampling=Resampling.bilinear).astype(np.float32)
-                break
-            except rasterio.errors.RasterioIOError as exc:
-                last_exc = exc
-                delay = _RETRY_BASE_DELAY_S * 2 ** attempt
-                logger.warning("S2 read failed (%s) attempt %d/%d: %s; retrying in %.0fs",
-                               cell["gcs_path"], attempt + 1, _READ_ATTEMPTS, exc, delay)
-                time.sleep(delay)
-        else:
-            raise last_exc  # type: ignore[misc]
-
+        bands = _read_with_cache(cell["gcs_path"], _read)
         red, nir = bands[0], bands[1]
         denom = nir + red
         with np.errstate(invalid="ignore", divide="ignore"):
@@ -235,9 +349,13 @@ class InferenceTileDataset(Dataset):
                 raise ValueError("extra_bands=[ndvi] requires an s2_index to window NDVI")
             if scale != 1.0:
                 raise NotImplementedError("NDVI EXTRA reader supports scale=1.0 only")
-        self.tiles = tile_list.reset_index(drop=True)
+        # Spatial-sort so adjacent tiles share quads within a batch → the
+        # per-worker open-handle cache hits instead of re-opening (§11.3).
+        self.tiles = _spatial_sort(tile_list).reset_index(drop=True)
         self.quad_index = quad_index
         self.s2_index = s2_index
+        self._quad_bbox_index = _BBoxIndex(quad_index)
+        self._s2_bbox_index = _BBoxIndex(s2_index) if s2_index is not None else None
         self.norm_params = build_norm_arrays(stats, with_extra=self.with_extra)
         self.rgb_mean = self.norm_params["mean"][:3]
         self.tile_size_px = tile_size_px
@@ -250,7 +368,8 @@ class InferenceTileDataset(Dataset):
         row = self.tiles.iloc[i]
         bbox = (row["minx"], row["miny"], row["maxx"], row["maxy"])
         rgb, nodata = read_tile(bbox, self.quad_index, self.tile_size_px,
-                                scale=self.scale)
+                                scale=self.scale,
+                                hits=self._quad_bbox_index.hits(bbox))
         all_nodata = bool(nodata.all())
         if all_nodata:
             # Discarded by the inference loop (§5.3); emit a correctly-shaped zero
@@ -267,7 +386,8 @@ class InferenceTileDataset(Dataset):
             if self.with_extra:
                 # NDVI from the S2 composites; no-coverage stays NaN → apply_norm
                 # neutralizes to 0 (the channel mean), exactly as in training.
-                ndvi = read_ndvi_tile(bbox, self.s2_index, self.tile_size_px)
+                ndvi = read_ndvi_tile(bbox, self.s2_index, self.tile_size_px,
+                                      hits=self._s2_bbox_index.hits(bbox))
                 stack = np.concatenate([rgb, ndvi[None]], axis=0)
             else:
                 stack = rgb

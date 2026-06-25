@@ -29,7 +29,8 @@ from inference.predictor import (
 )
 from inference.s2_index import load_s2_index
 from inference.tiles import (
-    TILE_SIZE_PX, InferenceTileDataset, read_ndvi_tile, read_tile,
+    TILE_SIZE_PX, InferenceTileDataset, _BBoxIndex, _spatial_sort,
+    read_ndvi_tile, read_tile,
 )
 from inference.writer import (
     NODATA_MASK, NODATA_PROB, Manifest, write_binary_mask, write_probability_tile,
@@ -216,6 +217,74 @@ def test_dataset_rejects_missing_columns(quad_setup):
     with pytest.raises(ValueError, match="missing columns"):
         InferenceTileDataset(pd.DataFrame({"tile_id": ["a"]}),
                              quad_setup["index"], _rgb_stats([1, 1, 1], [1, 1, 1]))
+
+
+# ---------------------------------------------------------------------------
+# tiles: §11.3 quad-cache + spatial index (must be bit-identical to the mask)
+# ---------------------------------------------------------------------------
+
+def test_bbox_index_matches_boolean_mask(quad_setup):
+    idx = quad_setup["index"]
+    bi = _BBoxIndex(idx)
+    b0 = quad_bounds(QX, QY)
+    res = (b0[2] - b0[0]) / 512
+    bboxes = [
+        b0,                                                     # interior of quad 0
+        (b0[2] - 256 * res, b0[1], b0[2] + 256 * res, b0[1] + 512 * res),  # straddle
+        quad_bounds(QX + 5, QY + 5),                            # outside coverage
+    ]
+    for bbox in bboxes:
+        minx, miny, maxx, maxy = bbox
+        mask = idx[(idx["minx"] < maxx) & (idx["maxx"] > minx)
+                   & (idx["miny"] < maxy) & (idx["maxy"] > miny)]
+        pd.testing.assert_frame_equal(bi.hits(bbox).reset_index(drop=True),
+                                      mask.reset_index(drop=True))
+
+
+def test_read_tile_hits_path_identical_to_mask(quad_setup):
+    # The spatial-index path (hits=) must yield byte-identical output to the
+    # legacy full-scan mask path — caching/indexing changes throughput, not pixels.
+    idx = quad_setup["index"]
+    b0 = quad_bounds(QX, QY)
+    res = (b0[2] - b0[0]) / 512
+    bbox = (b0[2] - 256 * res, b0[1], b0[2] + 256 * res, b0[1] + 512 * res)  # straddle
+    rgb_m, nd_m = read_tile(bbox, idx)
+    rgb_h, nd_h = read_tile(bbox, idx, hits=_BBoxIndex(idx).hits(bbox))
+    assert np.array_equal(rgb_m, rgb_h)
+    assert np.array_equal(nd_m, nd_h)
+
+
+def test_open_dataset_cache_reuses_handle(quad_setup, monkeypatch):
+    from inference import tiles as tiles_mod
+    tiles_mod._DATASET_CACHE.clear()
+    calls: list[str] = []
+    real_open = rasterio.open
+
+    def counting_open(path, *a, **k):
+        calls.append(str(path))
+        return real_open(path, *a, **k)
+
+    monkeypatch.setattr(tiles_mod.rasterio, "open", counting_open)
+    bbox = quad_bounds(QX, QY)  # interior → intersects only quad 0
+    rgb1, _ = read_tile(bbox, quad_setup["index"])
+    rgb2, _ = read_tile(bbox, quad_setup["index"])
+    quad0_path = str(quad_setup["index"].iloc[0]["gcs_path"])
+    assert calls.count(quad0_path) == 1  # opened once, second read served from cache
+    assert np.array_equal(rgb1, rgb2)
+    tiles_mod._DATASET_CACHE.clear()
+
+
+def test_spatial_sort_permutes_without_dropping_tiles(quad_setup):
+    from inference.quad_index import QUAD_SIZE_M as QM, WORLD_MIN as WM
+    grid = generate_tile_grid(quad_setup["index"], stride_px=344)
+    srt = _spatial_sort(grid)
+    assert set(srt["tile_id"]) == set(grid["tile_id"]) and len(srt) == len(grid)
+    # Tiles of the same quad cell are contiguous (the cache-locality property):
+    # the (row, col) cell key is non-decreasing down the sorted order.
+    qy = ((srt["miny"] - WM) // QM).astype("int64").to_numpy()
+    qx = ((srt["minx"] - WM) // QM).astype("int64").to_numpy()
+    key = qy * (1 << 32) + qx
+    assert (np.diff(key) >= 0).all()
 
 
 # ---------------------------------------------------------------------------
