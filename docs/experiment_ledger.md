@@ -1,301 +1,281 @@
-# Experiment Ledger
+# Experiment Ledger — RTSmapping_v2
 
-Master chronological registry of **every** training run in RTSmapping_v2, with status and score.
-Living doc — update when runs finish, launch, or change state. SSoT for "what has been tried."
+**This file is the experiments SSoT.** Every training run, the locked recipe, the findings, and the
+dropped ideas live here and nowhere else. `docs/report.html` is the generated analytical/visual view of
+this file; `current_working_status.md` is the project diary. To update, follow the ritual in `CLAUDE.md`.
 
-**Metric:** `val_realistic_pr_auc_geomean` (= `best_smoothed` in each `run_summary.md`). Higher is better.
-Source of truth: `/mnt/outputs/v1.0/runs/<name>/run_summary.md` (finished) and `.../logs/<name>.log` (live).
+**Metric:** `val_realistic_pr_auc_geomean` = `best_smoothed` (higher is better). The **`score` column of
+the run table is machine-harvested** from each run's `run_summary.json` by `scripts/sync_experiments.py`
+— do not hand-edit it. Everything else is agent-edited.
 
-**Status legend:** ✅ done · 🔵 ongoing (live best so far) · ⏳ queued · ⏸️ deferred · ❌ dropped/crashed.
+**Split warning:** scores are **not comparable across the split boundary.** Families A/B/C-loss/E-decoder
+ran on the **leaky** region split (relative comparisons only). D/F/G/I and the encoder runs use the
+**corrected** leakage-free split (absolute numbers sit higher; compare within-family vs the in-family
+control, not across phases). Test-Realistic is scored once, honestly, on the corrected split.
 
-> ⚠️ **Scores are NOT comparable across the split boundary.** Phases 0/2/3/5 ran on the **leaky**
-> region split (relative comparisons only, by design). Phases 4/10 run on the **corrected leakage-free**
-> split — their absolute numbers sit higher and must be compared *within phase* against the in-phase
-> control (Phase-4 RGB control = 0.830), not against earlier phases. Final test is scored once, honestly,
-> on the corrected split (Step 5).
+**Status:** done · seed-confirm · running · incomplete (killed before maturity) · crashed · collapsed ·
+degenerate · killed (ran to a verdict but failed) · lr-test.
 
-_Last refreshed: 2026-06-24 — **v2 campaign CLOSED (run-complete); repo consolidated to only-`main`.** All scores below are `best_smoothed` (the SSoT — earlier raw-epoch-peak figures corrected). **Encoder result (3-seed `best_smoothed`):** sat-DINOv3 ViT-L + NDVI **0.9194** (0.9234/0.9199/0.9150) vs EffB5+NDVI **0.9123** → **+0.0071, a sub-gate near-miss on PR-AUC** (G=0.0112); sat-DINOv3-RGB **0.9133** essentially **ties** EffB5. The real differentiator is **object-level** — on the clean same-boundary comparison (both boundary-none, +NDVI): pixel-IoU **0.64 vs 0.51 (+0.13)**, obj-F1 **0.56 vs 0.49 (+0.07)** (an earlier "+0.16 obj-F1" mixed boundary treatments and was wrong). **⚠ AND the PR-AUC comparison is NOT a clean A/B:** the sat runs inherit `phase0c` (boundary none + RandomScale on) while EffB5 deploy has the locked ignore_w2 + drop-RandomScale, and `boundary_handling` is applied to **val** → different val labels. A fair verdict needs sat-DINOv3 re-run on the locked recipe (the running seed42 `_rerun` reproduces the old recipe, so it restores the lost seed but does NOT fix this). User opted to **include NDVI**; solo-vs-ensemble decided on Val at Phase D. Prior screens all closed: greedy EXTRA=NDVI; F3/F5 heavy fusion loses (F0 locked); mixing-aug 4/4 + EffB3 + RandAug/anneal sub-gate; **TrivialAugment locked** (near-miss, by judgment) → EffB5 recipe 0.9218; web-DINOv3+NDVI 0.9121 ties EffB5; SAM2 0.556 + 7B-frozen 0.475 non-competitive; ignore-region ablation **completed** (mean 0.8984, Δ−0.014 → ignore helps, with a counterfactual caveat). (Model = v2; repo RTSmapping_v2.)_
+**Families:** A Baseline/gate · B Data · C Loss/boundary · D Channels/fusion · E Architecture/encoder ·
+F Augmentation · G Sampling · H Calibration/TTA · I Final-lock/Test · J Deploy/inference · K Deferred.
 
----
+<!-- GATE:BEGIN -->
+## Gate
 
-## Master table (chronological by launch)
+| μ₀ | σ₀ (leaky) | **G = max(2σ₀, 0.01)** | σ (corrected) |
+|----|-----------|------------------------|---------------|
+| 0.7912 | 0.0056 | **0.0112** | ≈0.012 |
 
-| # | Started | Experiment | Phase / purpose | Split | Score | Status |
-|---|---------|-----------|-----------------|-------|------:|:------:|
-| 1 | 06-13 08:00 | phase0b_lr_frozen | 0b LR probe (frozen) | leaky | 0.0008 | ❌ degenerate |
-| 2 | 06-13 11:12 | phase0b_lr_unfrozen | 0b LR probe (unfrozen) | leaky | — | ❌ crashed |
-| 3 | 06-13 23:37 | phase0a_arm_a | 0a norm arm A (z-score) | leaky | 0.667 | ✅ |
-| 4 | 06-14 01:46 | phase0a_arm_b | 0a norm arm B | leaky | 0.626 | ✅ |
-| 5 | 06-14 02:40 | phase0a_arm_c | 0a norm arm C | leaky | 0.670 | ✅ |
-| 6 | 06-14 04:09 | phase0c_seed42 | 0c baseline seed 42 | leaky | 0.790 | ✅ |
-| 7 | 06-14 04:16 | phase0c_seed43 | 0c baseline seed 43 | leaky | 0.786 | ✅ |
-| 8 | 06-14 05:35 | phase0c_seed44 | 0c baseline seed 44 | leaky | 0.797 | ✅ |
-| 9 | 06-15 01:22 | phase2_scale_25 | 2 data-scale 25% | leaky | 0.764 | ✅ |
-| 10 | 06-15 04:27 | phase2_scale_50 | 2 data-scale 50% | leaky | 0.772 | ✅ |
-| 11 | 06-15 09:35 | phase2_scale_75 | 2 data-scale 75% | leaky | 0.792 | ✅ |
-| 12 | 06-15 14:11 | phase3_loss_compound_2to1 | 3 loss sweep | leaky | 0.793 | ✅ |
-| 13 | 06-15 14:11 | phase3_loss_tversky_3to7 | 3 loss sweep | leaky | 0.590 | ✅ |
-| 14 | 06-15 14:20 | phase3_loss_tversky_2to8 | 3 loss sweep | leaky | 0.073 | ❌ collapsed |
-| 15 | 06-15 14:26 | phase3_loss_compound_1to2 | 3 loss sweep | leaky | 0.800 | ✅ |
-| 16 | 06-15 15:10 | phase3_loss_compound_1to1 | 3 loss sweep | leaky | 0.788 | ✅ |
-| 17 | 06-16 06:33 | phase3_bd_focal_ignore_w1 | 3 boundary factorial | leaky | 0.787 | ✅ |
-| 18 | 06-16 06:56 | phase3_loss_compound_1to2_seed43 | 3 loss seed-confirm | leaky | 0.787 | ✅ |
-| 19 | 06-16 06:57 | **phase3_bd_focal_ignore_w2** | 3 boundary factorial | leaky | **0.805** | ✅ **winner** |
-| 20 | 06-16 07:15 | phase3_bd_compound_1to2_ignore_w2 | 3 boundary factorial | leaky | 0.800 | ✅ |
-| 21 | 06-16 08:00 | phase3_bd_focal_ignore_w3 | 3 boundary factorial | leaky | 0.797 | ✅ |
-| 22 | 06-16 09:10 | phase3_bd_compound_1to2_ignore_w1 | 3 boundary factorial | leaky | 0.800 | ✅ |
-| 23 | 06-16 14:37 | phase3_bd_compound_1to2_ignore_w3 | 3 boundary factorial | leaky | 0.802 | ✅ |
-| 24 | 06-17 00:06 | phase5_arch_fpn | 5 arch sweep | leaky | 0.794 | ✅ |
-| 25 | 06-17 01:52 | phase5_arch_manet | 5 arch sweep | leaky | 0.621 | ✅ |
-| 26 | 06-17 02:05 | phase3_bd_focal_ignore_w2_seed44 | 3 winner seed-confirm | leaky | 0.805 | ✅ |
-| 27 | 06-17 02:11 | phase3_bd_focal_ignore_w2_seed43 | 3 winner seed-confirm | leaky | 0.820 | ✅ |
-| 28 | 06-17 04:25 | phase3_bd_compound_1to2_ignore_w3_seed43 | 3 runner-up confirm | leaky | 0.817 | ✅ |
-| 29 | 06-17 10:13 | phase3_bd_compound_1to2_ignore_w3_seed44 | 3 runner-up confirm | leaky | 0.815 | ✅ |
-| 30 | 06-15 16:13 | phase5_arch_deeplabv3plus | 5 arch sweep | leaky | 0.788 | ✅ |
-| 31 | 06-16 11:27 | phase5_arch_pspnet | 5 arch sweep | leaky | 0.729 | ✅ |
-| 32 | — | phase5_arch_segformer | 5 arch sweep | leaky | — | ❌ dropped (no run) |
-| 33 | 06-17 11:48 | phase4_extra_rgb_baseline | 4 EXTRA control | corrected | 0.830 | ✅ |
-| 34 | 06-17 12:50 | **phase4_extra_full** (8-band) | 4 EXTRA | corrected | **0.876** | ✅ |
-| 35 | 06-18 06:39 | **phase4_extra_ndvi** | 4 EXTRA | corrected | **0.888** | ✅ **best single** |
-| 36 | 06-18 06:48 | phase4_extra_tc (tasseled-cap) | 4 EXTRA | corrected | 0.868 | ✅ |
-| 37 | 06-18 07:49 | phase4_extra_nbr | 4 EXTRA | corrected | 0.847 | ✅ |
-| 38 | 06-18 08:35 | phase4_extra_se_proto | 4 EXTRA | corrected | 0.847 | ✅ |
-| 39 | 06-18 09:05 | phase4_extra_se_pca | 4 EXTRA | corrected | 0.874 | ✅ |
-| 40 | 06-18 13:52 | phase10_curric_r30_pf50 | 10 curriculum (Step 2a) | corrected | 0.853 | ✅ |
-| 41 | 06-18 13:52 | **phase10_curric_r20_pf33** | 10 curriculum (Step 2a) | corrected | **0.894** | ✅ best cell (s42) |
-| 42 | 06-18 15:23 | phase10_curric_base | 10 curriculum control | corrected | 0.879 | ✅ |
-| 43 | 06-18 | phase10_curric_r30_pf33 | 10 curriculum (Step 2a) | corrected | 0.853 | ✅ |
-| 44 | 06-19 | phase10_curric_r20_pf33_seed43 | 10 curric seed-confirm | corrected | 0.901 | ✅ |
-| 45 | 06-19 | phase10_curric_r20_pf33_seed44 | 10 curric seed-confirm | corrected | **0.859** | ✅ ⚠ low (variance) |
-| 46 | 06-19 | phase4_extra_se_pca_seed43 | 4 EXTRA seed-confirm | corrected | 0.857 | ✅ (s42 was 0.874) |
-| 47 | 06-19 | phase4_extra_ndvi_seed43 | 4 EXTRA seed-confirm | corrected | 0.8965 | ✅ |
-| 48 | 06-19 | **phase4_extra_ndvi_seed44** | 4 EXTRA seed-confirm | corrected | **0.9111** | ✅ best single run |
-| 49 | 06-19 | phase4_extra_full_seed43 | 4 EXTRA seed-confirm | corrected | 0.8619 | ✅ |
-| 50 | 06-19 | phase4_extra_full_seed44 | 4 EXTRA seed-confirm | corrected | 0.8678 | ✅ |
-| 51 | 06-19 | phase4_extra_ndvi_fastcheck | 0.1 stop-fix validation | corrected | 0.8934 | ✅ gate-neutral confirmed (≈ s42 0.888) |
-| 52 | 06-20 | aug_ref | 3A aug control | corrected | 0.8661 | ✅ control |
-| 53 | 06-20 | aug_p0_geom_only | 3A photometric-off | corrected | 0.7936 | ✅ −0.072 → photometric aug helps a lot |
-| 54 | 06-20 | aug_p1_no_clahe | 3A drop CLAHE | corrected | 0.8541 | ✅ −0.012 (within noise) |
-| 55 | 06-20 | **aug_scale_off** | 3B RandomScale off | corrected | **0.8862** | ✅ +0.020 → best aug arm |
-| 56 | 06-20 | aug_p3_photo_x15 | 3A photometric ×1.5 | corrected | 0.8658 | ✅ ≈ ref (no extra gain) |
-| 57 | 06-20 | aug_pad_ignore | 3B pad-ignore fix (fill_mask) | corrected | 0.8527 | ✅ −0.013 → pad fix ≠ the lever; downscale itself hurts |
-| 58 | 06-20 | aug_ref_seed43 / seed44 | 3A aug-control seed-confirm | corrected | 0.8468 / 0.8808 | ✅ ref 3-seed mean 0.865 |
-| 59 | 06-20 | **aug_scale_off_seed43 / seed44** | 3B drop-RandomScale confirm | corrected | 0.8673 / 0.8892 | ✅ **mean 0.881, +0.016 vs ref, 3/3 seeds → LOCKED drop** |
-| 60 | 06-20 | phase4_extra_ndvi_seproto_seed43 / 44 | channel-sel ndvi+se_proto | corrected | 0.8988 / 0.8966 | ✅ mean 0.898 ≈ NDVI-alone (no gain) |
-| 61 | 06-20 | phase4_extra_ndvi_sepca_seed43 / 44 | channel-sel ndvi+se_pca | corrected | 0.8949 / 0.9088 | ✅ mean 0.900 ≈ NDVI-alone (no gain) |
-| 62 | 06-21 | phase4_extra_ndvi_nbr | greedy round-1 ndvi+nbr | corrected | 0.8559 | ✅ < NDVI-alone (no add) |
-| 63 | 06-21 | phase4_extra_ndvi_tc | greedy round-1 ndvi+tc | corrected | 0.8996 | ✅ ≈ NDVI-alone (no add) |
-| 64 | 06-20 | **deploy_v1_ndvi_seed42/43/44** | **I: final-lock 3-seed (v2 recipe)** | corrected | **0.9144 / 0.9068 / 0.9156** | ✅ mean **0.9123** (spread 0.907–0.916; +0.014 over NDVI-alone 0.8985 → boundary+aug additive) — **v2 reference baseline** |
-| 65 | 06-21 | phase4_f1_full | D: F1 smart-stem-init fusion (8-band) | corrected | 0.8904 | ✅ ≈ NDVI-alone 0.8985 (no gain over F0) |
-| 66 | 06-21 | phase4_f1_ndvi_seproto | D: F1 fusion (ndvi+se_proto) | corrected | 0.8921 | ✅ ≈ NDVI-alone (no gain) |
-| 67 | 06-21 | phase4_f2_full | D: F2 channel-attention (8-band) | corrected | 0.8268 | ✅ collapses — channel-attn hurts on 8-band |
-| 68 | 06-21 | phase4_f2_ndvi_seproto | D: F2 channel-attention (pair) | corrected | 0.8891 | ✅ < NDVI-alone |
-| 69 | 06-21 | phase4_f3_full | D: F3 dual-encoder late fusion (8-band) | corrected | 0.8184 | ✅ losing — ≪ NDVI-alone |
-| 70 | 06-21 | phase4_f5_full | D: F5 residual cross-modal attn (8-band) | corrected | 0.8480 | ✅ losing — ≪ NDVI-alone |
-| 71 | 06-21 | phase4_f5_ndvi_seproto | D: F5 cross-modal attn (pair) | corrected | 0.8544 | ✅ losing — heavy fusion (F3/F5) extracts LESS than the F0 stack |
-| 72 | 06-21 | phase_lock_ndvi_bd_curric | I: early lock attempt (NDVI+boundary+curriculum) | corrected | 0.9063 | ✅ superseded by deploy_v1 (#64) after curriculum rejected |
-| 73 | 06-21 | effb3_deploy | E: EffB3 capacity-down probe | corrected | 0.9050 | ✅ Δ−0.0073 vs EffB5 0.9123 → no-win (capacity isn't the lever; B3 a cheaper fallback) |
-| 74 | 06-21 | aug_copypaste_deploy | F: copy-paste screen | corrected | 0.8930 | ✅ Δ−0.0193 → worst aug arm (instance-paste breaks spatial-context/shadow cues) |
-| 75 | 06-21 | aug_mosaic_deploy | F: mosaic screen | corrected | 0.9069 | ✅ Δ−0.0054 → no-win |
-| 76 | 06-21 | aug_cutmix_deploy | F: cutmix screen | corrected | 0.9014 | ✅ Δ−0.0109 → no-win |
-| 77 | 06-22 | aug_mixup_deploy | F: mixup screen | corrected | 0.9028 | ✅ Δ−0.0095 → no-win — **mixing-aug family 4/4 struck out** |
-| 78 | 06-22 | phase4_fm_dinov3_rgb | E: web-DINOv3 ViT-B RGB-only (z-score norm) | corrected | 0.8734 | ✅ beats EffB5-RGB 0.830 (+0.043) — but RGB-only |
-| 79 | 06-22 | fm_dinov3_rgb_imagenet | E control: web-DINOv3 RGB + native ImageNet norm | corrected | 0.8923 | ✅ norm de-confound: ImageNet-norm 0.892 > z-score 0.873; still ≪ sat ViT-L |
-| 80 | 06-22 | **phase4_fm_dinov3_ndvi** | D/E: web-DINOv3 ViT-B + NDVI (fair foundation test) | corrected | **0.9121** | ✅ **ties EffB5+NDVI 0.9123 (Δ−0.0002)** — the web-DINOv3 RGB edge VANISHES once NDVI is added → generic foundation is NOT the lever |
-| 81 | 06-22 | aug_randaugment_deploy | F: RandAugment (shadow-safe pool) | corrected | 0.9089 | ✅ Δ−0.0034 → no-win |
-| 82 | 06-22 | **aug_trivialaugment_deploy** (+seed43/44) | F: TrivialAugment (shadow-safe pool), 3-seed | corrected | **0.9167 / 0.9216 / 0.9270** | 🔒 **LOCKED** (user call 2026-06-24) — mean **0.9218**, sign-consistent 3/3 > deploy. Mean Δ+0.0095 is a hair under G=0.0112, but locked on judgment: a parameter-free auto-policy that **replaces** the hand-tuned color stage is more elegant + lighter, and the gain is consistent. **This becomes the v2 color stage → EffB5 recipe 3-seed rises 0.9123→0.9218.** Confirm on the chosen encoder at final lock. |
-| 83 | 06-22 | aug_anneal_deploy (+seed43/44) | F: aug-strength annealing, 3-seed | corrected | 0.9074 / 0.9192 / 0.9204 | ✅ **mean 0.9157**, Δ+0.0034 sub-gate → no-win |
-| 84 | 06-22 | fm_sam2_rgb | E: SAM2/Hiera foundation encoder, RGB-only | corrected | **0.5558** | ✅ non-competitive (≪ EffB5-RGB 0.830) — Hiera features weak for RTS |
-| 85 | 06-22 | ❌ fm_dinov3sat_7b_frozen | E: satellite-DINOv3 7B frozen linear-probe | corrected | 0.4747 | ❌ **killed** — diverged (constant frozen_lr, no anneal) + non-competitive; frozen sat-7B needs fine-tuning |
-| 86 | 06-22 | ⚠ **fm_dinov3sat_l_rgb** (+seed43/44) | E: satellite-DINOv3 ViT-L (SAT-493M) RGB, 3-seed | corrected | **0.9200 / 0.9195 / 0.9003** | ⚠ **mean 0.9133 ≈ EffB5+NDVI 0.9123 (TIE on PR-AUC)** — NOT a "+0.020 breakout" (0.932 was a single-epoch raw peak, not best_smoothed). ⚠ NOT on the locked recipe — see caveat ↓ |
-| 87 | 06-22 | ⚠ **fm_dinov3sat_l_ndvi** (+seed43/44) | E: satellite-DINOv3 ViT-L + NDVI, 3-seed | corrected | **0.9234 / 0.9199 / 0.9150** | ⚠ **mean 0.9194, Δ+0.0071 vs EffB5 (sub-gate near-miss)**. OBJECT-level gains (clean same-boundary: pixel-IoU 0.64 vs 0.51 = +0.13, obj-F1 0.56 vs 0.49 = +0.07) — but ⚠ PR-AUC **confounded**, see caveat ↓. seed42 ckpt lost to resume-clobber → retraining (#88) |
-| 88 | 06-24 | ❌ fm_dinov3sat_l_ndvi_seed42_rerun | E: re-train lost +NDVI seed42 (old recipe) | corrected | killed | superseded by #90 — it reproduced the old phase0c recipe (didn't fix the confound), so killed in favor of the fair-recipe run |
-| 90 | 06-24 | 🔵 **fm_dinov3sat_l_ndvi_locked** (+seed43/44) | E: **FAIR sat-DINOv3 + NDVI on the LOCKED recipe**, 3-seed | corrected | 🔵 running (GPU 0/1/2) | sat encoder + NDVI + **ignore_w2 + drop-RandomScale + TrivialAugment** (same val labels as EffB5 deploy) → the clean apples-to-apples encoder test. Gate vs EffB5 recipe **0.9218**. Foundation LR/freeze kept. |
-| 89 | 06-22 | ablation_noignore_ndvi_seed42/43/44 | C: ignore-region ablation (train-only, no manual ignore) | corrected | **0.8727 / 0.9214 / 0.9012** | ✅ **COMPLETED** — mean 0.8984, Δ−0.0139 vs deploy → ignore regions help (directional; caveat: positives overwrite ignore, so not a clean counterfactual) |
-
-> ⚠️ **Encoder-comparison caveat (fairness + val-scoring confound) — the sat-DINOv3 verdict is NOT yet a clean A/B.**
-> The sat-DINOv3 runs (#86/#87/#88) inherit `phase0c_seed42` → **`boundary_handling: none` + RandomScale ON**,
-> whereas the EffB5 `deploy_v1` baseline (#64) uses **boundary `ignore_w2` + RandomScale OFF** (the two locked
-> recipe wins, ~+0.017 together). Because `boundary_handling` is applied to the **val** dataset
-> (`scripts/train.py:265`), the two are scored on *different val labels* (deploy excludes a 2 px RTS-boundary
-> band; sat scores every boundary pixel) — so neither the PR-AUC nor the IoU/obj-F1 numbers are a clean
-> head-to-head. Direction: deploy is scored on the *easier* (boundary-excluded) labels and sat still wins on
-> objects → sat's edge is **understated**, not inflated. **A fair verdict requires re-running sat-DINOv3 on the
-> locked recipe** (ignore_w2 + drop-RandomScale + base_v2_fast). All sat PR-AUC values above are `best_smoothed`
-> (the ledger SSoT); the earlier 0.932/0.927 figures were single-epoch raw peaks and have been corrected.
+**Lock policy:** a change is locked only if a 3-seed confirm shows **mean Δ ≥ G** *and*
+**sign-consistency across all 3 seeds** (G alone is a single-seed *screen*). Sign-consistency is the
+decisive test — it separated drop-RandomScale (+0.016, 3/3 → locked) from curriculum r20_pf33 (+0.006,
+sign-flipped → rejected).
+<!-- GATE:END -->
 
 ---
 
-## v2 Final Recipe (locked) + net gains
+<!-- RUN-TABLE:BEGIN — `score` is harvested by scripts/sync_experiments.py; do not hand-edit that column. One run-dir name per row. -->
+## Master run table
 
-**Locked components** (evidence = master rows):
+| name | fam | split | score | status | note |
+|------|:---:|:-----:|------:|:------:|------|
+| phase0a_arm_a | A | leaky | 0.6666 | done | norm arm A (per-dataset z-score) — LOCKED |
+| phase0a_arm_b | A | leaky | 0.6261 | done | norm arm B (x255+ImageNet) |
+| phase0a_arm_c | A | leaky | 0.6697 | done | norm arm C (x255-only) |
+| phase0b_lr_frozen | A | leaky | 0.0008 | degenerate | LR probe (frozen) |
+| phase0b_lr_unfrozen | A | leaky | — | crashed | LR probe (unfrozen) — diverged |
+| phase0c_seed42 | A | leaky | 0.7899 | done | 3-seed baseline → μ₀=0.7912, σ₀=0.0056, G=0.0112 |
+| phase0c_seed43 | A | leaky | 0.7863 | done | 3-seed baseline |
+| phase0c_seed44 | A | leaky | 0.7973 | done | 3-seed baseline |
+| phase2_scale_25 | B | leaky | 0.7636 | done | data-scale 25% |
+| phase2_scale_50 | B | leaky | 0.7720 | done | data-scale 50% |
+| phase2_scale_75 | B | leaky | 0.7916 | done | data-scale 75% → plateau (slope flat) |
+| phase3_loss_compound_1to1 | C | leaky | 0.7878 | done | loss sweep |
+| phase3_loss_compound_2to1 | C | leaky | 0.7933 | done | loss sweep |
+| phase3_loss_compound_1to2 | C | leaky | 0.7998 | done | near-miss (Δ<G) → carried to boundary factorial |
+| phase3_loss_compound_1to2_seed43 | C | leaky | 0.7872 | done | seed-confirm |
+| phase3_loss_tversky_3to7 | C | leaky | 0.5902 | done | Tversky 3:7 |
+| phase3_loss_tversky_2to8 | C | leaky | 0.0729 | collapsed | Tversky 2:8 collapse |
+| phase3_bd_focal_ignore_w1 | C | leaky | 0.7872 | done | boundary factorial |
+| phase3_bd_focal_ignore_w2 | C | leaky | 0.8046 | done | **boundary winner → LOCKED (focal·ignore_w2)** |
+| phase3_bd_focal_ignore_w2_seed43 | C | leaky | 0.8200 | done | seed-confirm |
+| phase3_bd_focal_ignore_w2_seed44 | C | leaky | 0.8054 | done | seed-confirm |
+| phase3_bd_focal_ignore_w3 | C | leaky | 0.7973 | done | boundary factorial |
+| phase3_bd_compound_1to2_ignore_w1 | C | leaky | 0.7996 | done | boundary factorial |
+| phase3_bd_compound_1to2_ignore_w2 | C | leaky | 0.8003 | done | boundary factorial |
+| phase3_bd_compound_1to2_ignore_w3 | C | leaky | 0.8025 | done | close runner-up |
+| phase3_bd_compound_1to2_ignore_w3_seed43 | C | leaky | 0.8170 | done | seed-confirm |
+| phase3_bd_compound_1to2_ignore_w3_seed44 | C | leaky | 0.8153 | done | seed-confirm |
+| ablation_noignore_ndvi_seed42 | C | corrected | 0.8727 | done | ignore-region ablation (train-only) — ignore helps |
+| ablation_noignore_ndvi_seed43 | C | corrected | 0.9214 | done | seed-confirm |
+| ablation_noignore_ndvi_seed44 | C | corrected | 0.9012 | done | seed-confirm (mean 0.8984, Δ−0.014 vs deploy) |
+| phase4_extra_rgb_baseline | D | corrected | 0.8297 | done | **RGB control (corrected-split anchor 0.830)** |
+| phase4_extra_ndvi | D | corrected | 0.8879 | done | **best single channel; 3-seed mean 0.8985** |
+| phase4_extra_ndvi_seed43 | D | corrected | 0.8965 | done | seed-confirm |
+| phase4_extra_ndvi_seed44 | D | corrected | 0.9111 | done | seed-confirm |
+| phase4_extra_ndvi_fastcheck | D | corrected | 0.8934 | done | base_v2_fast stop-fix validation (gate-neutral) |
+| phase4_extra_full | D | corrected | 0.8763 | done | full 8-band ≈ NDVI-alone |
+| phase4_extra_full_seed43 | D | corrected | 0.8619 | done | seed-confirm |
+| phase4_extra_full_seed44 | D | corrected | 0.8678 | done | seed-confirm |
+| phase4_extra_nbr | D | corrected | 0.8469 | done | single-group NBR |
+| phase4_extra_tc | D | corrected | 0.8683 | done | single-group tasseled-cap |
+| phase4_extra_se_pca | D | corrected | 0.8736 | done | single-group SE-PCA |
+| phase4_extra_se_pca_seed43 | D | corrected | 0.8571 | done | seed-confirm |
+| phase4_extra_se_proto | D | corrected | 0.8468 | done | single-group SE-prototype |
+| phase4_extra_ndvi_nbr | D | corrected | 0.8559 | done | greedy round-1 NDVI+NBR (no add) |
+| phase4_extra_ndvi_tc | D | corrected | 0.8996 | done | greedy round-1 NDVI+TC (no add) |
+| phase4_extra_ndvi_sepca | D | corrected | 0.8963 | done | NDVI+SE-PCA |
+| phase4_extra_ndvi_sepca_seed43 | D | corrected | 0.8949 | done | seed-confirm |
+| phase4_extra_ndvi_sepca_seed44 | D | corrected | 0.9088 | done | seed-confirm (mean 0.900 ≈ NDVI-alone) |
+| phase4_extra_ndvi_seproto | D | corrected | 0.8984 | done | NDVI+SE-proto |
+| phase4_extra_ndvi_seproto_seed43 | D | corrected | 0.8988 | done | seed-confirm |
+| phase4_extra_ndvi_seproto_seed44 | D | corrected | 0.8966 | done | seed-confirm (mean 0.898 ≈ NDVI-alone) |
+| phase4_f1_full | D | corrected | 0.8903 | done | F1 smart-stem-init (8-band) ≈ NDVI-alone |
+| phase4_f1_ndvi_seproto | D | corrected | 0.8921 | done | F1 (pair) ≈ NDVI-alone |
+| phase4_f2_full | D | corrected | 0.8268 | done | F2 channel-attn collapses on 8-band |
+| phase4_f2_ndvi_seproto | D | corrected | 0.8891 | done | F2 (pair) < NDVI-alone |
+| phase4_f3_full | D | corrected | 0.8184 | done | F3 dual-encoder late fusion — loses to F0 |
+| phase4_f5_full | D | corrected | 0.8480 | done | F5 residual cross-modal attn (JSTARS) — loses to F0 |
+| phase4_f5_ndvi_seproto | D | corrected | 0.8544 | done | F5 (pair) — loses to F0 |
+| phase5_arch_fpn | E | leaky | 0.7939 | done | decoder sweep — ties UNet++ |
+| phase5_arch_deeplabv3plus | E | leaky | 0.7878 | done | decoder sweep |
+| phase5_arch_pspnet | E | leaky | 0.7288 | done | decoder sweep |
+| phase5_arch_manet | E | leaky | 0.6213 | done | decoder sweep (worst) |
+| effb3_deploy | E | corrected | 0.9050 | done | capacity-down probe — no-win (cheaper fallback) |
+| phase4_fm_dinov3_rgb | E | corrected | 0.8734 | done | web-DINOv3 ViT-B RGB (z-score norm) |
+| phase4_fm_dinov3_rgb_lrtest | E | corrected | — | lr-test | LR range test |
+| fm_dinov3_rgb_imagenet | E | corrected | 0.8923 | done | web-DINOv3 RGB + ImageNet norm (de-confound) |
+| phase4_fm_dinov3_ndvi | E | corrected | 0.9121 | done | web-DINOv3+NDVI **ties EffB5** → generic FM not the lever |
+| fm_sam2_rgb | E | corrected | 0.5558 | done | SAM2/Hiera — non-competitive |
+| fm_dinov3sat_7b_frozen | E | corrected | 0.4747 | killed | sat-7B frozen — diverged, non-competitive |
+| fm_dinov3sat_l_rgb | E | corrected | 0.9200 | done | sat-DINOv3 ViT-L RGB, 3-seed |
+| fm_dinov3sat_l_rgb_seed43 | E | corrected | 0.9195 | done | seed-confirm |
+| fm_dinov3sat_l_rgb_seed44 | E | corrected | 0.9003 | done | seed-confirm (mean 0.9133 ≈ EffB5) |
+| fm_dinov3sat_l_ndvi | E | corrected | 0.9234 | done | sat-DINOv3 ViT-L +NDVI, seed42 (**off-recipe — confounded**) |
+| fm_dinov3sat_l_ndvi_seed43 | E | corrected | 0.9199 | done | seed-confirm |
+| fm_dinov3sat_l_ndvi_seed44 | E | corrected | 0.9150 | done | seed-confirm (mean 0.9194, Δ+0.0071 sub-gate) |
+| fm_dinov3sat_l_ndvi_seed42_rerun | E | corrected | — | crashed | off-recipe rerun (superseded by _locked) |
+| fm_dinov3sat_l_ndvi_locked | E | corrected | 0.7923 | incomplete | **FAIR sat re-run (locked recipe) — killed ~ep30, NOT a verdict** |
+| fm_dinov3sat_l_ndvi_locked_seed43 | E | corrected | 0.6322 | incomplete | killed mid-training |
+| fm_dinov3sat_l_ndvi_locked_seed44 | E | corrected | 0.8138 | incomplete | killed mid-training |
+| aug_ref | F | corrected | 0.8661 | done | aug control |
+| aug_ref_seed43 | F | corrected | 0.8468 | done | seed-confirm |
+| aug_ref_seed44 | F | corrected | 0.8808 | done | seed-confirm (ref mean 0.865) |
+| aug_p0_geom_only | F | corrected | 0.7936 | done | geometric-only → photometric matters (−0.072) |
+| aug_p1_no_clahe | F | corrected | 0.8541 | done | drop CLAHE (−0.012, within noise) |
+| aug_p3_photo_x15 | F | corrected | 0.8658 | done | photometric ×1.5 ≈ ref (no gain) |
+| aug_pad_ignore | F | corrected | 0.8527 | done | pad-ignore fix — downscale itself hurts, not the pad |
+| aug_scale_off | F | corrected | 0.8862 | done | **drop RandomScale → LOCKED (+0.016, 3/3)** |
+| aug_scale_off_seed43 | F | corrected | 0.8673 | done | seed-confirm |
+| aug_scale_off_seed44 | F | corrected | 0.8892 | done | seed-confirm (mean 0.881) |
+| aug_copypaste_deploy | F | corrected | 0.8930 | done | mixing aug — worst (breaks shadow/context cues) |
+| aug_mosaic_deploy | F | corrected | 0.9069 | done | mixing aug — no-win |
+| aug_cutmix_deploy | F | corrected | 0.9014 | done | mixing aug — no-win |
+| aug_mixup_deploy | F | corrected | 0.9028 | done | mixing aug — no-win (family 4/4 struck out) |
+| aug_randaugment_deploy | F | corrected | 0.9089 | done | shadow-safe pool — no-win (−0.0034) |
+| aug_trivialaugment_deploy | F | corrected | 0.9167 | done | **TrivialAugment → LOCKED color stage (3-seed mean 0.9218)** |
+| aug_trivialaugment_deploy_seed43 | F | corrected | 0.9216 | done | seed-confirm |
+| aug_trivialaugment_deploy_seed44 | F | corrected | 0.9270 | done | seed-confirm |
+| aug_anneal_deploy | F | corrected | 0.9074 | done | aug-strength annealing — no-win |
+| aug_anneal_deploy_seed43 | F | corrected | 0.9192 | done | seed-confirm |
+| aug_anneal_deploy_seed44 | F | corrected | 0.9204 | done | seed-confirm (mean 0.9157, Δ+0.0034 sub-gate) |
+| phase10_curric_base | G | corrected | 0.8786 | done | curriculum control |
+| phase10_curric_r20_pf33 | G | corrected | 0.8945 | done | best cell — but seed-confirm = noise → rejected |
+| phase10_curric_r20_pf33_seed43 | G | corrected | 0.9013 | done | seed-confirm |
+| phase10_curric_r20_pf33_seed44 | G | corrected | 0.8587 | done | seed-confirm (sign-flipped → noise) |
+| phase10_curric_r30_pf33 | G | corrected | 0.8528 | done | curriculum cell |
+| phase10_curric_r30_pf50 | G | corrected | 0.8530 | done | curriculum cell |
+| phase_lock_ndvi_bd_curric | I | corrected | 0.9063 | done | early lock attempt — superseded by deploy_v1 |
+| deploy_v1_ndvi_seed42 | I | corrected | 0.9144 | done | **final-lock 3-seed (v2 recipe) — reference baseline** |
+| deploy_v1_ndvi_seed43 | I | corrected | 0.9068 | done | final-lock 3-seed |
+| deploy_v1_ndvi_seed44 | I | corrected | 0.9156 | done | final-lock 3-seed (mean 0.9123) |<!-- RUN-TABLE:END -->
+
+---
+
+<!-- RECIPE-TABLE:BEGIN -->
+## v2 final recipe (locked)
 
 | Component | Locked choice | Fam | Evidence |
-|---|---|---|---|
-| Channels | RGB + **NDVI** (4-ch), F0 early channel-stack | D | NDVI 0.8985 ≫ RGB 0.830; greedy adds nothing; F1/F2 tie, F3/F5 lose (#35, #60–71) |
-| Normalization | per-dataset z-score (Arm A) | A | Arm A vs B/C (#3–5) |
-| Decoder | **UNet++** (dense skips) | E | **decoders WERE swept:** UNet++ ≥ FPN (0.794 tie) > DeepLabV3+ (0.788) > PSPNet (0.729) ≫ MAnet (0.621) — none beats it (#24, #25, #30, #31) |
-| Encoder | ⏳ **PENDING** — EffB5 (validated) vs sat-DINOv3 ViT-L (leading, needs fair re-run) | E | #82 vs #86/#87 |
-| Loss + boundary | focal + **ignore_w2** | C | boundary factorial, seed-confirmed (#17–29) |
-| Sampling | default balanced (no curriculum) | G | curriculum rejected, sign-flipped (#41/#44/#45) |
-| Augmentation | geometric + **TrivialAugment** (auto-policy) **− RandomScale** | F | drop-scale +0.016 3/3 (#59); TrivialAugment 0.9218 locked (#82) |
+|---|---|:---:|---|
+| Channels | RGB + **NDVI** (4-ch), F0 early channel-stack | D | NDVI 0.8985 ≫ RGB 0.830; greedy adds nothing; F1/F2 tie, F3/F5 lose |
+| Normalization | per-dataset z-score (Arm A) | A | Arm A > B/C |
+| Decoder | **UNet++** (dense skips) | E | UNet++ ≥ FPN > DeepLabV3+ > PSPNet ≫ MAnet — none beats it |
+| Encoder | ⏳ **PENDING** — EffB5 (validated) vs sat-DINOv3 ViT-L (leading; fair re-run incomplete) | E | EffB5 0.9123 vs sat off-recipe 0.9194 |
+| Loss + boundary | focal + **ignore_w2** | C | boundary factorial, seed-confirmed |
+| Sampling | default balanced (no curriculum) | G | curriculum rejected (sign-flipped) |
+| Augmentation | geometric + **TrivialAugment** − **RandomScale** | F | drop-scale +0.016 3/3; TrivialAugment 0.9218 |
 
-**Training schedule** (for *reproducing training*, NOT a deploy/inference parameter): `base_v2_fast` — early-stop
-patience 5, start_epoch 45, max_epochs 120; bf16; seeds 42/43/44; deterministic.
+**Training schedule** (reproduce-training only, not a deploy param): `base_v2_fast` — patience 5,
+start_epoch 45, max_epochs 120; bf16; seeds 42/43/44; deterministic.
 
-**Deploy/inference config** (the shipped artifact + how the map is produced — `configs/deployment.yaml`):
-threshold + temperature + TTA ⏳ *(set by H calibration, still null)*; **stride 344 px** (~33% overlap, §4.2);
-**overlap fusion = distance-from-tile-center Gaussian, σ=128 px** — when several overlapping tiles predict the
-same ground pixel, each tile's vote is weighted by an edge-zeroed Gaussian of width σ=128 px in tile coords, so
-center predictions (more context, more reliable) dominate and tile seams fade in continuously instead of
-stepping (inference.md §4.3); NDVI windowed on-the-fly from the S2 composites (§3.3).
+**Deploy/inference** (`configs/deployment.yaml`): threshold + temperature + TTA ⏳ *(set by H
+calibration, still null)*; stride 344 px (~33% overlap); overlap fusion = distance-from-center Gaussian
+σ=128 px; NDVI windowed on-the-fly from S2 composites (inference.md §3.3/§4.3).
+<!-- RECIPE-TABLE:END -->
 
-**Recipe build-up — PR-AUC (`best_smoothed`, 3-seed) + net gain vs the RGB baseline 0.830:**
+<!-- BUILDUP-TABLE:BEGIN -->
+## Recipe build-up (PR-AUC, `best_smoothed`, 3-seed)
 
 | Step (cumulative) | PR-AUC | Δ step | Δ vs baseline |
-|---|---|------:|------:|
+|---|---:|---:|---:|
 | RGB baseline | 0.830 | — | — |
-| + NDVI | 0.8985 | **+0.069** | +0.069 |
+| + NDVI | 0.8985 | +0.069 | +0.069 |
 | + boundary ignore_w2 + drop-RandomScale (= deploy_v1) | 0.9123 | +0.014 | +0.082 |
-| + TrivialAugment (current EffB5 recipe) | **0.9218** | +0.0095 | **+0.092** |
+| + TrivialAugment (current EffB5 recipe) | 0.9218 | +0.0095 | +0.092 |
 | + sat-DINOv3 encoder | *pending fair re-run* | — | — |
+<!-- BUILDUP-TABLE:END -->
 
-> **Why obj-F1 / pixel-IoU are NOT shown as a build-up column (honesty note):** they're logged per-epoch but
-> the recipe *changes the boundary treatment mid-build-up* (Phase-4 NDVI/RGB runs use `boundary: none`; the
-> deploy recipe uses `ignore_w2`), and `boundary_handling` is applied to the **val** labels — so obj-F1/IoU
-> move non-monotonically across the build-up for a *measurement* reason, not a real one. The one clean,
-> same-treatment comparison (both `boundary: none`, +NDVI) is the **encoder** (3-seed mean at best epoch):
+---
 
-| Encoder (+NDVI, boundary none) | pixel-IoU | obj-F1 |
-|---|------:|------:|
+<!-- FINDINGS:BEGIN -->
+## Findings (per family)
+
+**A — Baseline & gate.** A reproducible 3-seed baseline (μ₀=0.7912, σ₀=0.0056) sets the winner gate
+G=0.0112. Re-measured on the corrected split, σ≈0.012 (~2×) → every lock needs mean Δ≥G **and** 3-seed
+sign-consistency. Normalization Arm A (per-dataset z-score) locked.
+
+**B — Data scaling.** More labeled data is **not** the near-term lever: v1.0 is on a data plateau
+(25→100%: 0.764→0.792, flat slope) and the model is well-matched to its data (train/val IoU gap
+0.05/0.17 ≪ 0.4). No new labels are coming → squeeze the fixed ~1.5k positives via representation, not
+volume. This is the central diagnosis: **representation-limited, not data-volume- or capacity-limited.**
+
+**C — Loss & boundary.** The win is the **boundary treatment, not the loss.** Focal alone is the loss
+winner; precision-skewed Tversky collapses (2:8 → 0.073). Adding a boundary-ignore band clears the gate
+— **focal·ignore_w2 0.8046** (seed-confirmed 0.805–0.820), tied with compound 1:2·ignore_w3
+(0.802–0.817); focal·w2 chosen for simplicity. The ignore-region ablation (train-only) confirms ignore
+helps (mean 0.8984, Δ−0.014 vs deploy; caveat: positives overwrite ignore, so not a clean counterfactual).
+
+**D — Channels & fusion.** A single well-chosen channel (**NDVI**) is the biggest representation win,
+and more is not better. NDVI-alone 3-seed **0.8985 ≫ RGB 0.830** (+0.07, ≫σ) and > full 8-band (0.869).
+Greedy forward from NDVI adds nothing (+SE-PCA 0.900, +TC 0.900, +SE-proto 0.898, +NBR 0.856 — none
+clears G). Heavy fusion **loses**: F3-full 0.818, F5-full 0.848, F5-pair 0.854 (all ≪ NDVI-alone; below
+even the F0 stack). **LOCKED: EXTRA=[NDVI], F0 early channel-stack.**
+
+**E — Architecture & encoder (PROVISIONAL — fair re-run incomplete).** Capacity is not the lever; the
+encoder may be. No CNN decoder beats UNet++ (FPN 0.794 ties > DeepLabV3+ 0.788 > PSPNet 0.729 ≫ MAnet
+0.621); EffB3 capacity-down is no-win (0.9050). Generic web-DINOv3+NDVI only **ties** EffB5 (0.9121 vs
+0.9123) → generic foundation is not the lever. The **satellite-pretrained DINOv3 ViT-L** is the most
+promising encoder: off-recipe +NDVI 3-seed **0.9194** vs EffB5 0.9123 (Δ+0.0071, sub-gate near-miss);
+sat-RGB 0.9133 ≈ ties EffB5. The real edge is **object-level** (see table below). **⚠ But the comparison
+is not a clean A/B** — see the caveat. SAM2 (0.556) and sat-7B-frozen (0.475) are non-competitive.
+
+| Encoder (+NDVI, boundary **none**, 3-seed best epoch) | pixel-IoU | obj-F1 |
+|---|---:|---:|
 | EffB5 | 0.51 | 0.49 |
 | sat-DINOv3 ViT-L | **0.64** | **0.56** |
 | Δ (sat − EffB5) | **+0.13** | **+0.07** |
 
-> So sat-DINOv3's object-level edge is **large on IoU, modest on obj-F1** — and still pending the fair
-> locked-recipe re-run. (An earlier "+0.16 obj-F1 / 0.56 vs 0.40" figure mixed boundary treatments and was wrong.)
+> **⚠ Encoder caveat — the sat-DINOv3 verdict is NOT yet clean.** The sat +NDVI runs
+> (`fm_dinov3sat_l_ndvi*`) inherit `phase0c` (**boundary none + RandomScale on**) while EffB5 `deploy_v1`
+> uses the locked **ignore_w2 + drop-RandomScale**. Because `boundary_handling` is applied to the **val**
+> set (`scripts/train.py`), the two are scored on *different val labels* — sat on the harder
+> boundary-included set, so its edge is **understated**, not inflated. The **fair re-run on the locked
+> recipe** (`fm_dinov3sat_l_ndvi_locked*`) was launched but is **INCOMPLETE — killed ~ep30** (0.79/0.63/0.81,
+> still climbing; not a verdict). **A clean encoder A/B still requires finishing that re-run.**
 
-## Working branches & worktrees
+**F — Augmentation.** Not a plateau-breaker, but two cheap wins lock in: **drop RandomScale** (+0.016,
+3/3 seeds) and replace the hand-tuned color stack with **TrivialAugment** (3-seed mean 0.9218, 3/3 >
+deploy; Δ+0.0095 just under G but locked by judgment — a parameter-free auto-policy that's lighter and
+consistent). Photometric aug matters (geometric-only craters to 0.794, −0.072). All other arms fail:
+mixing family 4/4 (copy-paste 0.893 worst, cutmix 0.901, mixup 0.903, mosaic 0.907), RandAugment 0.909,
+aug-anneal 0.916.
 
-**Consolidated to only-`main` (2026-06-24).** The v2 campaign is closed and every branch/worktree above is
-merged: `feat/aug-anneal`, `report/overhaul` (this ledger + `build_report.py` overhaul), and
-`ablation/no-ignore-regions` (label-regen code; ablation itself PAUSED — needs an RTS-truth source) all landed
-on `main`; the aug-anneal worktree was removed and `origin/feat/aug-anneal` deleted. No active worktrees remain.
-The only live training is the **DINOv3+NDVI seed42 retrain** (`fm_dinov3sat_l_ndvi_seed42_rerun`, replacing the
-checkpoint lost to the resume-clobber bug). Forward work tracked in `.claude/plans/elegant-exploring-lemur.md`
-("from now → start of full inference"): Phase C NDVI-at-inference reader is built; Phase D = calibrate +
-solo-vs-ensemble select on Val → Test-Realistic once → package.
+**G — Sampling.** Default balanced sampling is sufficient — the curriculum r20_pf33 "win" (0.894
+single-seed) did not survive seeds (0.894/0.901/0.859, sign-flipped) → rejected as noise.
 
-## Queued / live training
+**H — Calibration & TTA (pending).** Temperature + threshold + D4-TTA held for the final lock; adopt
+D4-TTA if ≥1% PR-AUC at ≤0.5% precision cost. Scale-TTA gated on a scale-transfer test.
 
-**Campaign run-complete (2026-06-24) — queue drained; all GPUs idle except the one retrain below.** Every
-formerly-queued experiment ran (sat-DINOv3 RGB → master #86, +NDVI → #87; TrivialAugment/anneal 3-seed → #82/#83;
-the earlier aug arms → #55–59). The auto-dispatchers (`autolaunch_satconfirm.sh` etc.) have exited.
-
-| Live now | GPU | Notes |
-|----------|-----|-------|
-| **fm_dinov3sat_l_ndvi_locked** (+seed43/44) | 0/1/2 | **Fair sat-DINOv3 + NDVI on the full locked recipe** (ignore_w2 + drop-RandomScale + TrivialAugment) → the clean encoder A/B vs EffB5 deploy 0.9218 (#90). Replaces the killed off-recipe `_rerun`. Peaks ~ep40; feeds the Phase-D encoder decision. |
-
-**Not run (deferred by decision — do NOT gate v2):** Stage-0.2 bootstrap 1:50/1:100 high-ratio metric ·
-Stage-0.3 v1.0 re-stage (+28 pos / −49 black) · MAE SSL · hard-neg mining · the optional C3 ignore_w re-confirm.
+**I — Final lock.** EffB5 v2 recipe (RGB+NDVI · F0 · focal·ignore_w2 · default sampling · aug−RandomScale
+· base_v2_fast) 3-seed **0.9123**; with TrivialAugment **0.9218** (the current EffB5 reference). The
+**sat-DINOv3 encoder is the leading deploy but not yet fairly verified** — the fair re-run must finish on
+this full recipe. Calibration + the one-shot Test-Realistic happen here, on the winning encoder.
+<!-- FINDINGS:END -->
 
 ---
 
-## Program status — planned / in-progress / conditional / dropped + discussed-but-didn't-land
+## Dropped & discussed-but-didn't-land
 
-Model = **v2** (repo RTSmapping_v2); first pan-Arctic map = v2 product; re-stage / hard-neg / MAE → v3+.
-Plan: `.claude/plans/elegant-exploring-lemur.md`. Family scheme (replacing the old §N/Stage-N mix):
-**A** Baseline · **B** Data · **C** Loss/boundary · **D** Channels/fusion · **E** Architecture/encoder ·
-**F** Augmentation · **G** Sampling · **H** Calibration/TTA · **I** Final-lock/Test · **J** Deploy/inference · **K** Deferred.
-
-**✅ Locked:** A (μ₀=0.7912, G=0.0112) · B (data plateau) · C (focal·ignore_w2) · D (**EXTRA=NDVI** + **F0** channel-stack) ·
-F (drop-RandomScale; **TrivialAugment color stage** — parameter-free auto-policy replacing the hand-tuned photometric ops, locked 2026-06-24) · G (default sampling). Infra: `base_v2_fast` stop-fix · gate policy (mean Δ≥G **and** 3-seed sign-consistency).
-
-**🟡 Encoder result (E) — PROVISIONAL, needs a fair re-run:** decoders all lose to UNet++ and EffB3 capacity-down is no-win; the satellite-pretrained ViT-L is the most promising encoder but **the verdict is not yet clean.** `best_smoothed`: sat-DINOv3 ViT-L + NDVI 3-seed **0.9194** (0.9234/0.9199/0.9150) vs EffB5+NDVI **0.9123** → **+0.0071, sub-gate near-miss on PR-AUC**; sat-RGB **0.9133** ≈ ties EffB5. The differentiator is **object-level** (clean same-boundary +NDVI: pixel-IoU 0.64 vs 0.51 = +0.13, obj-F1 0.56 vs 0.49 = +0.07). **⚠ Confound:** the sat runs use `phase0c` (boundary none + RandomScale on) vs EffB5 deploy's locked ignore_w2 + drop-RandomScale, and `boundary_handling` touches the **val** labels → not a clean A/B (sat's edge is *understated*, scored on harder labels). **Fair verdict requires re-running sat-DINOv3 on the locked recipe.** Generic web-DINOv3+NDVI only ties EffB5 (0.9121); SAM2 0.556 + 7B-frozen 0.475 non-competitive. User opted to **include NDVI**; solo-vs-ensemble decided on Val at the final lock (I, pending). **PRs #42 (sat encoder) + #26 (S2/EXTRA doc) merged.**
-
-**🔵 Live:** only **fm_dinov3sat_l_ndvi_seed42_rerun** (GPU0) — restoring the +NDVI seed42 checkpoint lost to the resume-clobber bug (reproduces the old `phase0c` recipe; does not fix the confound). Everything else is run-complete.
-
-**✅ Screens all landed (`best_smoothed` vs deploy 0.9123):** EffB3 0.9050 · copy-paste 0.8930 · mosaic 0.9069 · cutmix 0.9014 · mixup 0.9028 (**mixing-aug family 4/4 struck out**) · aug-anneal 3-seed mean 0.9157 (Δ+0.0034) · RandAugment 0.9089 (Δ−0.0034) · **TrivialAugment 3-seed mean 0.9218 → 🔒 LOCKED**. The strict lock rule (mean Δ≥G AND sign-consistency) was a near-miss (Δ+0.0095 just under G=0.0112, but 3/3 sign-consistent); **locked by user judgment 2026-06-24** — a parameter-free auto-policy that replaces the hand-tuned color stage is more elegant + lighter and the gain is consistent, so it's not numbers-only. It becomes the v2 color stage (EffB5 recipe → 0.9218). SAM2 0.556 + 7B-frozen 0.475 non-competitive.
-
-**⏳ To-do before v2 ship (forward plan `.claude/plans/elegant-exploring-lemur.md`):** finish the seed42 retrain → **Phase D**: H calibration (temp + threshold + D4-TTA) on Val + the RGB/+NDVI/ensemble select → **Test-Realistic once** → package. Phase C NDVI-at-inference reader is **built**. Then Phase E inference infra (quad cache, bucket, fleet) → Phase F pre-flight → full inference.
-
-**⏸️ Conditional (gated on a trigger):** H scale-TTA (scale-transfer test) · J hard-neg mining (post first inference) · K MAE (user-go; end-stage parallel w/ inference) · context-expansion multi-scale (post-inference map review) · val-negative growth (if bootstrap readout becomes decisive) · ensemble (decide at final lock).
-
-**📦 Deferred to v3 (post-v2-ship):** re-stage (+28 pos / −49 black) · hard-negative mining · MAE (if not run in the v2 window).
-
-### ❌ Dropped & 💭 discussed-but-didn't-land (record of what we considered and why it isn't in v2)
 | Idea | Fam | Verdict / why |
-|---|---|---|
-| §6.5 loss×wd×curriculum interaction check | C/F/G | **dropped** (per user) — moot after wd dropped + curriculum rejected + loss locked |
-| wd × aug regularization grid (§6.3) | F | **dropped** — over-parameterization trigger never fired (gap 0.05/0.17 < 0.4); wd=5e-2 untested |
-| Curriculum r20_pf33 | G | **tested → rejected** — within seed noise (0.894/0.901/0.859) |
-| RandomScale downscale aug | F | **tested → dropped** — 3-seed A/B: removing it +0.016 (all seeds) |
-| F2 channel-attention (full 8-band) | D | **tested → collapsed** (0.827) |
-| F3 dual-encoder / F5 cross-modal attn | D | **tested → lose to F0** (≪ NDVI-alone) — heavy fusion extracts less than the stack |
-| Mixing augs: copy-paste / mosaic / cutmix / mixup | F | **tested → no-win** (0.893 / 0.907 / 0.901 / 0.903 vs deploy 0.9123) — copy-paste worst (breaks spatial-context/shadow cues) |
-| EffB3 capacity-down | E | **tested → no-win** (0.9050, Δ−0.007 vs EffB5) — capacity isn't the lever; kept as a cheaper deploy fallback only |
-| RandAugment | F | **tested → no-win** (0.9089, Δ−0.0034 vs deploy) — auto-policy over a shadow-safe pool didn't help |
-| Aug-strength annealing | F | **tested → no-win** (3-seed mean 0.9157, Δ+0.0034 sub-gate; 0.9074/0.9192/0.9204) — strong→mild by ~ep40 didn't clear the gate |
+|---|:---:|---|
+| Curriculum r20_pf33 | G | tested → rejected (within seed noise, sign-flipped) |
+| RandomScale downscale aug | F | tested → dropped (removing it +0.016, all seeds) |
+| Mixing augs (copy-paste / mosaic / cutmix / mixup) | F | tested → no-win (4/4; copy-paste worst) |
+| RandAugment · aug-strength annealing | F | tested → no-win (sub-gate) |
+| F2 channel-attention (8-band) | D | tested → collapsed (0.827) |
+| F3 dual-encoder / F5 cross-modal attn | D | tested → lose to F0 (heavy fusion extracts less than the stack) |
+| EffB3 capacity-down | E | tested → no-win (0.9050); kept as a cheaper deploy fallback only |
+| SAM2 / sat-7B-frozen | E | tested → non-competitive (0.556 / 0.475) |
+| Web-DINOv3 + EXTRA | E | tested → ties EffB5 once NDVI is in → generic FM not the lever |
+| §6.5 loss×wd×curriculum interaction | C/F/G | dropped (moot after wd dropped + curriculum rejected + loss locked) |
+| wd × aug regularization grid | F | dropped (over-parameterization trigger never fired) |
+| SegFormer (mit_b5) · EffB7 · UNet3+ | E | dropped (low value / overfit risk on a plateau / condition unmet) |
+| YOLO / Mask R-CNN | E | rejected (paradigm mismatch) |
+| SAM3 | E | dropped (image incompatible — py3.12/torch2.7) |
+| Re-run Phase 2 on 3500 positives | B | moot (no new labels) |
+| Pseudo-labeling / self-training | K | backup only (confirmation-bias risk) |
+| Soft-label boundary handling | C | deferred (ignore covers annotation noise for v2) |
 
-_(TrivialAugment is **not** dropped — it's **locked** into the v2 recipe (F); see master #82 and the Locked decisions.)_
-| SegFormer (mit_b5) | E | **dropped** — low value on a plateau; foundation is the better transformer bet |
-| EffB7 | E | **dropped** — overfit risk on a plateau (bound-only) |
-| UNet3+ | E | **dropped** — condition unmet (no decoder family moved the gate) |
-| YOLO / instance-seg (Mask R-CNN) | E | **rejected** — paradigm mismatch (coarse proposal-anchored masks) |
-| SAM3 | E | **dropped** — image incompatible (py3.12/torch2.7); SAM2 used instead |
-| DINOv3 + EXTRA (earlier "dropped") | E | **revived** — the earlier drop used an unfair comparison (DINOv3-RGB 0.873 *beat* EffB5-RGB 0.830); now a to-do |
-| Re-run Phase 2 on 3500 positives | B | **moot** — no new labels coming |
-| Pseudo-labeling / self-training | K | **backup only** — confirmation-bias risk; revisit only if representation gains plateau |
-| Soft-label boundary handling | C | **deferred / not implemented** (data.md) — `ignore` covers annotation noise for v2 |
-
----
-
-## Cluster takeaways (best-in-cluster)
-
-- **Loss (Phase 3, leaky):** focal + `ignore_w2` is the boundary winner (0.805, seed-confirmed
-  0.805–0.820). compound_1to2 + `ignore_w3` close runner-up (0.802–0.817). Tversky variants collapse.
-- **Architecture (Phase 5, leaky):** UNet++ baseline (0.790) ≥ FPN (0.794) > DeepLabV3+ (0.788) >
-  PSPNet (0.729) ≫ MANet (0.621). No CNN decoder beats UNet++ → arch stays UNet++/EffB5.
-- **EXTRA channels (Phase 4, corrected):** NDVI-alone (0.888) ≈ full 8-band (0.876) ≈ SE-PCA (0.874)
-  ≫ RGB control (0.830). NBR/SE-proto (+0.017) are weak. → NDVI is the efficient ceiling; the open
-  question (Step 3) is whether a channel **combination** + better **fusion** beats NDVI-alone.
-  **Seed-confirmed (3 seeds, final):** NDVI 0.888 / 0.8965 / 0.9111 → **mean 0.8985, std 0.0095**;
-  full 8-band 0.876 / 0.8619 / 0.8678 → mean 0.869, std 0.007. NDVI beats RGB by ~0.07 (≫ σ) and beats
-  full by ~0.03 → NDVI is a **real, low-variance win** and the **efficient channel**.
-- **🔒 Channel selection — greedy forward from NDVI COMPLETE (F0 early-stack, corrected):** anchor
-  NDVI-alone **0.8985**. All round-1 additions: +se_pca **0.900**, +se_proto **0.898**, +tc **0.900**, +nbr
-  **0.856** — none clears the gate (all ≤ anchor, within σ) → **greedy terminates, no channel added →
-  LOCKED EXTRA = `[NDVI]`** (RGB+NDVI, 4-channel F0 stack).
-- **🔒 Fusion (D) — F0 early channel-stack LOCKED, now evidence-based:** light fusion F0/F1/F2 all tie
-  NDVI-alone; **heavy fusion F3/F5 LOSES** — F3-full 0.818, F5-full 0.848, F5-pair 0.854 (all ≪ 0.8985,
-  below even F0). Dual-encoder / cross-modal attention extract *less* than the simple channel-stack here →
-  the skip-condition is confirmed, not assumed. DINOv3+NDVI (fair encoder test) still to run (family E).
-- **🔒 Final-lock (I) — v2 deploy recipe, 3-seed (EffB5):** RGB+NDVI · F0 · focal·ignore_w2 · default sampling ·
-  aug−RandomScale · base_v2_fast → **0.9144 / 0.9068 / 0.9156 (mean 0.9123, +0.014 over NDVI-alone 0.8985)**.
-  **With TrivialAugment locked (F, 2026-06-24) the color stage changes → EffB5 recipe 3-seed rises to 0.9167 /
-  0.9216 / 0.9270 = 0.9218** (the `aug_trivialaugment_deploy` runs are exactly this recipe). That 0.9218 is the
-  **current EffB5 reference**; the **sat-DINOv3 encoder (E) is the leading deploy but not yet fairly verified**
-  (its runs predate ignore_w2 + drop-RandomScale + TrivialAugment — see the encoder caveat). The fair sat
-  re-run must use this full recipe. Calibration + the one-shot Test-Realistic happen at the final lock on the winner.
-- **Curriculum (Phase 10, corrected):** r20_pf33 best cell single-seed 0.894, **but seed-confirm is
-  high-variance: 0.894 / 0.901 / 0.859 → mean ≈0.885 vs base 0.879 (Δ≈0.006), within std ≈0.021.**
-  The curriculum "win" is **not distinguishable from seed noise** at 3 seeds — treat as unconfirmed.
-- **🔒 Gate vs measured variance (RESOLVED 2026-06-21):** measured corrected-split seed std ranges
-  ~0.007–0.021 (NDVI 0.0095, full 0.007, aug_scale_off 0.012, aug_ref 0.017, curriculum 0.021) → σ_corrected
-  ≈ 0.012, **~2× the leaky σ₀=0.0056** behind G=0.0112. **Policy: keep G=0.0112 as a single-seed SCREEN, but
-  every LOCK requires a 3-seed confirm judged on BOTH (a) mean Δ ≥ G AND (b) sign-consistency across all 3
-  seeds.** Sign-consistency is the decisive test: drop-RandomScale (+0.016 mean, **3/3 positive**) → locked;
-  curriculum r20_pf33 (+0.006 mean, sign **flipped** s44) → rejected as noise. This is the discipline already
-  applied to every second-wave lock; NDVI's ~0.07 margin clears it trivially.
-- **Stop-schedule fix (Stage 0.1, audit 2026-06-19):** all 48 prior runs peaked by ~ep52 then trained a
-  median 40 wasted epochs (41% of GPU-h, overfitting tail), best checkpoint unchanged. New `base_v2_fast`
-  (patience 8→5, start_epoch 101→45, max_epochs 300→120) is **gate-neutral** — validated by `fastcheck`
-  (0.8934 ≈ original NDVI 0.888). ~2× throughput; all second-wave runs inherit it.
-- **Augmentation study (Stage 3A/3B, corrected, single-seed vs control aug_ref 0.866):** **(1) photometric aug
-  matters** — geometric-only craters to 0.794 (−0.072); dropping CLAHE −0.012 and ×1.5 photometric ≈0 (within
-  noise) → keep the current photometric set, don't strengthen it. Consistent with PlanetScope basemap RGB being a
-  CV-optimized visual product. **(2) RandomScale downscale HURTS** — `aug_scale_off` 0.886 (**+0.020, best arm**)
-  > control; and `aug_pad_ignore` (scale on, pad-border bug fixed) 0.853 is *below* the buggy control → the lever
-  is the **downscale aug itself**, not the pad-ignore labeling. **🔒 3-seed A/B confirms it:** aug_scale_off
-  0.886/0.867/0.889 (**mean 0.881**) vs aug_ref 0.866/0.847/0.881 (**mean 0.865**) → **Δ+0.016, positive in all
-  3 seeds** → **DROP RandomScale from the locked recipe** (photometric set + CLAHE kept).
+**Deferred to v3 (K):** v1.0 re-stage (+28 pos / −49 black) · hard-negative mining (post first
+inference) · MAE SSL pretraining (user-go, end-stage). **Conditional:** scale-TTA · ensemble (decided
+at final lock) · context-expansion multi-scale (post-inference map review).

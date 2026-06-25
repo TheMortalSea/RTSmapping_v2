@@ -22,8 +22,10 @@ of truth: always read the relevant doc before implementing (see [CLAUDE.md](CLAU
 ### Project & process
 | Document | Purpose |
 |----------|---------|
-| [CLAUDE.md](CLAUDE.md) | How to work in this repo: rules, structure, technical constraints, code style |
-| [current_working_status.md](current_working_status.md) | Diary & roadmap — live status, key decisions, budget plan, next steps |
+| [CLAUDE.md](CLAUDE.md) | How to work in this repo: rules, structure, technical constraints, code style, the 3-doc update ritual |
+| [docs/experiment_ledger.md](docs/experiment_ledger.md) | **Experiments SSoT** — every run, the locked recipe, per-family findings, dropped ideas (scores auto-harvested) |
+| [current_working_status.md](current_working_status.md) | Project diary — rolling progress (just-completed · now · future); links to the ledger for numbers |
+| [docs/report.html](docs/report.html) | Generated analytical + visual report (build with `scripts/build_report.py`) |
 
 ### Data
 | Document | Purpose |
@@ -74,7 +76,8 @@ This repo follows a single-source-of-truth standard. Where each kind of fact liv
 | MLflow tracking URI | `configs/baseline.yaml:mlflow.tracking_uri` |
 | Core constants — CRS, tile size, label values, seed | [CLAUDE.md](CLAUDE.md) §Technical Constraints |
 | Data disk layout & EXTRA bands | [data/data.md](data/data.md) (§9 for bands) |
-| Status, roadmap, decisions | [current_working_status.md](current_working_status.md) |
+| Status, roadmap, project decisions | [current_working_status.md](current_working_status.md) |
+| Experiments, scores, recipe, findings | [docs/experiment_ledger.md](docs/experiment_ledger.md) |
 | Test inventory | [tests/tests.md](tests/tests.md) |
 | Infra facts — projects, buckets, VMs, regions, budget | [computing/infrastructure.md](computing/infrastructure.md) |
 

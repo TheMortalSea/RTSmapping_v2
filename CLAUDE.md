@@ -107,7 +107,26 @@ This repo follows SSoT standard, if one variable is mentioned multiple places, r
 
 Process and results go in `docs/` as living markdowns. Each major experiment has a single md document (major model version). For each sub-experiment (minor model version) iteration records: design decision, implementation details, results, and analysis on the same md document.
 
-All critical milestone, decision, progress, current status should go to the living document current_working_status.md, this is the diary and roadmap of this project.
+### The three living docs — one SSoT, fixed ownership
+
+Each fact has exactly one home. Do **not** duplicate run scores, the recipe, or verdicts across docs.
+
+| Doc | Owns | Format |
+|-----|------|--------|
+| `docs/experiment_ledger.md` | **experiments SSoT** — run registry, locked recipe, build-up, per-family findings, dropped ideas, gate | hand/agent-edited markdown; the `score` column is machine-harvested |
+| `current_working_status.md` | **project diary** — rolling progress (1 just-completed step · *Now* · all future plans); decisions inline | agent-edited markdown, *Now* overwritten each update |
+| `docs/report.html` | **analytical + visual view** — stats, findings, build-up chart, curves, map overlays | **generated** from the ledger; never hand-edited |
+
+Per-run truth flows: `train.py` → `run_summary.json` (per run dir) → harvested into the ledger's score
+column. The report renders the ledger + reads MLflow metric files; it states no fact the ledger doesn't.
+
+### Update ritual — when a run finishes / a decision lands
+1. `python scripts/sync_experiments.py` — harvest scores into the ledger; review the drift/gap report.
+2. Edit `docs/experiment_ledger.md` — add/flip the run's row; update Findings/Recipe/Build-up/Dropped if a verdict changed.
+3. `python scripts/build_report.py` — regenerate `docs/report.html`.
+4. Project-level only: edit `current_working_status.md` — overwrite the *Now* section, roll the *Just-completed* step.
+
+(`scripts/sync_experiments.py --backfill` is a one-time bootstrap for legacy run dirs lacking a `run_summary.json`.)
 
 ## andrej-karpathy rules
 

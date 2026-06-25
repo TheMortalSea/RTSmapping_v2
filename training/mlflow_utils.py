@@ -178,4 +178,19 @@ def log_run_summary(
 
     path.write_text("\n".join(lines))
     mlflow.log_artifact(str(path))
+
+    # Structured sibling for machine harvest (scripts/sync_experiments.py reads this,
+    # not the markdown). Same data as the table above — no new computation.
+    json_path = tmp_dir / "run_summary.json"
+    summary = {
+        "run_name": cfg["mlflow"].get("run_name", "unnamed"),
+        "experiment_name": cfg["mlflow"]["experiment_name"],
+        "seed": cfg.get("seed"),
+        "precision": cfg["training"].get("precision"),
+        "status": status,
+        "training_duration_s": training_duration_s,
+        **final_metrics,
+    }
+    json_path.write_text(json.dumps(summary, indent=2, default=str))
+    mlflow.log_artifact(str(json_path))
     return path
