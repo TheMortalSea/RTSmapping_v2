@@ -163,10 +163,12 @@ irrelevant). Preemptible-L4 not raised (still 8) → request `PREEMPTIBLE_NVIDIA
 bulk inference pass is run on Spot.
 
 **Live re-check (2026-06-26, Phase-3 pre-flight):** `NVIDIA_L4_GPUS` limit 32 **usage 1**, `CPUS` 480
-usage 52 — confirmed. The **1 L4 in use has no visible instance/reservation/commitment** in the project
-(stale accounting or a resource we can't list) → only **31 schedulable**, so 4× `g2-standard-96` (needs
-32) may fail on the 4th VM. **Default the fleet to 3× `g2-standard-96` (24 L4)**; go to 4 only after the
-phantom L4 clears or a 32→40 grant. Fleet scripts: `create_inference_fleet.sh` (sequential create,
+usage 52 — confirmed. The **1 L4 in use is phantom** — stale GCP quota accounting from the deleted `ml-training-vm` (deleted
+2026-06-24, confirmed 404; no instance/reservation/commitment holds an L4). Quota *usage* has no
+`gcloud` release; it self-clears or needs a GCP support case (limit increases don't reset stale usage).
+Net: only **31 schedulable**, so 4× `g2-standard-96` (needs 32) fails on the 4th VM until it clears.
+**Default the fleet to 3× `g2-standard-96` (24 L4)** (unaffected); go to 4 once the phantom clears (or a
+32→40 grant). The A100 master's 8 workers partly offset the missing 4th VM. Fleet scripts: `create_inference_fleet.sh` (sequential create,
 fail-stop, on-demand) + `inference_fleet_startup.sh` (per-VM worker launch) + `inference_watchdog.sh`
 (auto-stop the L4 fleet on completion; never the A100 master). Validate the startup on ONE VM before the rest.
 
