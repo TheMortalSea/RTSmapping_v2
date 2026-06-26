@@ -129,7 +129,7 @@ sudo docker logs -f <run_name>
 **Notes:**
 - `--shm-size=16g` required — default 64MB causes bus errors with 8 DataLoader workers.
 - `-v ~/RTSmappingDL:/app` mounts the repo so the latest code/configs are used without rebuilding.
-- cv2 patch (`sed -i ...`) is needed until `rts-train:v2` is rebuilt with the pinned `opencv-python-headless<4.11`.
+- cv2 patch (`sed -i ...`) is needed for `rts-train:v2` (predates the baked fix). **The inference image `rts-infer:v1` (built 2026-06-26 from `Dockerfile.train`) is self-contained** — cv2 patch baked, `inference/` included, MLflow 2.22.5 — so the fleet workers need **no** runtime sed/mount/pip.
 - GCS ADC credentials: run `gcloud auth application-default login --no-launch-browser` once on the VM, then mount `~/.config/gcloud/application_default_credentials.json`.
 - MLflow tracking URI is `file:///outputs/mlflow` (in configs); metrics are persisted to `/mnt/outputs/mlflow` on the host.
 

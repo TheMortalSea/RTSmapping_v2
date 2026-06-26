@@ -28,30 +28,28 @@ for inference. Docker `rts-train:v2`. Data in `gs://abrupt_thaw/` + `gs://rts-ma
 ## Rolling progress
 
 ### Just completed
-**Phase −1 — training phase wrapped up (inference-phase prep).** Repo back to clean only-main + pushed.
-Full `pytest` **GREEN (267 passed, 1 skipped)** in Docker: fixed the 2 train-smoke MLflow failures at root
-cause (MLflow 3.x's `set_tracking_uri` leaks `MLFLOW_TRACKING_URI` into `os.environ`, so in-process
-`train.main()` calls cross-contaminated tracking stores → autouse fixture clears it; *not* deferred), and
-removed a stale foundation test. Durable artifacts **backed up to `gs://rts-mapping-v2/RTS_MODEL_V2/`**:
-runs 110/110 parity (slim — no `resume_latest`), calibration + test_realistic + object_operating_point
-(sample restore byte-verified). New SSoT doc `computing/artifact_inventory.md` (artifact→bucket/region map,
-cross-linked from `infrastructure.md §4`); `/mnt/outputs/README.md` rewritten to current reality.
-`deployment.yaml` min_blob → **2000** (first precision-leaning product — a vectorization-stage param that
-does *not* affect the probability COGs). Prior: Phase-D calibration + ensemble deploy decision (ledger H/H.2/J).
+**Phases 1 + 2 — inference orchestration + deployment artifacts built.** Phase 1: the self-balancing
+GCS **shard-claim queue** (`inference/claim.py` atomic claim/heartbeat/done/reclaim, `scripts/shard_tiles.py`
+spatial splitter, `scripts/run_inference_worker.py` one-per-GPU worker) + refactored the inference body into
+`inference/runner.py` (`build_context`/`run_inference`, shared by CLI + worker) + the `scripts/inference_progress.py`
+monitor/watcher (run + S2-export dashboards). Phase 2: built+verified+uploaded the **3 ensemble deployment
+packages** (`gs://rts-mapping-v2-usw1/inference/2025q3_south/packages/seed{42,43,44}`), documented the
+shard-scoped output-bucket layout, and **rebuilt + pushed `rts-infer:v1`** — self-contained (current code incl.
+`inference/`, cv2 baked, MLflow 2.22.5; no runtime sed/mount). 309 tests green across the work. Prior:
+Phase −1 training wrap-up (clean only-main, backups, inventory) + Phase-D deploy decision (ledger H/H.2/J).
 
 <!-- NOW:BEGIN -->
 ### Now
-**Inference phase — building the dual-fleet pan-Arctic pass** (approved plan: 8×A100 master + on-demand
-4× g2-standard-96 L4, auto-balancing GCS shard-claim queue; writes Float32 probability COGs to
-`gs://rts-mapping-v2-usw1/inference/2025q3_south/`, threshold/min_blob applied later at vectorization).
-**Long pole = the 2025_south Sentinel-2 export** (NDVI source): GEE-throttled (task queue full, backing off),
-~51% of 1799 cells, days out — gates launch; everything else builds in parallel. **Buildable now (no S2 dep):**
-Phase 1 shard-claim queue (`scripts/shard_tiles.py`, `inference/claim.py`, `scripts/run_inference_worker.py`
-+ refactor `inference.py` body into `run_inference(...)`, + tests), Phase 2 image rebuild `rts-infer:v1`
-(registry `:v2` has MLflow 3.12 + stale pre-Phase-D code) + 3 per-seed deployment packages + output-bucket
-layout, and the progress monitor/watcher (`scripts/inference_progress.py`). **Master = `a100-8x-train`,
-never stop/rename (A100 scarcity).** Compute is shared PDG project — only ever touch our `rts-`/`rts-infer-*`
-resources.
+**Inference phase — orchestration + artifacts done; gated on S2 + Phase-3 pre-flight.** Built & pushed:
+shard-claim queue + worker + monitor (Phase 1), 3 ensemble deployment packages + self-contained `rts-infer:v1`
+image (Phase 2). **Blocking long pole = the 2025_south Sentinel-2 export** (NDVI source): GEE-bound at
+**3 concurrent task slots** → ~5 cells/hr, **~263/1799 done, ETA ~12 days** (diagnosed 2026-06-26; user chose
+to wait, not cancel the competing 2024 export). **Buildable now (no S2 dep): Phase 3** — fleet provisioning
+(`computing/create_inference_fleet.sh`, `rts-infer-{1..4}`) + pre-flight (L4 quota check, 1-VM startup test,
+Banks Island RGB+NDVI end-to-end, multi-VM claim collision + kill/restart drill, throughput benchmark → shard
+size + output dtype). Then **Phase 0 tail** (build `s2_index` + coverage audit once S2 finishes) → **Phase 4
+launch** (explicit go). **Master = `a100-8x-train`, never stop/rename (A100 scarcity); shared PDG project —
+only ever touch our `rts-`/`rts-infer-*` resources.**
 <!-- NOW:END -->
 
 ### Future plans (inference phase — full plan in `.claude/plans/elegant-exploring-lemur.md`)

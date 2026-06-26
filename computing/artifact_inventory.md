@@ -34,7 +34,7 @@ Companion to `infrastructure.md §4` (bucket facts) — this doc is the *artifac
 | **Inference tile list + quad index** | local `/mnt/outputs/inference/{tiles_2025q3_domain_full.csv,quad_index_2025q3.csv}` | A100 master | back up in −1.3 | 41.57M tiles / 309,101 quads. |
 | **S2 index** (NDVI windowing) | **not built yet** → Phase 0 → `gs://rts-mapping-v2-usw1/inference/2025q3_south/s2_index.csv` | PDG / us-west1 | — | From `scripts/build_s2_index.py`. |
 | **Inference output** (prob COGs, claims, manifests) | **run output** → `gs://rts-mapping-v2-usw1/inference/2025q3_south/{probs,shards,claims,done,logs}/` | PDG / us-west1 | (is the durable product) | Float32 COGs; ~12 TB est. Hierarchical shard-scoped prefixes (pre-mortem #1). |
-| **Docker image** | `us-west1-docker.pkg.dev/pdg-project-406720/pdg-artifact-registry/rts-train:v2` (training) → `rts-infer:v1` (Phase 2) | PDG Artifact Registry / us-west1 | — | Built locally + pushed via ADC (Cloud Build blocked, §8). |
+| **Docker image** | training: `…/rts-train:v2`; inference: `…/rts-infer:v1` (built+pushed 2026-06-26) | PDG Artifact Registry / us-west1 | — | `rts-infer:v1` is self-contained — current code incl. `inference/`, cv2 patch baked, MLflow 2.22.5 (pin `<3.0`); **no runtime sed/mount/pip**. Built locally + pushed via ADC (Cloud Build blocked, §8). `:v2` kept for training reproducibility. |
 | **Docs / ledger / report** | repo (`docs/`, `current_working_status.md`) + GitHub `whrc/RTSmapping_v2` | — | git | `report.html` is gitignored (regenerated). |
 
 ---
