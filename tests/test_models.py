@@ -262,10 +262,7 @@ def test_build_model_foundation_rgb(monkeypatch):
     assert math.isclose(model.segmentation_head[0].bias.detach().item(),
                         -math.log((1.0 - 0.01) / 0.01), abs_tol=1e-5)
 
-
-def test_build_model_foundation_rejects_extra_channels():
-    """Foundation is RGB-only for now; declaring EXTRA is a clear error (Step 4b)."""
-    cfg = _base_cfg(architecture="foundation", backbone="vit_base_patch16_dinov3")
-    cfg["channels"]["extra"] = [{"name": "ndvi", "band": 0}]
-    with pytest.raises(ValueError, match="RGB-only"):
-        build_model(cfg)
+# NOTE: foundation RGB+EXTRA support is covered by tests/test_foundation.py
+# (test_foundation_extra_channels_forward_shape / _zero_init / test_sam2_rejects_extra_channels).
+# The old test_build_model_foundation_rejects_extra_channels here was stale (it asserted
+# the pre-adapter "RGB-only reject" behavior) and was removed 2026-06-26.

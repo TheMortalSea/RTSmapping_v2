@@ -35,6 +35,29 @@ sys.path.insert(0, str(REPO_ROOT / "scripts"))
 
 
 # ---------------------------------------------------------------------------
+# MLflow global-state isolation
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _isolate_mlflow_tracking_uri(monkeypatch):
+    """Keep the per-test MLflow tracking URI from leaking between smoke tests.
+
+    MLflow 3.x's ``set_tracking_uri()`` writes ``MLFLOW_TRACKING_URI`` into
+    ``os.environ`` so child processes inherit it. These tests call
+    ``train.main()`` repeatedly *in-process*, and train.py (via
+    ``mlflow_utils.setup_mlflow``) deliberately prefers that env var over the
+    per-test cfg URI (the intended production override for concurrency-safe
+    per-run stores). So the first test's tracking URI leaks through os.environ
+    into every later test, whose runs then write to the wrong store and miss the
+    per-test assertions (order-dependent failures). Production never hits this —
+    each real run is its own process. Clear the leaked var before every test.
+    """
+    monkeypatch.delenv("MLFLOW_TRACKING_URI", raising=False)
+    yield
+
+
+# ---------------------------------------------------------------------------
 # Config builder
 # ---------------------------------------------------------------------------
 

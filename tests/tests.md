@@ -233,7 +233,6 @@ Module-level helpers in `scripts/train.py` (CPU, no training loop). Added 2026-0
 | `test_heavy_fusion_shape_delegation_and_uses_extra` | F3/F5: (B,1,H,W) logits, delegates `.encoder`/`.segmentation_head`, has 2nd `.extra_encoder`, output depends on EXTRA channels | real — guards F3/F5 dual-encoder wiring |
 | `test_heavy_fusion_rejects_rgb_only` | F3/F5 with no EXTRA channels → `ValueError` | shallow — guard |
 | `test_build_model_foundation_rgb` | `arch='foundation'` (DINOv3 ViT) builds, (B,1,H,W) logits, class-prior bias flows through `.segmentation_head[0]` | real — guards the FM branch (2026-06-18) |
-| `test_build_model_foundation_rejects_extra_channels` | foundation is RGB-only for now → declaring EXTRA raises (Step 4b) | shallow |
 
 ### [test_foundation.py](test_foundation.py)
 
@@ -471,6 +470,8 @@ Tier-1 object operating-point tuner (`scripts/tune_object_operating_point.py`, r
 ### [test_train_smoke.py](test_train_smoke.py)
 
 End-to-end training loop on the synthetic fixture (~130 s, still Tier 1 — no GCS, no GPU). Asserts the hardened criteria from the plan Step 7a.
+
+An autouse fixture `_isolate_mlflow_tracking_uri` clears `MLFLOW_TRACKING_URI` before each test: MLflow 3.x's `set_tracking_uri()` writes that env var into `os.environ`, and since these tests call `train.main()` in-process (and train.py prefers the env var over cfg), the first test's tracking URI would otherwise leak into later tests and send their runs to the wrong store — `test_mlflow_run_written` / `test_train_iou_logged` failed only in full-suite order without it (2026-06-26).
 
 | Test | Checks | Strictness |
 |---|---|---|
