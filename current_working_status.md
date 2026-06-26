@@ -44,11 +44,13 @@ Phase −1 training wrap-up (clean only-main, backups, inventory) + Phase-D depl
 shard-claim queue + worker + monitor (Phase 1), 3 ensemble deployment packages + self-contained `rts-infer:v1`
 image (Phase 2). **Blocking long pole = the 2025_south Sentinel-2 export** (NDVI source): GEE-bound at
 **3 concurrent task slots** → ~5 cells/hr, **~263/1799 done, ETA ~12 days** (diagnosed 2026-06-26; user chose
-to wait, not cancel the competing 2024 export). **Buildable now (no S2 dep): Phase 3** — fleet provisioning
-(`computing/create_inference_fleet.sh`, `rts-infer-{1..4}`) + pre-flight (L4 quota check, 1-VM startup test,
-Banks Island RGB+NDVI end-to-end, multi-VM claim collision + kill/restart drill, throughput benchmark → shard
-size + output dtype). Then **Phase 0 tail** (build `s2_index` + coverage audit once S2 finishes) → **Phase 4
-launch** (explicit go). **Master = `a100-8x-train`, never stop/rename (A100 scarcity); shared PDG project —
+to wait, not cancel the competing 2024 export). **Phase 3 code done:** fleet scripts (`create_inference_fleet.sh` + `inference_fleet_startup.sh` +
+`inference_watchdog.sh`) + live L4-quota check (32 limit / 1 phantom-used → 31 schedulable → default **3×
+g2-standard-96**, not 4). **All remaining work is GATED:** (a) on the S2 export (~12 d) — `s2_index` +
+coverage audit (Phase 0 tail), Banks Island RGB+NDVI parity, launch; (b) on explicit go + spend — live VM
+pre-flight (1-VM startup smoke, multi-VM claim/kill drill, throughput benchmark → shard size + output dtype)
+and Phase 4 launch. Shard the tile list at the benchmark-tuned size at launch (splitter ready; tile list
+exists, not S2-gated). **Master = `a100-8x-train`, never stop/rename (A100 scarcity); shared PDG project —
 only ever touch our `rts-`/`rts-infer-*` resources.**
 <!-- NOW:END -->
 
