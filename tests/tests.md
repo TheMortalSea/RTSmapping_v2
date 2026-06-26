@@ -484,6 +484,18 @@ Inference pipeline (`inference/` + grid/merge entry scripts), GPU-free. Fixtures
 | `test_single_shard_when_size_exceeds_count` | size > N → one shard with all tiles | shallow |
 | `test_nonpositive_shard_size_rejected` | shard_size <= 0 → ValueError | shallow |
 
+### [test_run_inference_worker.py](test_run_inference_worker.py)
+
+`scripts/run_inference_worker.work_loop` — the queue-drain loop (plan Phase 1). GPU-free: real `ClaimStore` over the in-memory fake bucket + a stub `process_shard` (the inference body itself, `inference.runner.run_inference`, is covered by the pipeline tests + the Tier-2 real-data smoke).
+
+| Test | Checks | Strictness |
+|---|---|---|
+| `test_single_worker_drains_all_exactly_once` | claims every shard in order, once; all marked done | real — drain completeness |
+| `test_mark_done_only_after_process` | at process time the shard is claimed but not yet done (crash-mid-shard leaves a reclaimable claim, not a false done) | real — crash-safety ordering |
+| `test_resume_skips_already_done` | pre-done shards are skipped on (re)start | real — §8.3 resume |
+| `test_two_workers_cover_all_disjointly` | A (capped) + B drain cooperatively → union complete, intersection empty | real — multi-VM exactly-once |
+| `test_max_shards_stops_early` | `--max-shards` stops after N | shallow |
+
 ### [test_tune_object_operating_point.py](test_tune_object_operating_point.py)
 
 Tier-1 object operating-point tuner (`scripts/tune_object_operating_point.py`, report-only). GPU-free; synthetic prob/label maps with known objects. Load-bearing test is parity with the training object metric.
