@@ -455,6 +455,35 @@ Inference pipeline (`inference/` + grid/merge entry scripts), GPU-free. Fixtures
 > (see inference.md §13 pre-inference checklist), not unit tests — they are
 > thin glue over the tested modules.
 
+### [test_claim.py](test_claim.py)
+
+`inference/claim.py` — the GCS-atomic shard-claim queue for the dual-fleet run (plan Phase 1). GPU-free, network-free: a FakeBucket emulates GCS `if_generation_match=0` create-if-absent atomicity + listing + download + delete; a clock is injected for staleness.
+
+| Test | Checks | Strictness |
+|---|---|---|
+| `test_two_workers_never_win_one_shard` | atomic create-if-absent → exactly one of two contenders wins; claim records the winner | real — the core "use both fleets" invariant |
+| `test_claim_next_skips_done_and_returns_first_free` | `claim_next` skips done shards, returns first free | real |
+| `test_done_skip_on_restart` | a shard with a done marker is never reprocessed | real — §8.3 resumability |
+| `test_mark_done_clears_claim` | `mark_done` writes done marker + drops the claim | real |
+| `test_fresh_claim_is_not_reclaimed` | a claim younger than the TTL is not stolen | real |
+| `test_stale_claim_is_reclaimed_and_reassigned` | a crashed worker's stale claim (heartbeat > TTL) is reclaimed + reassigned | real — straggler/preemption recovery |
+| `test_heartbeat_keeps_claim_fresh` | heartbeat refreshes the claim so a long shard isn't seen as stale | real |
+| `test_heartbeat_does_not_steal_others_claim` | heartbeat by a non-owner is a no-op | real — ownership guard |
+| `test_reclaim_absent_claim_is_false` | reclaiming a missing claim returns False | shallow |
+
+### [test_shard_tiles.py](test_shard_tiles.py)
+
+`scripts/shard_tiles.make_shards` — splits the tile list into spatially-contiguous shards (plan Phase 1). GPU-free, I/O-free (the pure split logic; the CLI's GCS writes are thin glue).
+
+| Test | Checks | Strictness |
+|---|---|---|
+| `test_every_tile_in_exactly_one_shard` | union of shards == input, no dup/drop | real — exactly-once coverage invariant |
+| `test_shard_count_and_sizes` | ceil(N/size) shards; full shards + remainder; sizes sum to N | real |
+| `test_shard_ids_are_sequential_and_padded` | ids `shard_000000…` sequential | shallow |
+| `test_shards_concatenate_to_spatial_order` | shards in order == `_spatial_sort` (cache-locality contract) | real — §11.3 |
+| `test_single_shard_when_size_exceeds_count` | size > N → one shard with all tiles | shallow |
+| `test_nonpositive_shard_size_rejected` | shard_size <= 0 → ValueError | shallow |
+
 ### [test_tune_object_operating_point.py](test_tune_object_operating_point.py)
 
 Tier-1 object operating-point tuner (`scripts/tune_object_operating_point.py`, report-only). GPU-free; synthetic prob/label maps with known objects. Load-bearing test is parity with the training object metric.
