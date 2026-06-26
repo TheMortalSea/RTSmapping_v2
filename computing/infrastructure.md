@@ -162,6 +162,14 @@ granted in full). `GPUS_ALL_REGIONS` stays 360 (≫ the ~40 needed; the +40→40
 irrelevant). Preemptible-L4 not raised (still 8) → request `PREEMPTIBLE_NVIDIA_L4_GPUS=32` only if the
 bulk inference pass is run on Spot.
 
+**Live re-check (2026-06-26, Phase-3 pre-flight):** `NVIDIA_L4_GPUS` limit 32 **usage 1**, `CPUS` 480
+usage 52 — confirmed. The **1 L4 in use has no visible instance/reservation/commitment** in the project
+(stale accounting or a resource we can't list) → only **31 schedulable**, so 4× `g2-standard-96` (needs
+32) may fail on the 4th VM. **Default the fleet to 3× `g2-standard-96` (24 L4)**; go to 4 only after the
+phantom L4 clears or a 32→40 grant. Fleet scripts: `create_inference_fleet.sh` (sequential create,
+fail-stop, on-demand) + `inference_fleet_startup.sh` (per-VM worker launch) + `inference_watchdog.sh`
+(auto-stop the L4 fleet on completion; never the A100 master). Validate the startup on ONE VM before the rest.
+
 ### Planned
 
 - **Inference fleet `rts-infer-usw1` — 4× `g2-standard-96` = 32× NVIDIA L4, us-west1** (decided
