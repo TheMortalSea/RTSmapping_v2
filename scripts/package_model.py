@@ -173,9 +173,87 @@ def package_model(
     logger.info("Deployment package written to %s", output_dir)
 
 
+def package_model_from_rundir(
+    run_dir: Path,
+    norm_stats_path: Path,
+    deployment_cfg_path: Path,
+    output_dir: Path,
+    *,
+    checkpoint_name: str = "checkpoints/best_deployment.pth",
+) -> None:
+    """Assemble the deployment package from a local training run dir (no MLflow).
+
+    The Phase-D deploy runs were not logged as MLflow-artifact runs, so we build
+    the package straight from ``/mnt/outputs/v1.0/runs/<run>/`` (best_deployment
+    checkpoint + config.yaml + requirements_frozen.txt) plus the authoritative
+    normalization stats file (the run's `config.data.normalization_stats_path`).
+    Same 6-file layout + validation as `package_model`; local output only —
+    upload the result with `gcloud storage cp` after verifying it loads.
+    """
+    import torch
+
+    deployment_cfg = yaml.safe_load(deployment_cfg_path.read_text())
+    _assert_calibration_complete(deployment_cfg)
+
+    run_dir, norm_stats_path = Path(run_dir), Path(norm_stats_path)
+    ckpt_path = run_dir / checkpoint_name
+    cfg_path = run_dir / "config.yaml"
+    for required in (ckpt_path, cfg_path, norm_stats_path):
+        if not required.exists():
+            raise FileNotFoundError(f"packaging input missing: {required}")
+
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # 1. Weights (EMA state dict).
+    ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+    torch.save(ckpt["model_state_dict"], output_dir / "weights.pth")
+
+    # 2. Normalization stats (channel-name bindings, training.md §4.5).
+    shutil.copy2(norm_stats_path, output_dir / "normalization_stats.json")
+
+    # 3. Model config — projected from the training config.
+    training_cfg = yaml.safe_load(cfg_path.read_text())
+    (output_dir / "model_config.yaml").write_text(
+        yaml.safe_dump(_extract_model_config(training_cfg), sort_keys=False,
+                       default_flow_style=False))
+
+    # 4. Deployment config — as provided, validated.
+    shutil.copy2(deployment_cfg_path, output_dir / "deployment_config.yaml")
+
+    # 5. Run metadata (from the checkpoint + config; no MLflow).
+    trained_with = ckpt.get("trained_with", {})
+    meta = {
+        "source": "run_dir",
+        "run_dir": str(run_dir),
+        "packaging_date": datetime.now(timezone.utc).isoformat(),
+        "git_sha": ckpt.get("git_sha", "unknown"),
+        "config_sha": trained_with.get("config_sha", "unknown"),
+        "seed": int(trained_with.get("seed", training_cfg.get("seed", 0))),
+        "checkpoint_epoch": ckpt.get("epoch"),
+        "checkpoint_best_metric": ckpt.get("best_metric"),
+        "trained_with": trained_with,
+        "channel_names": ckpt.get("channel_names", []),
+    }
+    (output_dir / "run_metadata.json").write_text(json.dumps(meta, indent=2))
+
+    # 6. requirements_frozen.txt (optional).
+    req = run_dir / "requirements_frozen.txt"
+    if req.exists():
+        shutil.copy2(req, output_dir / "requirements_frozen.txt")
+    else:
+        logger.warning("No requirements_frozen.txt in %s", run_dir)
+
+    logger.info("Deployment package written to %s (from run dir %s)", output_dir, run_dir)
+
+
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    p.add_argument("--run-id", required=True, help="MLflow run ID")
+    src = p.add_mutually_exclusive_group(required=True)
+    src.add_argument("--run-id", help="MLflow run ID")
+    src.add_argument("--run-dir", type=Path, help="local training run dir (no-MLflow mode)")
+    p.add_argument("--norm-stats", type=Path, default=None,
+                   help="normalization_stats.json (required with --run-dir)")
     p.add_argument("--deployment-config", type=Path, required=True,
                    help="configs/deployment.yaml with calibrated threshold+temperature")
     p.add_argument("--output", type=Path, required=True,
@@ -185,9 +263,15 @@ def main() -> int:
     args = p.parse_args()
 
     setup_logging(level="INFO")
-    if args.tracking_uri:
-        mlflow.set_tracking_uri(args.tracking_uri)
-    package_model(args.run_id, args.deployment_config, args.output)
+    if args.run_dir:
+        if not args.norm_stats:
+            p.error("--norm-stats is required with --run-dir")
+        package_model_from_rundir(args.run_dir, args.norm_stats,
+                                  args.deployment_config, args.output)
+    else:
+        if args.tracking_uri:
+            mlflow.set_tracking_uri(args.tracking_uri)
+        package_model(args.run_id, args.deployment_config, args.output)
     return 0
 
 

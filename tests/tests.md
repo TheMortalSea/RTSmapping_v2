@@ -372,15 +372,16 @@ Forward-path tests for `models/foundation.py` (FoundationSegmenter: DINOv3/ViT e
 | `test_null_temperature_rejected` | temperature=null → `ValueError` | real |
 | `test_both_null_rejected_together` | Both null → error mentions threshold first | shallow |
 | `test_both_set_accepted` | Properly calibrated config passes guard | shallow |
+| `test_package_from_rundir_writes_all_files` | no-MLflow run-dir packaging writes all 6 files; run_metadata carries source/seed/git_sha/channel_names/epoch from the checkpoint+config | real — Phase 2 deploy-package path (the 3 ensemble seeds were built this way) |
+| `test_package_from_rundir_rejects_uncalibrated` | null threshold/temperature → `ValueError` (guard also on the run-dir path) | real |
+| `test_package_from_rundir_missing_input_raises` | absent checkpoint/config/norm-stats → `FileNotFoundError` | shallow |
 
-> **Coverage gap (acknowledged 2026-05-01):** these four tests exercise only
-> `_assert_calibration_complete` (~6 LOC). The end-to-end packaging path
-> (MLflow run resolution, `weights.pth` extraction from
-> `best_deployment.pth`, `model_config.yaml` + `deployment_config.yaml`
-> assembly) is not unit-tested; it relies on real MLflow runs at deploy time.
-> The training smoke test does not call `package_model.main()`. Close this gap
-> when packaging misbehaves on a real run, or by feeding the smoke test's
-> synthetic MLflow run into `package_model()` end-to-end.
+> **Coverage note:** the run-dir packaging path (`package_model_from_rundir`,
+> used to build the 3 deployment packages from `/mnt/outputs/v1.0/runs/<run>/`)
+> is now unit-tested end-to-end above. The **MLflow**-run path
+> (`package_model`, run resolution + artifact download) is still exercised only
+> via `_assert_calibration_complete`; it relies on real MLflow runs at deploy
+> time. The deploy seeds did not use it (they are run-dir packaged).
 
 ### [test_calibrate.py](test_calibrate.py)
 
