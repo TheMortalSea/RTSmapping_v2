@@ -25,11 +25,11 @@ Companion to `infrastructure.md §4` (bucket facts) — this doc is the *artifac
 |---|---|---|---|---|
 | **Training imagery + labels (v1.0)** | `gs://rts-mapping-v2/training/v1.0/{PLANET-RGB,labels,metadata.csv,splits.yaml,normalization_stats*.json}` | PDG / US | local `/mnt/outputs/v1.0/data_local/` | The working training set. `abrupt_thaw/RTS_MODEL_V2/DATA/` is the upstream/legacy source. |
 | **Legacy arrays** | `gs://abrupt_thaw/{maxar_rgb,rts_labels}*.npy`, `CAMS/`, hashed dirs | abruptthaw / US | — | Pre-v2 / exploratory; not on the v2 path. |
-| **Training runs (checkpoints, configs, logs, figures)** | local `/mnt/outputs/v1.0/runs/<run>/` | A100 master (local disk) | `gs://rts-mapping-v2/RTS_MODEL_V2/runs/` | **110 local vs 105 in GCS — 5 recent Phase-D runs unmirrored** (sync in Phase −1.3). |
+| **Training runs (checkpoints, configs, logs, figures)** | local `/mnt/outputs/v1.0/runs/<run>/` | A100 master (local disk) | `gs://rts-mapping-v2/RTS_MODEL_V2/runs/` | **110/110 mirrored (2026-06-26).** Mirror is *slim* by convention: `best_deployment.pth` + config + run_summary + train.log + figures; `resume_latest-*.pth` are local-only (regenerable training state). |
 | **MLflow tracking** | local `/mnt/outputs/v1.0/mlflow/` + `/mnt/outputs/mlflow/` | A100 master | `gs://rts-mapping-v2/RTS_MODEL_V2/mlflow/` | UI served from the master. |
-| **Calibration report** (Phase D) | local `/mnt/outputs/v1.0/calibration/effb5_trivialaug/` | A100 master | **none yet — local-only** | Back up in −1.3. |
-| **Test-Realistic metrics** (shipped #) | local `/mnt/outputs/v1.0/test_realistic/effb5_ensemble_metrics.json` | A100 master | **none yet — local-only** | The one-shot v2 number (ledger J). Back up in −1.3. |
-| **Object operating-point report + val_probs** | local `/mnt/outputs/v1.0/object_operating_point/effb5_ensemble/` | A100 master | **none yet — local-only** | `val_probs.npz` ~1.1 GB. Back up in −1.3. |
+| **Calibration report** (Phase D) | local `/mnt/outputs/v1.0/calibration/effb5_trivialaug/` | A100 master | `gs://rts-mapping-v2/RTS_MODEL_V2/calibration/` (2026-06-26) | — |
+| **Test-Realistic metrics** (shipped #) | local `/mnt/outputs/v1.0/test_realistic/effb5_ensemble_metrics.json` | A100 master | `gs://rts-mapping-v2/RTS_MODEL_V2/test_realistic/` (2026-06-26) | The one-shot v2 number (ledger J). |
+| **Object operating-point report + val_probs** | local `/mnt/outputs/v1.0/object_operating_point/effb5_ensemble/` | A100 master | `gs://rts-mapping-v2/RTS_MODEL_V2/object_operating_point/` (2026-06-26) | `val_probs.npz` ~1.1 GB; restore verified byte-identical. |
 | **Deployment packages** (3 seeds) | **not built yet** → Phase 2 → `gs://rts-mapping-v2-usw1/inference/2025q3_south/packages/` (or `rts-mapping-v2/.../models/`) | PDG / us-west1 | — | Built in Phase 2 from the run dirs. |
 | **Inference tile list + quad index** | local `/mnt/outputs/inference/{tiles_2025q3_domain_full.csv,quad_index_2025q3.csv}` | A100 master | back up in −1.3 | 41.57M tiles / 309,101 quads. |
 | **S2 index** (NDVI windowing) | **not built yet** → Phase 0 → `gs://rts-mapping-v2-usw1/inference/2025q3_south/s2_index.csv` | PDG / us-west1 | — | From `scripts/build_s2_index.py`. |
@@ -41,8 +41,11 @@ Companion to `infrastructure.md §4` (bucket facts) — this doc is the *artifac
 
 ## 3. Local `/mnt/outputs` (A100 master — local disk, NOT durable)
 
-Source-of-truth (back up): `v1.0/runs`, `v1.0/mlflow`, `v1.0/calibration`, `v1.0/test_realistic`,
-`v1.0/object_operating_point`, `v1.0/staging` (normalization stats), `inference/` (tile lists, quad index).
-Derived/disposable: `hf_cache/`, `bench/`, `s2_qc/`, `worktrees/`, `_archive/`, scratch (`_du.txt`,
+Source-of-truth — **backed up to `gs://rts-mapping-v2/RTS_MODEL_V2/` (2026-06-26):** `v1.0/runs`
+(110/110 slim), `v1.0/calibration`, `v1.0/test_realistic`, `v1.0/object_operating_point`. Still
+local-only (back up before any disk cleanup): `inference/` (2025 tile lists + quad index, ~3.7 GB),
+`v1.0/staging` (norm stats — also travel with `training/v1.0`). `v1.0/mlflow` is a UI mirror; the
+score SoT is each run's `run_summary.json`. Derived/disposable (NOT backed up): `mlflow*`,
+`report.html`, `qc/`, `hf_cache/`, `bench/`, `s2_qc/`, `worktrees/`, `_archive/`, scratch (`_du.txt`,
 `_tmpcheck.txt`, `_paper.txt`, `upload(irrelevant)/`), S2 export logs. See `/mnt/outputs/README.md`
-(rewritten in Phase −1.3) for the cleaned layout.
+for the current layout + SoT-vs-derived split.
