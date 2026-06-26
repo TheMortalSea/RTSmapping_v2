@@ -58,12 +58,15 @@ scales: [1.0]
 # Cross-scale fusion method (only used when len(scales) > 1).
 fusion: "weighted_mean"     # weighted_mean | max | consensus
 
-# Min blob size for object-level decisions (px). DEPLOYMENT value, object-tuned
-# (tune_object_operating_point.py, 2026-06-25) — larger than the training-monitor
-# default (10, configs/baseline.yaml metrics.min_blob_size_px) because dropping
-# sub-80px blobs at thr 0.30 removes speckle FPs and is part of the obj-F1-argmax
-# operating point above. Echoed here so the deployment package is self-contained.
-min_blob_size_px: 80
+# Min blob size for object-level decisions (px). FIRST PRODUCT (user choice
+# 2026-06-26, precision-leaning): thr 0.65 + min_blob 2000 → Val obj-P 0.79 /
+# obj-R 0.35. A VECTORIZATION-stage param — it does NOT affect the probability
+# COGs the inference pass writes, so other products (other thr/min_blob) can be
+# cut from the same probabilities later. NB: the Test-Realistic anchor in ledger
+# J (obj-P 0.584) was measured at min_blob 80 — a different point on the *same*
+# probabilities; the min_blob-2000 product's test number can be recomputed from
+# the cached test predictions when post-inference runs.
+min_blob_size_px: 2000
 
 # Inference-time runtime values. Single source of truth; specs reference these
 # keys instead of restating numbers (inference.md §4.1, §4.2, §4.3, §8.1).
