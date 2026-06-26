@@ -79,6 +79,11 @@ PDG bucket `rts-mapping-v2`, in the same region as the VMs** (see §4–§4b).
 
 ## 4. Storage: buckets & on-VM tiers
 
+> For the **artifact → location** map (every durable artifact produced since project start → its
+> bucket/path/region/owner-project, and which copy is source-of-truth vs backup), see
+> [`artifact_inventory.md`](artifact_inventory.md). This section owns the bucket *facts*; that doc owns
+> *where each artifact lives*.
+
 ### Buckets
 
 | Bucket | Project | Purpose | Notes |
