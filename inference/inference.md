@@ -46,40 +46,33 @@ embarrassingly parallel + resumable).
 | Region | **us-west1** (co-located with `pdg-planet-data`) |
 | VM fleet | **4× `g2-standard-96`** = **32× NVIDIA L4** (forward-only bf16 is GCS-I/O-bound; no A100 needed). Spot for the bulk pass, on-demand for final re-runs. **Stop when idle** (L4 = low stockout). |
 | Throughput / wallclock | ~15–43 tiles/s/L4 co-located → **~8–25 h** for the **41.57M** tile-inferences on 32 L4 (≈270–770 GPU-hr, ~$170–500; benchmark one subregion to pin it — the earlier 10.5 t/s was cross-region read-bound, which co-location removes). |
-| Storage | `gs://woodwell-rts-inference-arts-south` (single-region **us-west1**) — outputs, 2025 EXTRA tiles, deployment package |
-| Orchestration | Domain tile list (`tiles_2025q3_domain_full.csv`) → 32 shards; one `scripts/inference.py` per GPU (1-per-GPU pin, `run_gpu_pool.sh` pattern) across the 4 VMs; resumable via `inference_log.json` (§8.3) so Spot preemption/stragglers just resume. |
+| Storage | `gs://rts-mapping-v2-usw1/inference/2025q3_south/` (single-region **us-west1**, co-located with `pdg-planet-data`/`S2_RGB` → egress-free) — outputs, deployment packages, queue markers. (Supersedes the earlier planned `woodwell-rts-inference-arts-south` — one fewer bucket; see `computing/artifact_inventory.md`.) |
+| Orchestration | **Self-balancing GCS shard-claim queue** (decided 2026-06-25; `inference/claim.py` + `scripts/shard_tiles.py` + `scripts/run_inference_worker.py`). The domain tile list is spatially sorted + split into many contiguous shards (`shards/*.csv` + `index.json`); each worker (one per GPU, **8 on the A100 master + 8 per L4 VM**) atomically claims the next free shard (`if_generation_match=0`), so the heterogeneous A100+L4 fleet auto-balances. Done markers are the source of truth; stale claims are reclaimed → preemption/stragglers just resume. |
 | Collaboration | PDG workflow optimization team (Luigi/Todd) |
 
 ### 2.2 Storage Structure
 
 ```
-gs://woodwell-rts-inference-arts-south/   # single-region us-west1 (co-located with pdg-planet-data)
-├── models/
-│   └── rts-v2-seed42/                   # one deployment package per seed
-│       ├── weights.pth                  # EMA weights only (see training.md §4.3)
-│       ├── normalization_stats.json     # channel-name bindings (training.md §4.5)
-│       ├── model_config.yaml            # architecture, backbone, channels, data.tile_size (input size derives from it)
-│       ├── deployment_config.yaml       # threshold, temperature, tta, precision, torch_compile, scales, fusion
-│       ├── run_metadata.json            # git_sha, mlflow_run_id, training_date, seed
-│       └── requirements_frozen.txt      # exact env for reproducibility
-├── inference/
-│   ├── 2025-Q3/
-│   │   ├── tiles/                    # Raw prediction tiles
-│   │   │   ├── tile_0001.tif
-│   │   │   └── ...
-│   │   ├── merged/                   # Merged prediction rasters
-│   │   │   ├── region_yakutia.tif
-│   │   │   └── ...
-│   │   ├── vectors/                  # Vectorized polygons
-│   │   │   ├── rts_predictions.gpkg
-│   │   │   └── ...
-│   │   └── logs/
-│   │       └── inference_log.json
-│   └── ...
-└── basemaps/
-    └── 2025-Q3/
-        └── ... (input imagery)
+gs://rts-mapping-v2-usw1/inference/2025q3_south/   # single-region us-west1 (co-located with pdg-planet-data + S2_RGB)
+├── packages/                         # the 3 ensemble deployment packages (built 2026-06-26)
+│   └── seed{42,43,44}/
+│       ├── weights.pth               # EMA weights only (see training.md §4.3)
+│       ├── normalization_stats.json  # channel-name bindings R,G,B,ndvi (training.md §4.5)
+│       ├── model_config.yaml         # architecture, backbone, channels, data.tile_size
+│       ├── deployment_config.yaml    # threshold, temperature, tta, precision, scales, fusion
+│       ├── run_metadata.json         # git_sha, seed, checkpoint epoch/metric, channel_names
+│       └── requirements_frozen.txt
+├── shards/                           # scripts/shard_tiles.py output (the shard universe)
+│   ├── index.json                    # {n_tiles, n_shards, shards:[{shard_id, n_tiles}]}
+│   └── shard_<NNNNNN>.csv            # contiguous tile lists
+├── claims/<shard_id>                 # atomic claim locks (inference/claim.py)
+├── done/<shard_id>                   # done markers (source of truth on restart)
+├── probs/<shard_id>/<tile_id>.tif    # Float32 probability COGs (§9.1); shard-scoped to avoid GCS write-hotspotting
+├── logs/<shard_id>.json              # one manifest per shard (not per-tile markers)
+├── merged/                           # post-inference: merged probability rasters (§4.3)
+└── vectors/                          # post-inference: vectorized polygons (§9.3)
 ```
+Inputs read from elsewhere (not under this prefix): 2025 Planet quads `gs://pdg-planet-data/global_quarterly/2025/q3/`; S2 composites for NDVI `gs://rts-mapping-v2-usw1/S2_RGB/2025_south/`.
 
 This section owns the post-calibration deployment-package layout. MLflow-side artifacts produced during training (per-epoch metrics, figures, `run_summary.md`, etc.) are spec'd in `training/experiments.md §1.3`; on-disk checkpoint payloads (`best_deployment.pth`, `resume_latest-*.pth`) in `training.md §4.3`.
 
