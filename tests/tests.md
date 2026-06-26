@@ -496,6 +496,20 @@ Inference pipeline (`inference/` + grid/merge entry scripts), GPU-free. Fixtures
 | `test_two_workers_cover_all_disjointly` | A (capped) + B drain cooperatively → union complete, intersection empty | real — multi-VM exactly-once |
 | `test_max_shards_stops_early` | `--max-shards` stops after N | shallow |
 
+### [test_inference_progress.py](test_inference_progress.py)
+
+`scripts/inference_progress` pure math (plan Phase 0/4 monitor). GPU-free, network-free, injected clock (the GCS listing + dashboard rendering around it is thin glue, exercised live against the bucket).
+
+| Test | Checks | Strictness |
+|---|---|---|
+| `test_progress_counts_and_pct` | shards done/active/remaining + tiles done (exact, from per-shard counts) + per-host | real |
+| `test_progress_recent_rate_and_eta` | windowed tiles/s + ETA; empty → rate 0, ETA None | real |
+| `test_progress_falls_back_to_average_rate` | no completions in window → since-start average rate | real |
+| `test_progress_flags_stale_worker` | claim heartbeat older than window → stale (silent-idle alarm, pre-mortem #4) | real |
+| `test_progress_aggregates_per_host` | active claims grouped by worker host (per-VM view) | real |
+| `test_s2_counts_and_eta` | S2 cells done/remaining/pct, launched passthrough, cells/hr + ETA | real |
+| `test_s2_empty_has_no_eta` | no cells yet → rate 0, ETA None | shallow |
+
 ### [test_tune_object_operating_point.py](test_tune_object_operating_point.py)
 
 Tier-1 object operating-point tuner (`scripts/tune_object_operating_point.py`, report-only). GPU-free; synthetic prob/label maps with known objects. Load-bearing test is parity with the training object metric.
