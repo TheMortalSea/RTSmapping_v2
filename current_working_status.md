@@ -28,15 +28,18 @@ for inference. Docker `rts-train:v2`. Data in `gs://abrupt_thaw/` + `gs://rts-ma
 ## Rolling progress
 
 ### Just completed
-**Phases 1 + 2 — inference orchestration + deployment artifacts built.** Phase 1: the self-balancing
-GCS **shard-claim queue** (`inference/claim.py` atomic claim/heartbeat/done/reclaim, `scripts/shard_tiles.py`
-spatial splitter, `scripts/run_inference_worker.py` one-per-GPU worker) + refactored the inference body into
-`inference/runner.py` (`build_context`/`run_inference`, shared by CLI + worker) + the `scripts/inference_progress.py`
-monitor/watcher (run + S2-export dashboards). Phase 2: built+verified+uploaded the **3 ensemble deployment
-packages** (`gs://rts-mapping-v2-usw1/inference/2025q3_south/packages/seed{42,43,44}`), documented the
-shard-scoped output-bucket layout, and **rebuilt + pushed `rts-infer:v1`** — self-contained (current code incl.
-`inference/`, cv2 baked, MLflow 2.22.5; no runtime sed/mount). 309 tests green across the work. Prior:
-Phase −1 training wrap-up (clean only-main, backups, inventory) + Phase-D deploy decision (ledger H/H.2/J).
+**Pre-S2 residual-error diagnostics (pure analysis, no fleet run).** Built `scripts/analyze_residual_errors.py`
+(report-only) and ran it on the cached 3-seed val predictions (`val_probs.npz`, 0-GPU). **Analysis A —
+signal typology:** per GT object, max prob in footprint → detected_at_deploy 80 / recoverable_below_deploy 15
+/ **perception_invisible 37 (28.0% floor)**. **Analysis B — per-region scoring** (parity-verified vs the
+existing grid row): Canadian Low Arctic (bulk, obj-F1 0.46) carries the aggregate; Northeast Siberian coastal
+**0/12 detected** (worst); two val regions are negative-only (now reported null, not 0 — fixed a spurious-0
+bug). **B-test** (`evaluate_test.py --by-region`, deterministic re-run, reproduces frozen J exactly;
+`test_probs.npz` cached): **all 215 test objects are in ONE region** (NW Russian-Novaya Zemlya) → the shipped
+test number is single-region, not pan-Arctic; first-product point (min_blob 2000) on test = obj-P 0.768/R 0.40/F1
+0.526. Facts logged to ledger Finding **K**; artifacts in `/mnt/outputs/v1.0/{diagnostics,test_realistic}/`.
+Analysis C (prevalence) dropped per user. Prior: Phases 1 + 2 — inference orchestration (shard-claim queue +
+worker + monitor) + 3 ensemble deployment packages + `rts-infer:v1` image; 309 tests green.
 
 <!-- NOW:BEGIN -->
 ### Now

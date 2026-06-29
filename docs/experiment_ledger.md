@@ -277,6 +277,40 @@ val-overfit. (PR-AUC looks below the Val 0.9393 only because that was at 1:5/10/
 1:200–1000 regime.) `/mnt/outputs/v1.0/test_realistic/effb5_ensemble_metrics.json`. Touched once — frozen.
 Remaining to ship: package the 3 per-seed deployment packages → Phase E (bucket/fleet) → Phase F (pre-flight
 → full pan-Arctic inference).
+
+**K — Residual-error diagnostics (pre-S2, 2026-06-29, `scripts/analyze_residual_errors.py`, Val-Realistic).**
+On the cached 3-seed ensemble val predictions (2151 tiles, 132 GT objects; deployed scale T=0.5123).
+Facts only.
+
+*Signal typology* — per GT object, max predicted prob inside its footprint, binned at low_thr 0.30 /
+deploy_thr 0.65: **detected_at_deploy 80 (60.6%) · recoverable_below_deploy 15 (11.4%) · perception_invisible
+37 (28.0%)**. So the **perception-invisible floor = 0.280** (max prob < 0.30 → no signal; min_blob/IoU-
+independent), and 11.4% of GT objects carry sub-deploy-threshold signal (max prob in [0.30, 0.65)). Invisible
+objects are not all small: area px p50 929 / p90 4424 / max 13360. Invisibles concentrate in **Canadian Low
+Arctic tundra 29/118** and **Northeast Siberian coastal tundra 8/12**.
+
+*Per-region scoring* (object machinery = `training.metrics`; ALL roll-up at thr 0.65/min_blob 10/morph 0 =
+obj 58/74/74 = the `object_operating_point_report.json` grid row → parity verified). At parity min_blob 10:
+**Canadian Low Arctic tundra** (118 GT obj, the bulk) obj-P/R/F1 0.44/0.47/0.46, pix-R 0.52; **Northeast
+Siberian coastal tundra** (12 GT obj) **obj-R 0.00 — 12/12 missed** (worst scorable region); **Beringia
+lowland tundra** 2/2 (n=2). **Interior Alaska-Yukon lowland taiga** and **Novosibirsk Islands Arctic desert**
+have **0 GT positives** (negative-only val regions → not scorable; recall/F1 reported null, not 0). At the
+product point (min_blob 2000): Canadian 0.51, Beringia 0.67, Northeast Siberian 0.00.
+
+Caveat: 132 val objects, only 3 regions with positives (one n=2) → qualitative, not proportions with CIs.
+Artifact: `/mnt/outputs/v1.0/diagnostics/residual_errors_report.json`.
+
+*Per-region Test-Realistic* (2026-06-29, `scripts/evaluate_test.py --by-region`, deterministic re-run of the
+one-shot, `test_probs.npz` cached so test is never re-touched again). **Determinism verified:** at min_blob 80
+the ALL roll-up reproduces frozen J **exactly** — obj-P 0.5839 / R 0.4372 / F1 0.5000. **Geographic
+concentration:** all **215 test GT objects fall in a single region — Northwest Russian-Novaya Zemlya tundra**;
+the other 3 test regions (Cook Inlet taiga, Northern Canadian Shield taiga, West Siberian taiga) have **0 GT
+positives** (specificity-only — they exercise false-positive behaviour, not detection). So the shipped test
+detection metric is a **one-region** number, not a multi-region pan-Arctic average (Val is likewise dominated
+by one region, 118/132 objects in Canadian Low Arctic). **First-product point on test** (thr 0.65 / min_blob
+2000, recomputed from the cache per the `deployment.yaml` note): obj-P **0.768** / R **0.400** / F1 **0.526**
+(tp 86 / fp 26 / fn 129), vs the min_blob-80 anchor 0.584 / 0.437 / 0.500. Artifacts:
+`/mnt/outputs/v1.0/test_realistic/effb5_ensemble_by_region.json`, `/mnt/outputs/v1.0/diagnostics/test_probs.npz`.
 <!-- FINDINGS:END -->
 
 ---

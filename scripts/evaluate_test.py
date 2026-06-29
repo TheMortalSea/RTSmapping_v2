@@ -275,6 +275,9 @@ def evaluate_test_ensemble(
     deployment_yaml: Path,
     output_path: Path | None = None,
     device: str | None = None,
+    by_region: bool = False,
+    region_min_blobs: tuple[int, ...] = (80, 2000),
+    cache_probs: Path | None = None,
 ) -> dict:
     """One-shot Test-Realistic for the N-seed mean-prob ensemble (Phase D deploy).
 
@@ -334,6 +337,14 @@ def evaluate_test_ensemble(
     }
     acc = metrics_mod.ValidationAccumulator(acc_cfg, ratios=[200, 500, 1000])
 
+    # Optional per-region collection: keep the 2-D fused probs + labels so we can
+    # score per region at the deployed threshold (additive — the aggregate path is
+    # unchanged). Doubles as a test_probs.npz cache so the one-shot is never
+    # re-touched for future per-region / threshold work.
+    rprobs: list[np.ndarray] = []
+    rlabels: list[np.ndarray] = []
+    rtids: list[str] = []
+
     for batch in loader:
         images = batch["image"].to(device_t, non_blocking=True)
         labels = batch["label"].to(device_t, non_blocking=True)
@@ -344,11 +355,34 @@ def evaluate_test_ensemble(
         probs = probs.clamp(_EPS, 1 - _EPS)
         pseudo_logits = torch.log(probs / (1 - probs)).unsqueeze(1)
         acc.update(pseudo_logits, labels, batch["tile_id"])
+        if by_region:
+            rprobs.append(probs.cpu().numpy().astype(np.float32))
+            rlabels.append(labels.cpu().numpy().astype(np.int16))
+            rtids.extend(batch["tile_id"])
 
     metrics = acc.compute()
     metrics.update({"_ensemble_members": list(checkpoints), "_tta": tta,
                     "_threshold": threshold, "_temperature": temperature,
                     "_min_blob_size_px": int(dep_cfg.get("min_blob_size_px", 10)), "_scale": 1.0})
+
+    if by_region:
+        from scripts.analyze_residual_errors import score_by_region
+        probs_arr = np.concatenate(rprobs, axis=0)
+        labels_arr = np.concatenate(rlabels, axis=0)
+        ignore_index = int(cfg["data"]["label_ignore_index"])
+        iou_thr = float(cfg["metrics"]["object_iou_threshold"])
+        tid_region = dict(zip(metadata["Tile_ID"], metadata["RegionName"]))
+        metrics["by_region"] = {
+            f"min_blob_{mb}": score_by_region(
+                probs_arr, labels_arr, rtids, tid_region,
+                ignore_index=ignore_index, thr=threshold, min_blob=mb, iou_thr=iou_thr,
+            )
+            for mb in region_min_blobs
+        }
+        if cache_probs is not None:
+            np.savez_compressed(cache_probs, tids=np.array(rtids),
+                                probs=probs_arr, labels=labels_arr)
+            logger.info("Cached test predictions → %s", cache_probs)
     output_path = Path(output_path) if output_path else Path("test_metrics_ensemble.json")
     cleaned = {k: (float(v) if isinstance(v, (int, float, np.floating)) else v)
                for k, v in metrics.items()}
@@ -373,12 +407,21 @@ def main() -> int:
     p.add_argument("--output", type=Path, default=None,
                    help="Where to write test_metrics.json; default: inside the package / cwd")
     p.add_argument("--device", default=None, help="cuda|cpu; default auto")
+    p.add_argument("--by-region", action="store_true",
+                   help="(ensemble mode) also emit per-region metrics + cache test probs")
+    p.add_argument("--region-min-blobs", default="80,2000",
+                   help="comma list of min_blob points for per-region scoring (default 80,2000)")
+    p.add_argument("--cache-probs", type=Path, default=None,
+                   help="(with --by-region) write test_probs.npz for future re-use")
     args = p.parse_args()
 
     setup_logging(level="INFO")
     if args.checkpoint:
         ckpts = dict(c.split("=", 1) for c in args.checkpoint)
-        evaluate_test_ensemble(ckpts, args.config, args.deployment_yaml, args.output, args.device)
+        region_min_blobs = tuple(int(x) for x in args.region_min_blobs.split(","))
+        evaluate_test_ensemble(ckpts, args.config, args.deployment_yaml, args.output,
+                               args.device, by_region=args.by_region,
+                               region_min_blobs=region_min_blobs, cache_probs=args.cache_probs)
     elif args.deployment_package:
         evaluate_test(args.deployment_package, args.training_config, args.output, args.device)
     else:
