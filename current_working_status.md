@@ -45,9 +45,9 @@ worker + monitor) + 3 ensemble deployment packages + `rts-infer:v1` image; 309 t
 ### Now
 **Inference phase — orchestration + artifacts done; gated on S2 + Phase-3 pre-flight.** Built & pushed:
 shard-claim queue + worker + monitor (Phase 1), 3 ensemble deployment packages + self-contained `rts-infer:v1`
-image (Phase 2). **Blocking long pole = the 2025_south Sentinel-2 export** (NDVI source): GEE-bound at
-**3 concurrent task slots** → ~5 cells/hr, **~263/1799 done, ETA ~12 days** (diagnosed 2026-06-26; user chose
-to wait, not cancel the competing 2024 export). **Phase 3 code done:** fleet scripts (`create_inference_fleet.sh` + `inference_fleet_startup.sh` +
+image (Phase 2). **Blocking long pole = the 2025_south Sentinel-2 export** (NDVI source): GEE-bound, but
+the 2024 competition has largely cleared → ~9 cells/hr realized, **908/1799 done (50%, 2026-06-29), ETA
+~4–7 days** (down from the ~12 d estimated 2026-06-26; user chose to wait, not cancel 2024). **Phase 3 code done:** fleet scripts (`create_inference_fleet.sh` + `inference_fleet_startup.sh` +
 `inference_watchdog.sh`) + live L4-quota check (32 limit / 1 phantom-used → 31 schedulable → default **3×
 g2-standard-96**, not 4). **All remaining work is GATED:** (a) on the S2 export (~12 d) — `s2_index` +
 coverage audit (Phase 0 tail), Banks Island RGB+NDVI parity, launch; (b) on explicit go + spend — live VM
