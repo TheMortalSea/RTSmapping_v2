@@ -47,7 +47,12 @@ from scipy import ndimage
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from data.splits import load_metadata  # noqa: E402
-from training.metrics import _filter_small_blobs, _match_objects, _safe_div  # noqa: E402
+from training.metrics import (  # noqa: E402
+    _filter_small_blobs,
+    _match_objects,
+    _object_match_detail,
+    _safe_div,
+)
 from utils.logging import setup_logging  # noqa: E402
 
 logger = logging.getLogger(__name__)
@@ -260,6 +265,91 @@ def score_by_region(
              for k in ("otp", "ofp", "ofn", "ptp", "pfp", "pfn")}
     return {"threshold": thr, "min_blob_size": min_blob,
             "per_region": per_region, "ALL": _metrics(total)}
+
+
+# ---------------------------------------------------------------------------
+# Object scorecard helpers — split/merge, geometry, per-region bootstrap CIs
+# (report-only; point P/R/F1 + parity stay owned by score_by_region above)
+# ---------------------------------------------------------------------------
+
+
+def object_detail_counts(
+    prob: np.ndarray, label: np.ndarray, ignore_index: int,
+    thr: float, min_blob: int, iou_thr: float, overlap_frac: float = 0.1,
+) -> tuple[int, int, int, int, int, list[float]]:
+    """One tile → (obj_tp, obj_fp, obj_fn, n_splits, n_merges, matched_ious).
+
+    Same prediction/labeling path as ``object_counts`` (morph_r=0), but routed
+    through ``_object_match_detail`` for the split/merge + matched-geometry readout.
+    obj tp/fp/fn are bit-identical to ``object_counts``.
+    """
+    valid = label != ignore_index
+    gt = (label == 1) & valid
+    pred = _pred_mask(prob, valid, thr, 0)
+    pred_filt = _filter_small_blobs(pred.astype(np.uint8), min_blob)
+    pred_labels, n_pred = ndimage.label(pred_filt)
+    gt_labels, n_gt = ndimage.label(gt.astype(np.uint8))
+    conf = (np.array(ndimage.mean(prob, pred_labels, index=np.arange(1, n_pred + 1)),
+                     dtype=np.float64) if n_pred > 0 else np.zeros(0))
+    d = _object_match_detail(
+        pred_labels, n_pred, gt_labels, n_gt, conf, iou_thr, overlap_frac,
+    )
+    return d.tp, d.fp, d.fn, d.n_splits, d.n_merges, d.matched_ious
+
+
+def _geometry_summary(ious: list[float]) -> dict | None:
+    """Matched-pair IoU distribution (object-geometry quality of detections)."""
+    if not ious:
+        return None
+    a = np.asarray(ious, dtype=np.float64)
+    return {
+        "n_matched": int(a.size),
+        "iou_median": round(float(np.median(a)), 4),
+        "iou_p10": round(float(np.percentile(a, 10)), 4),
+        "iou_p90": round(float(np.percentile(a, 90)), 4),
+        "iou_mean": round(float(a.mean()), 4),
+    }
+
+
+def _prf_counts(otp: int, ofp: int, ofn: int) -> tuple[float, float, float]:
+    p = _safe_div(otp, otp + ofp)
+    r = _safe_div(otp, otp + ofn)
+    return p, r, _safe_div(2 * p * r, p + r)
+
+
+def bootstrap_region_object_ci(
+    tile_counts: list[tuple[int, int, int]],
+    *, n_boot: int = 1000, seed: int = 42, ci: tuple[float, float] = (2.5, 97.5),
+) -> dict:
+    """Cluster-bootstrap obj precision/recall/F1 CIs over TILES within a region.
+
+    ``tile_counts``: list of per-tile (obj_tp, obj_fp, obj_fn). Tiles are the
+    resampling unit (objects within a tile are spatially correlated), so this is a
+    tile-cluster bootstrap. Recall/F1 are only meaningful when the region has GT
+    objects; callers gate display on n_gt_objects.
+    """
+    T = len(tile_counts)
+    arr = np.asarray(tile_counts, dtype=np.float64).reshape(T, 3) if T else np.zeros((0, 3))
+    s = arr.sum(0) if T else np.zeros(3)
+    pt_p, pt_r, pt_f = _prf_counts(int(s[0]), int(s[1]), int(s[2]))
+    if T == 0:
+        none3 = {"point": None, "lo": None, "hi": None}
+        return {"n_tiles": 0, "precision": none3, "recall": none3, "f1": none3}
+    rng = np.random.default_rng(seed)
+    ps, rs, fs = [], [], []
+    for _ in range(n_boot):
+        ss = arr[rng.integers(0, T, size=T)].sum(0)
+        p, r, f = _prf_counts(ss[0], ss[1], ss[2])
+        ps.append(p); rs.append(r); fs.append(f)
+
+    def _ci(vals: list[float], pt: float) -> dict:
+        v = np.asarray(vals)
+        return {"point": round(pt, 4),
+                "lo": round(float(np.percentile(v, ci[0])), 4),
+                "hi": round(float(np.percentile(v, ci[1])), 4)}
+
+    return {"n_tiles": T,
+            "precision": _ci(ps, pt_p), "recall": _ci(rs, pt_r), "f1": _ci(fs, pt_f)}
 
 
 # ---------------------------------------------------------------------------

@@ -121,6 +121,97 @@ def _match_objects(
     return tp, fp, fn
 
 
+@dataclass
+class ObjectMatchDetail:
+    """Report-only object-matching detail (scorecard; NOT the per-epoch gate path).
+
+    tp/fp/fn are bit-identical to ``_match_objects`` (same greedy 1-to-1 logic).
+    The extra fields are diagnostics for the object scorecard:
+
+      - ``n_splits``  — over-segmentation: GT objects each overlapped by >=2 distinct
+        prediction blobs (one true object split into many preds).
+      - ``n_merges``  — under-segmentation: prediction blobs each overlapping >=2
+        distinct GT objects (many true objects merged into one pred).
+      - ``matched_ious`` — IoU of every TP matched pair (object-geometry readout).
+
+    NOTE on naming: the project plan's shorthand ("n_splits = one pred↦≥2 GT") had
+    split/merge reversed relative to the standard convention used here (split = one
+    GT → many preds; merge = many GT → one pred).
+    """
+    tp: int
+    fp: int
+    fn: int
+    n_splits: int
+    n_merges: int
+    matched_ious: list[float]
+
+
+def _object_match_detail(
+    pred_labels: np.ndarray,
+    n_pred: int,
+    gt_labels: np.ndarray,
+    n_gt: int,
+    pred_conf_per_blob: np.ndarray,
+    iou_threshold: float,
+    overlap_frac: float = 0.1,
+) -> ObjectMatchDetail:
+    """Greedy 1-to-1 matching + split/merge/geometry detail (report-only).
+
+    Matching (tp/fp/fn) replicates ``_match_objects`` exactly. Split/merge use an
+    association rule: a (pred, GT) pair *associates* when their intersection covers
+    at least ``overlap_frac`` of the smaller blob — a single-pixel touch does not.
+    """
+    if n_pred == 0 and n_gt == 0:
+        return ObjectMatchDetail(0, 0, 0, 0, 0, [])
+    if n_pred == 0:
+        return ObjectMatchDetail(0, 0, n_gt, 0, 0, [])
+    if n_gt == 0:
+        return ObjectMatchDetail(0, n_pred, 0, 0, 0, [])
+
+    pred_masks = [pred_labels == (p + 1) for p in range(n_pred)]
+    gt_masks = [gt_labels == (g + 1) for g in range(n_gt)]
+    pred_areas = [int(m.sum()) for m in pred_masks]
+    gt_areas = [int(m.sum()) for m in gt_masks]
+
+    iou = np.zeros((n_pred, n_gt), dtype=np.float64)
+    inter = np.zeros((n_pred, n_gt), dtype=np.int64)
+    for p in range(n_pred):
+        for g in range(n_gt):
+            i = int(np.logical_and(pred_masks[p], gt_masks[g]).sum())
+            if i:
+                inter[p, g] = i
+                iou[p, g] = i / (pred_areas[p] + gt_areas[g] - i)
+
+    # Greedy 1-to-1 by descending confidence (identical to _match_objects).
+    order = np.argsort(pred_conf_per_blob)[::-1]
+    matched_gt: set[int] = set()
+    matched_ious: list[float] = []
+    tp = 0
+    for p in order:
+        row = iou[p].copy()
+        for g in matched_gt:
+            row[g] = 0.0
+        g = int(np.argmax(row))
+        if row[g] >= iou_threshold:
+            matched_gt.add(g)
+            matched_ious.append(float(row[g]))
+            tp += 1
+    fp = n_pred - tp
+    fn = n_gt - len(matched_gt)
+
+    # Association matrix for split/merge (overlap_frac of the smaller blob).
+    assoc = np.zeros((n_pred, n_gt), dtype=bool)
+    for p in range(n_pred):
+        for g in range(n_gt):
+            if inter[p, g] == 0:
+                continue
+            if inter[p, g] / min(pred_areas[p], gt_areas[g]) >= overlap_frac:
+                assoc[p, g] = True
+    n_splits = int((assoc.sum(axis=0) >= 2).sum())   # GTs hit by >=2 preds
+    n_merges = int((assoc.sum(axis=1) >= 2).sum())   # preds hitting >=2 GTs
+    return ObjectMatchDetail(tp, fp, fn, n_splits, n_merges, matched_ious)
+
+
 def _safe_div(num: float, denom: float) -> float:
     return num / denom if denom > 0 else 0.0
 

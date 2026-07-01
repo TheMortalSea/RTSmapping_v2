@@ -6,7 +6,12 @@ import numpy as np
 import pytest
 import torch
 
-from training.metrics import ValidationAccumulator, _filter_small_blobs, _match_objects
+from training.metrics import (
+    ValidationAccumulator,
+    _filter_small_blobs,
+    _match_objects,
+    _object_match_detail,
+)
 
 
 def _cfg(**metrics_overrides) -> dict:
@@ -102,6 +107,67 @@ def test_match_objects_greedy_confidence_sort():
     conf = np.array([0.9, 0.7])  # pred 1 more confident
     tp, fp, fn = _match_objects(pred_labels, 2, gt_labels, 1, conf, 0.3)
     assert (tp, fp, fn) == (1, 1, 0)
+
+
+# ---------------------------------------------------------------------------
+# _object_match_detail — split/merge/geometry (report-only scorecard)
+# ---------------------------------------------------------------------------
+
+
+def _detail_args(pred_labels, n_pred, gt_labels, n_gt, conf):
+    return dict(
+        pred_labels=pred_labels, n_pred=n_pred,
+        gt_labels=gt_labels, n_gt=n_gt,
+        pred_conf_per_blob=conf, iou_threshold=0.3,
+    )
+
+
+def test_detail_tp_fp_fn_parity_with_match_objects():
+    """Detail must reproduce _match_objects' (tp, fp, fn) exactly (frozen gate path)."""
+    pred_labels = np.zeros((10, 10), dtype=int)
+    pred_labels[0:3, 0:3] = 1
+    pred_labels[0:3, 5:8] = 2          # FP (no GT there)
+    gt_labels = np.zeros((10, 10), dtype=int)
+    gt_labels[0:3, 0:3] = 1
+    conf = np.array([0.9, 0.7])
+    base = _match_objects(pred_labels, 2, gt_labels, 1, conf, 0.3)
+    d = _object_match_detail(**_detail_args(pred_labels, 2, gt_labels, 1, conf))
+    assert (d.tp, d.fp, d.fn) == base == (1, 1, 0)
+
+
+def test_detail_clean_one_to_one_no_split_no_merge():
+    pred_labels = np.zeros((10, 10), dtype=int)
+    pred_labels[0:4, 0:4] = 1
+    gt_labels = np.zeros((10, 10), dtype=int)
+    gt_labels[0:4, 0:4] = 1
+    d = _object_match_detail(**_detail_args(pred_labels, 1, gt_labels, 1, np.array([0.9])))
+    assert (d.tp, d.fp, d.fn) == (1, 0, 0)
+    assert d.n_splits == 0 and d.n_merges == 0
+    assert d.matched_ious == [pytest.approx(1.0)]
+
+
+def test_detail_split_one_gt_two_preds():
+    """Over-segmentation: one GT object covered by two prediction blobs -> n_splits=1."""
+    gt_labels = np.zeros((10, 12), dtype=int)
+    gt_labels[0:4, 0:10] = 1                 # one wide GT object
+    pred_labels = np.zeros((10, 12), dtype=int)
+    pred_labels[0:4, 0:4] = 1                 # left fragment
+    pred_labels[0:4, 6:10] = 2                # right fragment (gap -> two blobs)
+    d = _object_match_detail(**_detail_args(pred_labels, 2, gt_labels, 1, np.array([0.9, 0.8])))
+    assert d.n_splits == 1
+    assert d.n_merges == 0
+
+
+def test_detail_merge_two_gt_one_pred():
+    """Under-segmentation: one prediction blob spanning two GT objects -> n_merges=1."""
+    gt_labels = np.zeros((10, 12), dtype=int)
+    gt_labels[0:4, 0:4] = 1                   # GT 1
+    gt_labels[0:4, 6:10] = 2                  # GT 2 (separate)
+    pred_labels = np.zeros((10, 12), dtype=int)
+    pred_labels[0:4, 0:10] = 1                # one blob covering both
+    d = _object_match_detail(**_detail_args(pred_labels, 1, gt_labels, 2, np.array([0.9])))
+    assert d.n_merges == 1
+    assert d.n_splits == 0
 
 
 # ---------------------------------------------------------------------------
