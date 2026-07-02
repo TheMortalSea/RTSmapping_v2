@@ -458,7 +458,9 @@ def process_task(task: dict) -> dict | None:
     key = (round(lat, 6), round(lon, 6))
     if key in _G["done"]:
         return {"skip": "duplicate"}
-    uid = make_tile_uid(*key)
+    # "-05" suffix: negative windows share centroids with the v1.0 512-px tiles
+    # (same ARTS centroid), so the bare geohash would collide across roots.
+    uid = make_tile_uid(*key) + "-05"
 
     out_root = _G["out_root"]
     write_bytes(f"{out_root}/PLANET-RGB/{uid}.tif", tile_bytes(rgb, bounds))

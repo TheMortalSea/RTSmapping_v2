@@ -149,7 +149,10 @@ sign-flipped → rejected).
 | phase_lock_ndvi_bd_curric | I | corrected | 0.9063 | done | early lock attempt — superseded by deploy_v1 |
 | deploy_v1_ndvi_seed42 | I | corrected | 0.9144 | done | **final-lock 3-seed (v2 recipe) — reference baseline** |
 | deploy_v1_ndvi_seed43 | I | corrected | 0.9068 | done | final-lock 3-seed |
-| deploy_v1_ndvi_seed44 | I | corrected | 0.9156 | done | final-lock 3-seed (mean 0.9123) |<!-- RUN-TABLE:END -->
+| deploy_v1_ndvi_seed44 | I | corrected | 0.9156 | done | final-lock 3-seed (mean 0.9123) |
+| multiscale_poc_seed42 | M | corrected | — | running | locked recipe + 0.5x additional_roots (POC, gates in family-M finding) |
+| multiscale_poc_seed43 | M | corrected | — | running | multiscale POC seed-confirm |
+| multiscale_poc_seed44 | M | corrected | — | running | multiscale POC seed-confirm |<!-- RUN-TABLE:END -->
 
 ---
 
