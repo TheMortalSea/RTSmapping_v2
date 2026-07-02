@@ -324,6 +324,10 @@ Forward-path tests for `models/foundation.py` (FoundationSegmenter: DINOv3/ViT e
 | `test_match_objects_empty_pred_positive_tile` | Empty pred, 2 GT → FN=2 | real — plan §6.2 edge case |
 | `test_match_objects_empty_gt_negative_tile` | 3 preds, empty GT → FP=3 | real |
 | `test_match_objects_greedy_confidence_sort` | Higher-conf prediction wins the GT | real |
+| `test_detail_tp_fp_fn_parity_with_match_objects` | `_object_match_detail` (report-only scorecard) tp/fp/fn bit-identical to `_match_objects` (frozen gate path) | real — drift guard |
+| `test_detail_clean_one_to_one_no_split_no_merge` | Clean 1↦1 → n_splits=0, n_merges=0, matched IoU=1.0 | real |
+| `test_detail_split_one_gt_two_preds` | One GT, two pred blobs → n_splits=1 (over-segmentation) | real |
+| `test_detail_merge_two_gt_one_pred` | Two GT, one pred blob → n_merges=1 (under-segmentation) | real |
 | `test_accumulator_perfect_prediction_pixel_iou_one` | Exact match → all metrics 1.0 | real |
 | `test_accumulator_ignore_index_masks_pixels` | ignore pixels contribute nothing to TP/FP/FN | real — ignore contract |
 | `test_accumulator_speckle_fp_filtered` | 1-px FP below min_blob_size doesn't count | real |
@@ -332,6 +336,28 @@ Forward-path tests for `models/foundation.py` (FoundationSegmenter: DINOv3/ViT e
 | `test_bootstrap_off_by_default` | No `bootstrap_ratios` → no boot keys emitted (default frozen) | real — Stage 0.2 guard |
 | `test_bootstrap_emits_mean_and_ci_within_range` | Enabled → per-ratio mean/lo/hi in [0,1], lo ≤ mean ≤ hi | real — Stage 0.2 bootstrap readout |
 | `test_bootstrap_does_not_change_gate_metric` | Enabling bootstrap leaves the gate geomean bit-identical (separate RNG) | real — eval-freeze guarantee |
+
+### [test_object_scorecard.py](test_object_scorecard.py)
+
+Object-level scorecard + applicability probes (Phase 0 of the v3 object-improvement plan). All report-only / synthetic; modules import `training.metrics` → torch (test dep). `make_invisible_contact_sheet` imports matplotlib lazily (in `render`), so `find_invisible_objects` is testable without it.
+
+| Test | Checks | Strictness |
+|---|---|---|
+| `test_detail_counts_match_object_counts_and_flag_split` | `object_detail_counts` obj tp/fp/fn == `object_counts`; 1-GT/2-pred tile → n_splits≥1 | real — parity + split |
+| `test_detail_counts_merge` | One pred spanning two GTs → n_merges≥1 | real — merge |
+| `test_bootstrap_point_and_ci_ordering` | Tile-cluster bootstrap: point P/R match counts; lo ≤ point ≤ hi in [0,1] | real |
+| `test_bootstrap_empty_region_is_none` | Empty region → None point/CI (not spurious 0) | real — edge case |
+| `test_bootstrap_deterministic` | Same seed → identical CIs | real — reproducibility |
+| `test_geometry_summary_basic` | Matched-pair IoU median/quantiles | real |
+| `test_geometry_summary_empty_none` | No matches → None | shallow |
+| `test_build_scorecard_selfcheck_and_signals` | End-to-end: self-check (detail==score_by_region), recall=3/5, precision=3/4, splits+merges flagged, invisible counted, low-sample + per-region invisible_floor | real — instrument integration |
+| `test_sampler_caps_dense_regions_keeps_sparse` | Region-stratified sample caps dense regions, keeps sparse, drops none, deterministic + sorted | real |
+| `test_sampler_cap_above_sizes_keeps_all` | cap > region sizes → all candidates kept | shallow |
+| `test_change_probe_bright_blank_and_excludes_detected` | D2: invisible object above ambient change → bright, flat → blank; detected objects excluded; change_blank_fraction correct | real — change-arm go/no-go |
+| `test_change_probe_no_invisible_objects` | No invisible objects → n=0, blank-fraction None | real — edge case |
+| `test_seed_noise_stats` | Cross-seed mean/std/spread of aggregate obj metrics | real |
+| `test_seed_noise_handles_none_metric` | None metric values dropped before stats | shallow |
+| `test_find_invisible_objects_selects_only_below_threshold` | Contact-sheet selection: only max_prob<thr GT objects, with correct area + bbox | real — D1 audit selection |
 
 ### [test_freeze.py](test_freeze.py)
 
@@ -559,6 +585,7 @@ Deliberately deferred — most are better caught by Tier 2 against real data tha
 5. **Error paths on corrupted rasters** — unreadable GeoTIFF, wrong CRS, size mismatch between RGB/label/EXTRA. All raise somewhere in `RTSDataset` but no test exercises those branches.
 6. **Numerical edge cases in Welford** — single distribution, realistic scale. No adversarial `1e10 + 1e-10` test for catastrophic cancellation. Fine for imagery in practice.
 7. **Malformed metadata** — missing column, bad `TrainClass`, duplicate `Tile_id`. `load_metadata()` has the guards but they're not exercised.
+8. **Object-scorecard real-data execution (Tier 2)** — `test_object_scorecard.py` covers all report-only *logic* on synthetic arrays, but the GPU/real-data runs are not in pytest: (a) `score_insample_train.py` `_build_cache` (ensemble inference over the train sample → `*_probs.npz`) is exercised only on the L4 VM; (b) `probe_change_signal.py` needs an L4-built `*_change.npz` (|ΔNDVI| over the 2024−2023 train year-pair for the val tiles) — its construction is imagery-layout-dependent and not yet written; (c) parity of the scorecard's aggregate against the frozen Finding-K numbers is a Tier-2 check on the real val/test caches.
 
 ---
 
@@ -582,3 +609,4 @@ Deliberately deferred — most are better caught by Tier 2 against real data tha
 
 - 2026-04-22 — Initial suite: 24 tests across 4 files, all green. Covers Phase 0 data pipeline. See plan for context.
 - 2026-04-23 — Phase 1 additions: 81 new tests across 10 files covering models, losses, EMA, scheduler, metrics, checkpointing, freeze/unfreeze, early stopping, MLflow utilities, visualizations, deployment-package guards, and an end-to-end training smoke. Fast suite 105 tests (~12 s), plus the train-smoke at ~130 s. Total 113 tests. All green.
+- 2026-06-30 — Object-scorecard instrument (v3 object-improvement plan, Phase 0): +4 `_object_match_detail` tests in `test_metrics.py` (tp/fp/fn parity with the frozen gate path + split/merge/geometry), and new `test_object_scorecard.py` (14 tests) covering `object_detail_counts`, per-region bootstrap CIs, `_geometry_summary`, `build_scorecard` self-check, the region-stratified train sampler, the D2 change-signal probe, and the seed-noise aggregator. All report-only/synthetic; verified green off-VM under a torch stub (real torch on the L4 runs them in the full suite). Tier-2 execution gaps recorded in Coverage gaps #8.

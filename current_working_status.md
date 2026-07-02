@@ -28,21 +28,30 @@ for inference. Docker `rts-train:v2`. Data in `gs://abrupt_thaw/` + `gs://rts-ma
 ## Rolling progress
 
 ### Just completed
-**Pre-S2 residual-error diagnostics (pure analysis, no fleet run).** Built `scripts/analyze_residual_errors.py`
-(report-only) and ran it on the cached 3-seed val predictions (`val_probs.npz`, 0-GPU). **Analysis A —
-signal typology:** per GT object, max prob in footprint → detected_at_deploy 80 / recoverable_below_deploy 15
-/ **perception_invisible 37 (28.0% floor)**. **Analysis B — per-region scoring** (parity-verified vs the
-existing grid row): Canadian Low Arctic (bulk, obj-F1 0.46) carries the aggregate; Northeast Siberian coastal
-**0/12 detected** (worst); two val regions are negative-only (now reported null, not 0 — fixed a spurious-0
-bug). **B-test** (`evaluate_test.py --by-region`, deterministic re-run, reproduces frozen J exactly;
-`test_probs.npz` cached): **all 215 test objects are in ONE region** (NW Russian-Novaya Zemlya) → the shipped
-test number is single-region, not pan-Arctic; first-product point (min_blob 2000) on test = obj-P 0.768/R 0.40/F1
-0.526. Facts logged to ledger Finding **K**; artifacts in `/mnt/outputs/v1.0/{diagnostics,test_realistic}/`.
-Analysis C (prevalence) dropped per user. Prior: Phases 1 + 2 — inference orchestration (shard-claim queue +
-worker + monitor) + 3 ensemble deployment packages + `rts-infer:v1` image; 309 tests green.
+**Object-level scorecard instrument + bias/variance diagnosis (v3 pre-deploy, Phase 0).** Report-only scorecard
+(`scripts/object_scorecard.py`; split/merge + matched-IoU geometry in `training.metrics._object_match_detail`;
+per-region tile-cluster bootstrap CIs in `analyze_residual_errors.py`) — reproduces Finding K/J **exactly** on
+the real val/test caches (self-check green). Ran on the 8× A100: in-sample train pass (`score_insample_train.py`,
+3-seed ensemble over 302 train-positive tiles / 16 regions) + per-seed val (×3). **Result — perception-invisible
+floor F_in=0.140 in-sample vs F_held=0.280 held-out** → the pre-registered rule lands **ambiguous band →
+bake-off** (F_in is a *lower bound* — memorisation inflates fit — so the true bias floor is ≥14%; the ~14 pt
+held-vs-in gap is a generalisation component). **Seed-noise floor** (Phase 0C, 3 existing seeds): obj-recall
+std 0.028 / spread 0.052 — the margin any single-seed Phase-1 POC must beat. Splits/merges stay sub-dominant to
+misses (recall remains the axis; 0E checkpoint doesn't reopen the lever). Artifacts + `decision_gate.json` in
+`/mnt/outputs/v1.0/staging/object_scorecard_diagnostics/`; a 73-object invisible contact sheet + manifest
+generated for the **D1 label audit (next v3 step)**. **D2 change-probe pending** — 2023 prior-year imagery not in
+the local mount. 19 new tests green (torch+smp pinned to frozen deploy versions). Prior: pre-S2 residual-error
+diagnostics (Finding K); inference Phases 1+2 (orchestration + 3 packages + `rts-infer:v1`).
 
 <!-- NOW:BEGIN -->
 ### Now
+**(v3 pre-deploy side-track, done in parallel — does NOT gate the inference launch below):** object-scorecard
+bias/variance diagnosis landed — F_in 14% (in-sample) / F_held 28% (held-out) → pre-registered rule =
+**ambiguous / bake-off**; both a ≥14% representation-or-label bias floor and a ~14 pt generalisation gap are
+present. Next v3 step = **D1 label audit** of the 73 in-sample invisibles (contact sheet ready in
+`staging/object_scorecard_diagnostics/`); D2 change-probe still needs the 2023 prior-year imagery. Phase-1 POCs
+(change / data arms) remain gated behind D1 + a decision to divert from deploy.
+
 **Inference phase — orchestration + artifacts done; gated on S2 + Phase-3 pre-flight.** Built & pushed:
 shard-claim queue + worker + monitor (Phase 1), 3 ensemble deployment packages + self-contained `rts-infer:v1`
 image (Phase 2). **Blocking long pole = the 2025_south Sentinel-2 export** (NDVI source): GEE-bound, but
