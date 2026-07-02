@@ -17,7 +17,8 @@ control, not across phases). Test-Realistic is scored once, honestly, on the cor
 degenerate · killed (ran to a verdict but failed) · lr-test.
 
 **Families:** A Baseline/gate · B Data · C Loss/boundary · D Channels/fusion · E Architecture/encoder ·
-F Augmentation · G Sampling · H Calibration/TTA · I Final-lock/Test · J Deploy/inference · K Deferred.
+F Augmentation · G Sampling · H Calibration/TTA · I Final-lock/Test · J Deploy/inference · K Deferred ·
+M Multi-scale (0.5x context-expanded training POC).
 
 <!-- GATE:BEGIN -->
 ## Gate
@@ -311,6 +312,26 @@ by one region, 118/132 objects in Canadian Low Arctic). **First-product point on
 2000, recomputed from the cache per the `deployment.yaml` note): obj-P **0.768** / R **0.400** / F1 **0.526**
 (tp 86 / fp 26 / fn 129), vs the min_blob-80 anchor 0.584 / 0.437 / 0.500. Artifacts:
 `/mnt/outputs/v1.0/test_realistic/effb5_ensemble_by_region.json`, `/mnt/outputs/v1.0/diagnostics/test_probs.npz`.
+
+**M — Multi-scale (0.5x context-expanded training POC, started 2026-07-02).** Motivation: the v2.0
+model does not transfer zero-shot to 2× GSD (scale-0.5 tiny-AOI test: 0 blobs vs 9, hot-region IoU
+0.000 — `docs/inference_validation.md`), and the inference.md §6.4 gate presumes multi-scale must come
+from training. Design (user decisions): full re-stage of the dataset at 0.5x (~9.55 m/px, 1024-px
+native windows bilinear-downsampled to 512, matching the inference scale-0.5 read) · ignore features
+touching a refined positive **auto-converted to positive** (they were ignore for lack of within-tile
+context; 115/168 convert) · joint dual-scale training, 3 seeds. New guards at 0.5x: unrefined-ARTS
+255 (known-but-undelineated RTS in the 4× context must not train as background), sub-pixel (<10 px)
+positives → 255. Staged: `gs://rts-mapping-v2/training/v1.0_scale05` — **21,934 tiles (1,491 pos /
+20,443 neg)**; splits resolve to train 17,679 / val_realistic 2,155 (93 pos) / test 2,100. Provenance:
+staging vectors reproduce 57/60 sampled v1.0 label tiles exactly (3 misses = later hotfix edits).
+Norm: v1.0 stats reused; measured drift mean −1.2..−1.8%, std −5..−7% (bilinear variance loss —
+accepted, keeps the 1x baseline unconfounded). Ignore share in 0.5x positives: 0.71% of px (vs 3.40%
+positive px) — the context-expansion did remove most ignore need. **Pre-registered gates:**
+(1) *1x no-regression*: 3-seed mean best_smoothed within seed noise of the TrivialAugment baseline
+0.9218 (Δ ≥ −0.01); (2) *0.5x capability*: 0.5x-val F1 ≥ 0.7× same-model 1x val F1 (zero-shot today
+collapses to ~0) + tiny-AOI `--scale05` blobs reappear; (3) *helps-final-performance*: §7.3
+average-fusion of 1x+0.5x val predictions beats 1x-only object recall by > seed spread (0.052) at no
+F1 loss. Runs: `multiscale_poc_seed{42,43,44}` (locked recipe + `data.additional_roots` delta only).
 <!-- FINDINGS:END -->
 
 ---

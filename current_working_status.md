@@ -45,6 +45,15 @@ diagnostics (Finding K); inference Phases 1+2 (orchestration + 3 packages + `rts
 
 <!-- NOW:BEGIN -->
 ### Now
+**Multiscale POC (family M, branch `multiscale-poc`, started 2026-07-02 — user-approved plan):** prove
+context-expanded 0.5x training fixes the zero-shot scale-transfer failure without hurting 1x. Phase A
+done: `scripts/scale05_tile_creation.py` staged **21,934 tiles** (1,491 pos / 20,443 neg) at 9.55 m/px
+to `gs://rts-mapping-v2/training/v1.0_scale05` (+ local copy); label rules = ignore auto-convert
+(115/168) · unrefined-ARTS 255 guard · sub-pixel guard; QC green (contact sheet, norm drift −1..−7%,
+splits resolve). Loader: `data.additional_roots` (train-only; val stays 1x-comparable). NDVI EXTRA
+generating via GEE computePixels (interactive API — does NOT touch the S2 batch export queue). Next:
+check_data → smoke → 3× A100 runs `multiscale_poc_seed{42,43,44}` → pre-registered gates (ledger
+family M).
 **(v3 pre-deploy side-track, done in parallel — does NOT gate the inference launch below):** object-scorecard
 bias/variance diagnosis landed — F_in 14% (in-sample) / F_held 28% (held-out) → pre-registered rule =
 **ambiguous / bake-off**; both a ≥14% representation-or-label bias floor and a ~14 pt generalisation gap are
