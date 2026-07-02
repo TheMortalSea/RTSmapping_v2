@@ -339,3 +339,38 @@ def test_read_with_retry_raises_after_exhausting_attempts(monkeypatch):
 
     with pytest.raises(RuntimeError, match="badtile after 4 attempts"):
         ds._read_with_retry(always_fails, tile_id="badtile", what="RGB")
+
+
+def test_dataset_per_tile_data_root_column(synthetic_dataset, tmp_path):
+    """Multiscale POC: a `data_root` metadata column routes tiles to their own
+    root; tiles without the column value fall back to the ctor data_root."""
+    import shutil
+
+    ds = synthetic_dataset
+    metadata = load_metadata(f"{ds['root']}/metadata.csv")
+    splits = load_splits_yaml(f"{ds['root']}/splits.yaml")
+    ids = get_tile_ids("train", metadata, splits)
+
+    # Relocate one train tile into a second root; point its metadata there.
+    alt_root = tmp_path / "v1.0_scale05"
+    moved = ids[0]
+    for sub in ("PLANET-RGB", "EXTRA", "labels"):
+        (alt_root / sub).mkdir(parents=True)
+        shutil.move(f"{ds['root']}/{sub}/{moved}.tif", alt_root / sub / f"{moved}.tif")
+    metadata["data_root"] = None
+    metadata.loc[metadata["Tile_ID"] == moved, "data_root"] = str(alt_root)
+
+    dataset = RTSDataset(
+        tile_ids=ids, metadata=metadata, data_root=ds["root"],
+        rgb_dir="PLANET-RGB", extra_dir="EXTRA", labels_dir="labels",
+        extra_channels=[], norm_stats_path=None,
+        transform=build_eval_transforms(),
+        tile_size=64,
+    )
+    assert dataset._path("PLANET-RGB", moved) == f"{alt_root}/PLANET-RGB/{moved}.tif"
+    other = ids[1]
+    assert dataset._path("PLANET-RGB", other) == f"{ds['root']}/PLANET-RGB/{other}.tif"
+    # Both tiles actually load.
+    for idx, tid in enumerate(ids[:2]):
+        item = dataset[idx]
+        assert item["image"].shape == (3, 64, 64)

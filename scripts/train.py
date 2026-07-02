@@ -214,6 +214,26 @@ def _setup_data(cfg: dict) -> dict:
     metadata = load_metadata(resolve_path(data_root, cfg["data"]["metadata_csv"]))
     splits = load_splits_yaml(resolve_path(data_root, cfg["data"]["splits_yaml"]))
 
+    # Multiscale POC: extra dataset roots (e.g. the 0.5x re-stage) contribute
+    # TRAIN tiles only — val_realistic stays primary-root so the ledger metric
+    # remains comparable to the 1x baseline. Region splits are shared (same
+    # circumpolar_subregions), so the primary splits.yaml applies to all roots.
+    additional_roots = cfg["data"].get("additional_roots") or []
+    primary_metadata = metadata
+    if additional_roots:
+        metadata = metadata.assign(data_root=data_root)
+        extra_frames = []
+        for root in additional_roots:
+            extra_md = load_metadata(resolve_path(root, cfg["data"]["metadata_csv"]))
+            extra_frames.append(extra_md.assign(data_root=root))
+            logger.info("additional_root %s: %d tiles", root, len(extra_md))
+        metadata = pd.concat([metadata] + extra_frames, ignore_index=True)
+        dup = metadata["Tile_ID"].duplicated()
+        if dup.any():
+            raise ValueError(
+                f"Tile_ID collision across data roots: {metadata.loc[dup, 'Tile_ID'].tolist()[:5]}"
+            )
+
     extra_channels = parse_extra_spec(cfg["channels"].get("extra", []))
     stats_path = cfg["data"]["normalization_stats_path"]
     # Stats may not exist yet for the synthetic smoke; Dataset handles that path.
@@ -228,7 +248,7 @@ def _setup_data(cfg: dict) -> dict:
     ev_aug = build_eval_transforms()
 
     train_ids = get_tile_ids("train", metadata, splits)
-    val_ids = get_tile_ids("val_realistic", metadata, splits)
+    val_ids = get_tile_ids("val_realistic", primary_metadata, splits)
     logger.info("Tile counts: train=%d, val_realistic=%d", len(train_ids), len(val_ids))
 
     # Positive-subset filter (Phase 0 §3.2 LR test, Phase 2 §5.1 data scale).

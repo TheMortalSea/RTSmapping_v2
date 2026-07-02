@@ -200,6 +200,32 @@ All auxiliary data must be:
 3. Co-registered with RGB using GeoTIFF bounding box information
 4. Stacked as channels in an order you keep stable across the dataset (that same order is what you reference by `band` index in the YAML config). §9 shows one example layout.
 
+### 3.5 0.5x-scale staging (multiscale POC, 2026-07-02)
+
+A second dataset root, `gs://rts-mapping-v2/training/v1.0_scale05/`, holds 512×512 tiles at
+**~9.55 m/px** (2× GSD, 4× FOV area): each tile is a 1024×1024-px native window
+**bilinear**-downsampled to 512 — the identical decimated read the inference pipeline uses at
+scale 0.5 (`inference/tiles.py`), per Rule 3. Built by `scripts/scale05_tile_creation.py` from the
+verified v1.0 vector sources (provenance: 57/60 sampled v1.0 label tiles reproduce exactly; the
+3 misses are later hotfix edits).
+
+- **Positive tiles**: quad-aligned 1024-px blocks (2×2 groups of the Planet 512 grid) covering the
+  v1.0 `train_selected` footprints; alignment guarantees a single-quad read (4096 = 4×1024).
+- **Negative tiles**: 1024-px windows on the ARTS v6 Negative centroids (v1.0 negative source),
+  clamped inside their quad; windows intersecting any positive/ignore/unrefined-ARTS geometry are
+  skipped (the expanded context must not smuggle RTS into background tiles).
+- **Label rules at 0.5x** (delta vs §2.4):
+  1. ignore features intersecting ≥1 refined positive are **auto-converted to positive** — they
+     were ignore for lack of within-tile context, which the 4× FOV provides (user decision);
+  2. remaining ignore features stay 255;
+  3. **unrefined-ARTS guard**: ARTS positives with no overlap with any refined positive rasterize
+     as 255 (+50 m buffer) — known-but-undelineated RTS must not train as background;
+  4. sub-pixel guard: positive features < 10 px at 0.5x re-burn as 255 (below diagnostic size, §2.2).
+- **Normalization**: reuses the v1.0 stats file (bilinear downsampling preserves channel means);
+  drift verified at staging QC.
+- Consumed at training time via `data.additional_roots` (train split only — val/test stay 1x;
+  see `configs/multiscale_poc_seed42.yaml`).
+
 ---
 
 ## 4. Data Values

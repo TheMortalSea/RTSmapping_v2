@@ -149,6 +149,17 @@ class RTSDataset(Dataset):
         self.tile_ids = tile_ids
         self.metadata = metadata.set_index("Tile_ID")
         self.data_root = data_root.rstrip("/")
+        # Multi-root support (multiscale POC): a per-tile `data_root` metadata
+        # column overrides the ctor arg, so tiles from additional roots (e.g.
+        # the 0.5x-scale re-stage) resolve to their own RGB/EXTRA/label dirs.
+        if "data_root" in self.metadata.columns:
+            self._root_by_id = {
+                tid: str(r).rstrip("/")
+                for tid, r in self.metadata["data_root"].items()
+                if pd.notna(r)
+            }
+        else:
+            self._root_by_id = {}
         self.rgb_dir = rgb_dir
         self.extra_dir = extra_dir
         self.labels_dir = labels_dir
@@ -217,7 +228,8 @@ class RTSDataset(Dataset):
         return len(self.tile_ids)
 
     def _path(self, subdir: str, tile_id: str) -> str:
-        return f"{self.data_root}/{subdir}/{tile_id}.tif"
+        root = self._root_by_id.get(tile_id, self.data_root)
+        return f"{root}/{subdir}/{tile_id}.tif"
 
     def _read_rgb(self, tile_id: str) -> np.ndarray:
         """(H, W, 3) uint8."""
