@@ -114,3 +114,35 @@ def split_summary(
             "n_regions": len(splits[split_name]),
         }
     return out
+
+
+def load_metadata_multiroot(
+    primary_root: str,
+    metadata_csv: str,
+    additional_roots: list[str] | None,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Load metadata across the primary + additional dataset roots.
+
+    Multiscale POC (data.md §3.5): additional roots (e.g. the 0.5x re-stage)
+    contribute extra tiles tagged with a per-tile `data_root` column that
+    RTSDataset uses to resolve file paths. Shared by train.py and check_data.py.
+
+    Returns (combined_metadata, primary_metadata). Without additional roots the
+    two are the same frame and no `data_root` column is added.
+    """
+    def _md_path(root: str) -> str:
+        return f"{root.rstrip('/')}/{metadata_csv}"
+
+    primary = load_metadata(_md_path(primary_root))
+    if not additional_roots:
+        return primary, primary
+    frames = [primary.assign(data_root=primary_root)]
+    for root in additional_roots:
+        frames.append(load_metadata(_md_path(root)).assign(data_root=root))
+    combined = pd.concat(frames, ignore_index=True)
+    dup = combined["Tile_ID"].duplicated()
+    if dup.any():
+        raise ValueError(
+            f"Tile_ID collision across data roots: {combined.loc[dup, 'Tile_ID'].tolist()[:5]}"
+        )
+    return combined, primary

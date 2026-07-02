@@ -31,7 +31,9 @@ if "GOOGLE_APPLICATION_CREDENTIALS" not in os.environ:
 
 from data.dataset import RTSDataset, parse_extra_spec  # noqa: E402
 from data.sampler import BalancedBatchSampler  # noqa: E402
-from data.splits import get_tile_ids, load_metadata, load_splits_yaml  # noqa: E402
+from data.splits import (  # noqa: E402
+    get_tile_ids, load_metadata_multiroot, load_splits_yaml,
+)
 from data.transforms import build_train_transforms  # noqa: E402
 from utils.config import load_config  # noqa: E402
 from utils.logging import setup_logging  # noqa: E402
@@ -86,7 +88,6 @@ def main() -> int:
 
     # Resolve paths
     data_root = cfg["data"]["data_root"]
-    metadata_path = f"{data_root.rstrip('/')}/{cfg['data']['metadata_csv']}"
     splits_path = f"{data_root.rstrip('/')}/{cfg['data']['splits_yaml']}"
     norm_stats = cfg["data"]["normalization_stats_path"]
     # Tolerate missing stats — warn but continue so check_data.py is runnable before
@@ -99,7 +100,8 @@ def main() -> int:
         logger.warning("normalization_stats.json missing at %s — running unnormalized", norm_stats)
         norm_stats_arg = None
 
-    metadata = load_metadata(metadata_path)
+    metadata, _ = load_metadata_multiroot(
+        data_root, cfg["data"]["metadata_csv"], cfg["data"].get("additional_roots"))
     splits = load_splits_yaml(splits_path)
     tile_ids = get_tile_ids("train", metadata, splits)
     logger.info("Train split: %d tiles", len(tile_ids))
