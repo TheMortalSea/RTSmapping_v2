@@ -28,35 +28,26 @@ for inference. Docker `rts-train:v2`. Data in `gs://abrupt_thaw/` + `gs://rts-ma
 ## Rolling progress
 
 ### Just completed
-**Multiscale POC (family M, 2026-07-02→03).** Full 0.5x re-stage (21,910 tiles @9.55 m/px, ignore
-auto-convert + unrefined-ARTS guard) + `data.additional_roots` loader + 3-seed joint training +
-pre-registered gates: 1x no-regression PASS, 0.5x capability PASS 3/3, fusion-recall FAIL. Ledger
-family M is the SSoT. Prior: object-level scorecard + bias/variance diagnosis (below).
-
-**Object-level scorecard instrument + bias/variance diagnosis (v3 pre-deploy, Phase 0).** Report-only scorecard
-(`scripts/object_scorecard.py`; split/merge + matched-IoU geometry in `training.metrics._object_match_detail`;
-per-region tile-cluster bootstrap CIs in `analyze_residual_errors.py`) — reproduces Finding K/J **exactly** on
-the real val/test caches (self-check green). Ran on the 8× A100: in-sample train pass (`score_insample_train.py`,
-3-seed ensemble over 302 train-positive tiles / 16 regions) + per-seed val (×3). **Result — perception-invisible
-floor F_in=0.140 in-sample vs F_held=0.280 held-out** → the pre-registered rule lands **ambiguous band →
-bake-off** (F_in is a *lower bound* — memorisation inflates fit — so the true bias floor is ≥14%; the ~14 pt
-held-vs-in gap is a generalisation component). **Seed-noise floor** (Phase 0C, 3 existing seeds): obj-recall
-std 0.028 / spread 0.052 — the margin any single-seed Phase-1 POC must beat. Splits/merges stay sub-dominant to
-misses (recall remains the axis; 0E checkpoint doesn't reopen the lever). Artifacts + `decision_gate.json` in
-`/mnt/outputs/v1.0/staging/object_scorecard_diagnostics/`; a 73-object invisible contact sheet + manifest
-generated for the **D1 label audit (next v3 step)**. **D2 change-probe pending** — 2023 prior-year imagery not in
-the local mount. 19 new tests green (torch+smp pinned to frozen deploy versions). Prior: pre-S2 residual-error
-diagnostics (Finding K); inference Phases 1+2 (orchestration + 3 packages + `rts-infer:v1`).
+**Multi-scale inference implemented (§6.3/§7.3) + multiscale-poc merged.** The inference pipeline now does
+per-tile multi-scale fusion when `deployment.yaml.scales` has >1 entry (default stays `[1.0]`, deploy path
+unchanged): `InferenceTileDataset(scales=…)` reads each scale (scale s<1 = bbox expanded 1/s×, the §6.3
+context read; NDVI at the same expanded bbox), and `inference/runner.fuse_scale_probs` averages over valid
+scales on the 1× grid (§7.3; scale-s centre-cropped + upsampled), output NoData = the 1× footprint (§5.3).
+Mirrors the validated `evaluate_multiscale_poc._fuse`. **Capability only** — deploying `scales:[1.0,0.5]`
+stays a separate decision (calibration + §6.4 test gate; POC gate-3 fusion-recall failed). 7 new tests; full
+suite **338 green**. Also merged the **multiscale-poc** branch (family M: 0.5× re-stage + multi-root loader +
+3-seed joint training; gates 1+2 pass, gate-3 fail). Prior: v3 object-scorecard bias/variance diagnosis
+(F_in 14% / F_held 28% → bake-off; ledger K); inference Phases 1–3 (orchestration + packages + `rts-infer:v1`
++ fleet scripts).
 
 <!-- NOW:BEGIN -->
 ### Now
-**Multiscale POC (family M, branch `multiscale-poc`) — COMPLETE 2026-07-03, verdict in the ledger:**
-gates 1+2 **pass** (1x unhurt: 3-seed mean 0.9244 vs 0.9218; 0.5x val capability 0.82 geomean vs
-baseline 0.75, obj-F1 ratio ~0.79 vs 0.59), gate 3 **fail** (naive 1x+0.5x average-fusion adds
-precision, not recall — sign-flipped across seeds). Numbers + design: ledger family M; artifacts
-`/mnt/outputs/multiscale_poc_eval/`. Branch awaits merge decision; deferred: tiny-AOI `--scale05`
-2025 rerun (S2-gated), any deployment `scales:[1.0,0.5]` decision (would need calibration + the
-§6.4 test-side gate).
+**Multiscale (family M) — POC merged + inference path implemented (2026-07-03).** POC verdict (ledger M):
+gates 1+2 **pass** (1× unhurt 0.9244 vs 0.9218; 0.5× capability 0.82 geomean vs baseline 0.75), gate 3
+**fail** (naive average-fusion adds precision, not recall). The **inference pipeline now supports
+`scales:[1.0,0.5]`** (§6.3/§7.3 per-tile fusion in `inference/runner.py`) as a **capability** — default is
+still `[1.0]`. **Deploying multiscale remains a separate decision**: needs calibration + the §6.4 test-side
+gate (and a tiny-AOI 2025 `--scale05` check, S2-gated). Not on the inference-launch critical path.
 **(v3 pre-deploy side-track, done in parallel — does NOT gate the inference launch below):** object-scorecard
 bias/variance diagnosis landed — F_in 14% (in-sample) / F_held 28% (held-out) → pre-registered rule =
 **ambiguous / bake-off**; both a ≥14% representation-or-label bias floor and a ~14 pt generalisation gap are
