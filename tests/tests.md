@@ -165,6 +165,27 @@ Covers the bulk S2 export grid/domain geometry (doc §3); EE + GCS not exercised
 | `test_init_raises_on_extra_channel_name_mismatch` | RTSDataset refuses stats with mis-ordered EXTRA channel names | real — Critical C1 (2026-05-02) |
 | `test_read_with_retry_recovers_from_transient_failure` | Transient GCS/VSI read error is retried; eventual success returned (no real backoff) | real — guards against single transient read crashing a multi-hour run (2026-06-04) |
 | `test_read_with_retry_raises_after_exhausting_attempts` | Persistently corrupt tile fails all 4 attempts and raises `RuntimeError` naming the tile id | real — corrupt tiles surface loudly, not silently |
+| `test_dataset_per_tile_data_root_column` | Multiscale POC: a `data_root` metadata column routes a tile's RGB/EXTRA/label paths to its own root; tiles without it fall back to the ctor `data_root`; both load end-to-end | real — multi-root plumbing (2026-07-02) |
+
+### [test_scale05_staging.py](test_scale05_staging.py)
+
+Pure helpers of `scripts/scale05_tile_creation.py` (multiscale POC staging, data.md §3.5). No GCS.
+
+| Test | Checks | Strictness |
+|---|---|---|
+| `test_block_size_is_quarter_quad` | 0.5x block = 512 px at 2× GSD = exactly ¼ mosaic quad | real |
+| `test_block_nests_inside_single_quad` | Every block lies inside the quad `quad_for_block` reports — the single-quad-read guarantee | real |
+| `test_block_index_roundtrip` | `block_index(center(block_bounds(b))) == b` | real |
+| `test_blocks_for_bounds_of_512_tile_is_single_block` | A grid-aligned 512 tile maps to exactly one block (both SW and NE quarters) | real — edge-safe snapping |
+| `test_clamp_window_stays_in_quad_and_covers_centroid` | Negative window near a quad corner clamps inside the quad, keeps full size, still covers the centroid | real |
+| `test_classify_splits_ignore_by_positive_touch` | Rule 1/2: ignore ∩ positive → auto-convert; isolated ignore → keep | real — label-rule SSoT |
+| `test_classify_finds_unrefined_arts` | Rule 3: ARTS positive not overlapping refined labels → buffered ignore geometry | real |
+| `test_positive_overwrites_ignore` | Positive burn wins over kept-ignore 255 (v1.0 order preserved) | real |
+| `test_auto_converted_ignore_burns_as_positive` | Converted ignore rasterizes as 1 with ~expected pixel count | real |
+| `test_unrefined_arts_is_ignore_not_background` | Unrefined ARTS produces 255, not 0, alongside a positive | real |
+| `test_no_positive_returns_none` | Tile with only ignore content is skipped (no label written) | real |
+| `test_subpixel_positive_becomes_ignore` | <10 px positive feature re-burns as 255; large feature survives | real — rule 5 |
+| `test_label_georeferencing_matches_bounds` | SW-quarter polygon lands in the bottom-left of the array (transform orientation) | real |
 
 ### [test_mixing.py](test_mixing.py)
 

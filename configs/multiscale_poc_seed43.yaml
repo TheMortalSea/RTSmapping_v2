@@ -1,0 +1,27 @@
+# Multiscale POC (family M), seed 43: the locked v2 recipe (deploy_v1 stack +
+# TrivialAugment color stage) with ONE delta — data.additional_roots adds the 0.5x-scale
+# re-stage (2x GSD, 4x FOV context-expanded tiles; scripts/scale05_tile_creation.py) to
+# the TRAIN split. val_realistic stays 1x primary-root, so best_smoothed is directly
+# comparable to the aug_trivialaugment_deploy 3-seed baseline (no-regression gate).
+# 0.5x capability + fused gates are evaluated post-hoc (docs/experiment_ledger.md family M).
+base: base_v2_fast.yaml
+seed: 43
+data:
+  data_root: /outputs/v1.0/data_local
+  normalization_stats_path: /outputs/v1.0/staging/v1_splits/normalization_stats_ndvi.json
+  additional_roots:
+    - /outputs/v1.0_scale05/data_local
+channels:
+  rgb: true
+  extra:
+    - {name: ndvi, band: 0}
+loss:
+  boundary_handling: ignore
+  boundary_ignore_width: 2
+augmentation:
+  multi_scale: {p: 0.0}
+  auto_policy:
+    mode: trivialaugment
+    magnitude: 1.0
+mlflow:
+  run_name: multiscale_poc_seed43

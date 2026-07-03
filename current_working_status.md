@@ -28,6 +28,11 @@ for inference. Docker `rts-train:v2`. Data in `gs://abrupt_thaw/` + `gs://rts-ma
 ## Rolling progress
 
 ### Just completed
+**Multiscale POC (family M, 2026-07-02→03).** Full 0.5x re-stage (21,910 tiles @9.55 m/px, ignore
+auto-convert + unrefined-ARTS guard) + `data.additional_roots` loader + 3-seed joint training +
+pre-registered gates: 1x no-regression PASS, 0.5x capability PASS 3/3, fusion-recall FAIL. Ledger
+family M is the SSoT. Prior: object-level scorecard + bias/variance diagnosis (below).
+
 **Object-level scorecard instrument + bias/variance diagnosis (v3 pre-deploy, Phase 0).** Report-only scorecard
 (`scripts/object_scorecard.py`; split/merge + matched-IoU geometry in `training.metrics._object_match_detail`;
 per-region tile-cluster bootstrap CIs in `analyze_residual_errors.py`) — reproduces Finding K/J **exactly** on
@@ -45,6 +50,13 @@ diagnostics (Finding K); inference Phases 1+2 (orchestration + 3 packages + `rts
 
 <!-- NOW:BEGIN -->
 ### Now
+**Multiscale POC (family M, branch `multiscale-poc`) — COMPLETE 2026-07-03, verdict in the ledger:**
+gates 1+2 **pass** (1x unhurt: 3-seed mean 0.9244 vs 0.9218; 0.5x val capability 0.82 geomean vs
+baseline 0.75, obj-F1 ratio ~0.79 vs 0.59), gate 3 **fail** (naive 1x+0.5x average-fusion adds
+precision, not recall — sign-flipped across seeds). Numbers + design: ledger family M; artifacts
+`/mnt/outputs/multiscale_poc_eval/`. Branch awaits merge decision; deferred: tiny-AOI `--scale05`
+2025 rerun (S2-gated), any deployment `scales:[1.0,0.5]` decision (would need calibration + the
+§6.4 test-side gate).
 **(v3 pre-deploy side-track, done in parallel — does NOT gate the inference launch below):** object-scorecard
 bias/variance diagnosis landed — F_in 14% (in-sample) / F_held 28% (held-out) → pre-registered rule =
 **ambiguous / bake-off**; both a ≥14% representation-or-label bias floor and a ~14 pt generalisation gap are

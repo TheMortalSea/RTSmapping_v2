@@ -50,7 +50,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from data.dataset import RTSDataset, parse_extra_spec  # noqa: E402
 from data.normalization import load_stats, stats_to_arrays  # noqa: E402
 from data.sampler import BalancedBatchSampler, ratio_for_epoch, parse_curriculum_schedule  # noqa: E402
-from data.splits import get_tile_ids, load_metadata, load_splits_yaml  # noqa: E402
+from data.splits import (  # noqa: E402
+    get_tile_ids, load_metadata_multiroot, load_splits_yaml,
+)
 from data.transforms import build_eval_transforms, build_train_transforms  # noqa: E402
 from losses import build_loss  # noqa: E402
 from models import build_model  # noqa: E402
@@ -211,7 +213,12 @@ def _setup_data(cfg: dict) -> dict:
     boundary = cfg["loss"]["boundary_handling"]
     boundary_w = int(cfg["loss"].get("boundary_ignore_width", 3))
 
-    metadata = load_metadata(resolve_path(data_root, cfg["data"]["metadata_csv"]))
+    # Multiscale POC: extra dataset roots (e.g. the 0.5x re-stage) contribute
+    # TRAIN tiles only — val_realistic stays primary-root so the ledger metric
+    # remains comparable to the 1x baseline. Region splits are shared (same
+    # circumpolar_subregions), so the primary splits.yaml applies to all roots.
+    metadata, primary_metadata = load_metadata_multiroot(
+        data_root, cfg["data"]["metadata_csv"], cfg["data"].get("additional_roots"))
     splits = load_splits_yaml(resolve_path(data_root, cfg["data"]["splits_yaml"]))
 
     extra_channels = parse_extra_spec(cfg["channels"].get("extra", []))
@@ -228,7 +235,7 @@ def _setup_data(cfg: dict) -> dict:
     ev_aug = build_eval_transforms()
 
     train_ids = get_tile_ids("train", metadata, splits)
-    val_ids = get_tile_ids("val_realistic", metadata, splits)
+    val_ids = get_tile_ids("val_realistic", primary_metadata, splits)
     logger.info("Tile counts: train=%d, val_realistic=%d", len(train_ids), len(val_ids))
 
     # Positive-subset filter (Phase 0 §3.2 LR test, Phase 2 §5.1 data scale).
