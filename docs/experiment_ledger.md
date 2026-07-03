@@ -150,9 +150,9 @@ sign-flipped → rejected).
 | deploy_v1_ndvi_seed42 | I | corrected | 0.9144 | done | **final-lock 3-seed (v2 recipe) — reference baseline** |
 | deploy_v1_ndvi_seed43 | I | corrected | 0.9068 | done | final-lock 3-seed |
 | deploy_v1_ndvi_seed44 | I | corrected | 0.9156 | done | final-lock 3-seed (mean 0.9123) |
-| multiscale_poc_seed42 | M | corrected | — | running | locked recipe + 0.5x additional_roots (POC, gates in family-M finding) |
-| multiscale_poc_seed43 | M | corrected | — | running | multiscale POC seed-confirm |
-| multiscale_poc_seed44 | M | corrected | — | running | multiscale POC seed-confirm |<!-- RUN-TABLE:END -->
+| multiscale_poc_seed42 | M | corrected | 0.9165 | done | multiscale POC — gates 1+2 pass, gate 3 fail (family-M finding) |
+| multiscale_poc_seed43 | M | corrected | 0.9284 | done | multiscale POC seed-confirm |
+| multiscale_poc_seed44 | M | corrected | 0.9282 | done | multiscale POC seed-confirm |<!-- RUN-TABLE:END -->
 
 ---
 
@@ -335,6 +335,23 @@ positive px) — the context-expansion did remove most ignore need. **Pre-regist
 collapses to ~0) + tiny-AOI `--scale05` blobs reappear; (3) *helps-final-performance*: §7.3
 average-fusion of 1x+0.5x val predictions beats 1x-only object recall by > seed spread (0.052) at no
 F1 loss. Runs: `multiscale_poc_seed{42,43,44}` (locked recipe + `data.additional_roots` delta only).
+
+*Results (2026-07-03, `scripts/evaluate_multiscale_poc.py`, artifacts `/mnt/outputs/multiscale_poc_eval/`).*
+**Gate 1 — PASS.** 3-seed best_smoothed 0.9165 / 0.9284 / 0.9282, mean **0.9244** vs baseline 0.9218
+(per-seed Δ vs the matching TrivialAugment seed: −0.0002 / +0.0068 / +0.0012 — all within noise, none
+below −0.01). Adding 17,679 0.5x train tiles does not hurt 1x; the +0.0026 mean is below G, not a lock.
+**Gate 2 — PASS 3/3.** Same-checkpoint 0.5x val (2,155 tiles / 93 pos): geomean 0.8234 / 0.8166 / 0.8183
+vs the 1x-only baseline checkpoint's **0.7500**; obj-F1 ratio to own 1x = 0.787 / 0.808 / 0.781 (gate
+≥0.7; baseline = 0.588). Note: on 2024 same-domain tiles the baseline degrades rather than fully
+collapses — the tiny-AOI zero-blob result compounded 2025 imagery + the uncalibrated v2.0 dev
+checkpoint. Multiscale training closes most of the 0.5x gap regardless.
+**Gate 3 — FAIL (pre-registered).** §7.3 average-fusion on the 1x val grid (2,096/2,151 tiles covered):
+fused object recall never exceeds 1x-only at any matched threshold (best-F1 points: R 0.674/0.630/0.704
+fused vs 0.704/0.630/0.756 1x). Fused geomean +0.0189 / +0.0095 / −0.0016 and best-F1 Δ +0.039 / −0.008
+/ −0.013 — sign-flipped, mean < G. Fusion trades recall for precision; no recall gain > seed spread.
+Consistent with Finding K: residual val misses are perception-invisible, not FOV-limited (val objects
+are small/medium, one dominant region). Deferred with the rest of inference validation: tiny-AOI
+`--scale05` 2025 rerun (needs the S2-gated s2_index for NDVI-at-inference over Banks Island).
 <!-- FINDINGS:END -->
 
 ---
