@@ -50,10 +50,17 @@ P_final(x, y) = max(P_1.0(x, y), P_0.5(x, y))   # over valid (non-NoData) scales
 per-scale thresholds control precision. NoData (`-1.0`) contributes nothing — a
 pixel is NoData in the fused output only if NoData in every scale.
 
-> **Not active yet:** the v1.0/v2.0 model does **not** transfer zero-shot to 2× GSD
-> (`docs/inference_validation.md` scale-0.5 experiment: 9 → 0 blobs). Multi-scale at
-> inference is gated by `inference.md §6.4`; until that gate passes, `scales=[1.0]`
-> and this section is a no-op.
+> **Two fusion options (both retained).** The inference pipeline can fuse **in-pipeline** —
+> `inference/runner.fuse_scale_probs` writes a **single §7.3 arithmetic-mean** fused probability
+> COG per tile (the path implemented + validated against the family-M POC). This §4 **downstream
+> MAX fusion** over separately-written per-scale rasters is the alternative (detection-union): use
+> it when per-scale COGs are kept as distinct products and you want max-not-mean. Pick one per run;
+> they are not chained.
+>
+> **Not active yet either way:** the v1.0/v2.0 model does **not** transfer zero-shot to 2× GSD
+> (`docs/inference_validation.md` scale-0.5 experiment: 9 → 0 blobs); the family-M training POC passed
+> gates 1+2 but **failed gate 3** (mean-fusion recall). Multi-scale at inference is gated by
+> `inference.md §6.4`; until that gate passes, `scales=[1.0]` and both fusion paths are no-ops.
 
 ## 5. Thresholding → Binary Mask
 

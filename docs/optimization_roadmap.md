@@ -37,7 +37,7 @@ batches did not). This is where the largest uncaptured wins are.
 
 **Already optimal / off the table here:** batch & worker sweep (8 workers won, bigger batches hurt,
 `inference.md` §11.3), bf16, inference-time `torch.compile` (gated on a calibration re-run; numerics
-shift), multi-scale (failed the zero-shot transfer test). **Pending milestones (not optimizations):**
+shift), multi-scale (zero-shot transfer failed; the training POC — ledger family M — passed gates 1+2 but failed gate 3 fusion-recall, so deploy stays `scales:[1.0]`). **Pending milestones (not optimizations):**
 TTA decision + temperature/threshold calibration on Val-Realistic.
 
 ### A2. Training efficiency & resource utilization

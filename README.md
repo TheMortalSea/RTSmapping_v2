@@ -82,6 +82,6 @@ This repo follows a single-source-of-truth standard. Where each kind of fact liv
 | Infra facts — projects, buckets, VMs, regions, budget | [computing/infrastructure.md](computing/infrastructure.md) |
 
 ## Todos
-1. training in multi-scale
+1. ~~training in multi-scale~~ **DONE** (ledger family M, 2026-07-02): 0.5× re-stage + joint dual-scale training, 3 seeds — gates 1+2 pass, gate 3 (fusion recall) fail; inference multiscale path implemented, deploy stays `scales:[1.0]`.
 2. explore GEE satellite embedding as input feature
 3. 2025 micro set to test temporal domain shift

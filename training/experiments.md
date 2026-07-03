@@ -360,7 +360,14 @@ trigger-mandated sweep. Run the 2×2 grid in parallel against the §6.2 winner:
 revert to baseline (the expected outcome on a well-fit model). This supersedes the §10 "don't tune aug"
 default for this one coarse grid only.
 
-### 6.4 Multi-scale training arm (#3) — POST-INFERENCE GATED
+### 6.4 Multi-scale training arm (#3) — RAN EARLY AS LEDGER FAMILY M (2026-07-02)
+
+> **Status (2026-07-03):** this arm was **run ahead of its post-inference gate** as ledger **family M**
+> (0.5× re-stage + joint dual-scale training, 3 seeds — motivated by confirming the 2× GSD collapse and
+> testing context-expanded training before committing the fleet). Verdict (SSoT = ledger M): gates 1+2
+> **pass**, gate 3 (fusion adds large-RTS recall) **fail**. The inference multiscale path is implemented
+> (`inference.md §6.3/§7.3`) but deploy default stays `scales:[1.0]`. The "do not run now" text below is
+> retained for historical context only.
 
 **Do not run now.** Trigger = pan-arctic inference is complete **and** a review of the deployed map
 shows a large-RTS / wide-FOV coverage gap (motivated by the 2026-06-12 finding that the single-GSD
@@ -531,7 +538,7 @@ Test-Realistic is touched **once**, at this step. Re-running Test-Realistic for 
 | Backbone size (B3) | **In §8** | B3-as-regularizer (plateau ⇒ smaller, not B7) |
 | Architecture / decoder + encoder | **Tuned now (§8)** | run-now sweep (decoders, foundation encoders); YOLO rejected |
 | EXTRA channels | **Gated (data)** | Phase 4 — primary plateau-breaker |
-| Multi-scale / input context | **Gated (post-inference)** | §6.4 — only after map review |
+| Multi-scale / input context | **Ran early — ledger M** | §6.4 — POC done (gates 1+2 pass, gate 3 fail); deploy stays `[1.0]` |
 | Pretraining (ImageNet→MAE) | **User-gated** | §12 |
 | LR / schedule / warmup / optimizer / EMA / betas / grad-clip | **Frozen (reference arch); re-opened per architecture family** | §10 table below — Phase-0-locked *within UNet++/EffB5*; encoder/paradigm changes re-tune (§8.2a) |
 | Batch size | **Frozen (reference); per-arch by memory** | §3.1; transformers/foundation encoders force smaller (§8.2a) |
@@ -625,7 +632,7 @@ The following decision points cannot be made autonomously and require explicit u
 | Late-fusion authorisation if §7.4 calls for it | Phase 4 §7.5 | User |
 | Architecture extension to `models/segmentation.py` for SegFormer / DINOv3 / **SAM3**, **plus LLRD + configurable freeze/linear-probe schedule** for foundation-encoder fine-tuning (§8.2a) | Phase 5 (run-now) | Engineer |
 | Re-running Phase 2 on full 3500 positives | Phase 3+ (if any decision flips on the 1900 result) | User |
-| **Multi-scale / context-expanded training (§6.4)** — single-GSD model does **not** transfer to 2× GSD (0 vs 9 blobs; `docs/inference_validation.md`). **Trigger: pan-arctic inference done AND map review shows a large-RTS/wide-FOV gap** (inference.md §6.4 "Phase-1.5"); ~1 day pipeline work | Post-inference (map review) | User |
+| **Multi-scale / context-expanded training (§6.4)** — ~~gated post-inference~~ **RAN EARLY as ledger family M (2026-07-02)**: 0.5× re-stage + joint dual-scale training; gates 1+2 pass, gate 3 (fusion recall) fail; deploy stays `scales:[1.0]` | ~~Post-inference~~ **Done (ledger M)** | User |
 | Self-supervised / MAE encoder pretraining (§12.1, proposal #4) | Optional, user-gated | User |
 | Hard-negative mining (§12.2) | Optional, user-gated | User |
 
@@ -668,8 +675,8 @@ Keep all 8 GPUs busy, within and across phases (rationale in §1.5).
    (largest), the §10.1 curriculum sweep, and pre-registered seeds (43/44). **Dependency-blocked runs**
    (boundary on the loss winner) use **gated-speculative** dispatch — once the loss leader is >1σ ahead,
    launch on it; worst case redo ≤N cells if the leader flips. Density stays **1 run/GPU** (each uses
-   ~39/80 GB; 2/GPU OOMs and shrinking batch breaks BN comparability). Multi-scale (§6.4) is **not** in
-   the backfill pool — it is post-inference gated.
+   ~39/80 GB; 2/GPU OOMs and shrinking batch breaks BN comparability). Multi-scale (§6.4) was **not** in
+   the backfill pool at the time — later run standalone as ledger family M (2026-07-02).
 4. **Idle policy.** Do **not** stop this scarce 8×A100 for short idles — restart risks GPU stockout
    (`vm_instruction.md` zone-fallback) and the ~$30/h saving is trivial against the $70k credit. Stop
    only for genuinely long blocks (days), after backing up keepers to GCS (`/mnt/outputs` is on the

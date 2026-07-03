@@ -349,11 +349,21 @@ Run inference at multiple effective resolutions to catch different RTS scales. S
 
 ### 8.3 Multi-Resolution Training
 
-**Current recommendation**: Train at native resolution only.
+> **Status (2026-07-03) — the multi-scale POC ran; see ledger family M for results (SSoT).** The
+> "without retraining" fractal hypothesis below was **falsified**: zero-shot scale-0.5 inference on the
+> scale-1.0 model collapses to ~0 F1 (ledger gate 2). The context-expanded 0.5× re-stage + joint
+> dual-scale training described under "trigger" was therefore built and run as **family M** (0.5×
+> dataset via `data.additional_roots`, see `data.md §3.5`; 3 seeds). Verdict: gates 1+2 **pass** (1×
+> unhurt; 0.5× capability recovered), gate 3 **fail** (naive §7.3 average-fusion adds precision, not
+> large-RTS recall). The **inference multiscale path is implemented** (`inference.md §6.3/§7.3`), but
+> **deploy default stays `scales:[1.0]`** — shipping `[1.0,0.5]` remains a separate decision needing
+> calibration + the §6.4 test gate. The recommendation below (train native only for deploy) still holds.
 
-**Multi-scale inference without retraining — fractal hypothesis**: EfficientNet-B5 + UNet++ skip connections give multi-scale receptive fields, and RTS features have some self-similarity across 4.77 m ↔ 9.55 m projected views. Scale-0.5 inference on a scale-1.0-trained model may work out-of-the-box. This is tested post-calibration in the inference feasibility step (Phase 1 Step 8.5; see `inference.md §6.4`) before any retraining is considered. Gate: ship multi-scale if large-RTS (bbox > 500 m) PR-AUC gain ≥ 2% and global FP-rate delta ≤ +10%.
+**Current recommendation**: Train at native resolution only for the deployed model.
 
-**Trigger for multi-resolution training**: If the feasibility test fails AND post-inference analysis shows recall for large RTS (>1 km) is the bottleneck, add context-expanded training samples in Phase 1.5. Context-expansion means fetching 1024×1024 projected pixels (2× field of view) and downsampling to 512×512 — not the current `RandomScale` which blurs within a fixed 2.4 km projected footprint. These are distributionally different operations.
+**Multi-scale inference without retraining — fractal hypothesis** *(falsified, see status note above)*: EfficientNet-B5 + UNet++ skip connections give multi-scale receptive fields, and RTS features have some self-similarity across 4.77 m ↔ 9.55 m projected views. Scale-0.5 inference on a scale-1.0-trained model may work out-of-the-box. This is tested post-calibration in the inference feasibility step (Phase 1 Step 8.5; see `inference.md §6.4`) before any retraining is considered. Gate: ship multi-scale if large-RTS (bbox > 500 m) PR-AUC gain ≥ 2% and global FP-rate delta ≤ +10%.
+
+**Trigger for multi-resolution training** *(executed as ledger family M)*: If the feasibility test fails AND post-inference analysis shows recall for large RTS (>1 km) is the bottleneck, add context-expanded training samples in Phase 1.5. Context-expansion means fetching 1024×1024 projected pixels (2× field of view) and downsampling to 512×512 — not the current `RandomScale` which blurs within a fixed 2.4 km projected footprint. These are distributionally different operations.
 
 **Known limitation — EPSG:3857 at high latitudes**: Web Mercator pixels are constant at **4.77 m projected** in EPSG:3857 (Web Mercator zoom 15: 156543.04 / 2¹⁵ = 4.77 m). The **ground** sample shrinks with latitude as 4.77 × cos(φ) m: ≈ 1.63 m at 70°N, ≈ 1.32 m at 74°N — a ~1.7× variation across 60–74°N. The same pan-arctic strip spans this range. `RandomScale(0.5, 1.0)` partially absorbs the variation, but latitude-stratified performance analysis belongs in Phase 3 post-inference. Accepting this compromise in exchange for web-map compatibility. All stride and tile-coverage math in `inference.md` is in **projected** meters; ground-meter object sizes (RTS bbox in `inference.md §4.2/§4.3`) are interpreted via the raster's affine transform, which gives the same number in projected meters.
 
