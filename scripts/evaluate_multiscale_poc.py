@@ -140,8 +140,10 @@ def _fuse(
 
 
 def _metrics_from_probs(probs: dict[str, np.ndarray], labels: dict[str, np.ndarray],
-                        cfg: dict) -> dict:
+                        cfg: dict, threshold: float | None = None) -> dict:
     """Object/pixel metrics via the training accumulator, feeding logit(prob)."""
+    if threshold is not None:
+        cfg = {**cfg, "metrics": {**cfg["metrics"], "reporting_threshold": threshold}}
     acc = metrics_mod.ValidationAccumulator(cfg)
     eps = 1e-6
     for tid, p in probs.items():
@@ -149,6 +151,21 @@ def _metrics_from_probs(probs: dict[str, np.ndarray], labels: dict[str, np.ndarr
         acc.update(torch.from_numpy(logit)[None, None],
                    torch.from_numpy(labels[tid].astype(np.int64))[None], [tid])
     return acc.compute()
+
+
+def _threshold_sweep(probs: dict[str, np.ndarray], labels: dict[str, np.ndarray],
+                     cfg: dict) -> list[dict]:
+    """Object P/R/F1 across thresholds — fusion shifts the operating point
+    (average of two maps is dimmer than either), so fixed-0.5 numbers alone
+    misstate it; deployment always calibrates the threshold (family H)."""
+    out = []
+    for thr in (0.1, 0.2, 0.3, 0.4, 0.5, 0.65, 0.8):
+        m = _metrics_from_probs(probs, labels, cfg, threshold=thr)
+        out.append({"threshold": thr,
+                    "object_precision": m["object_precision"],
+                    "object_recall": m["object_recall"],
+                    "object_f1": m["object_f1"]})
+    return out
 
 
 def main() -> int:
@@ -210,6 +227,8 @@ def main() -> int:
     result["fusion_coverage"] = {"covered_1x_tiles": n_cov, "total_1x_tiles": len(ids1)}
     result["val_fused"] = _metrics_from_probs(fused, labels1, cfg)
     result["val_1x_reference"] = _metrics_from_probs(probs1, labels1, cfg)
+    result["sweep_1x"] = _threshold_sweep(probs1, labels1, cfg)
+    result["sweep_fused"] = _threshold_sweep(fused, labels1, cfg)
     logger.info("fusion: %d/%d 1x tiles covered | fused obj_recall %.4f vs 1x %.4f",
                 n_cov, len(ids1), result["val_fused"]["object_recall"],
                 result["val_1x_reference"]["object_recall"])

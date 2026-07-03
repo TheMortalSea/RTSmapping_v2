@@ -376,9 +376,9 @@ Run before training:
 
 ## 9. Channel Index Reference
 
-> **v1.0 status:** the v1.0 standard dataset currently ships **RGB only — no EXTRA stack** (`EXTRA/`
-> is empty). The 8-band layout below is the *spec* for when the data team regenerates EXTRA; until
-> then, train RGB-only (omit the `channels.extra` block) and Phase 4 stays blocked (`experiments.md §7`).
+> **v1.0 status:** EXTRA stack is **live** — `gs://rts-mapping-v2/training/v1.0/EXTRA/` contains the
+> full 8-band tiles (22,259 files, 27 GB) mirrored to `/mnt/outputs/v1.0/data_local/EXTRA/` locally.
+> Phase 4 EXTRA experiments have been run and are in the ledger.
 
 RGB band order is fixed. EXTRA is the **canonical 8-band stack** — one multi-band GeoTIFF in `EXTRA/{tile_id}.tif` with the band order below. Per-experiment configs select which subset to load via `configs/*.yaml:channels.extra` (a list of `{name, band}` entries; see §3.3). Adding a new group later = appending bands to the EXTRA GeoTIFF and adding a row here. This section is the single source of truth for EXTRA channel composition; other docs cross-reference rather than enumerate.
 
