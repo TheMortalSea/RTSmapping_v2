@@ -497,6 +497,13 @@ Inference pipeline (`inference/` + grid/merge entry scripts), GPU-free. Fixtures
 | `test_read_tile_hits_path_identical_to_mask` | spatial-index `hits=` path byte-identical to full-scan mask path | real — §11.3 cache must not change pixels |
 | `test_open_dataset_cache_reuses_handle` | two reads of one quad → `rasterio.open` called once (per-worker LRU) | real — §11.3 quad-cache |
 | `test_spatial_sort_permutes_without_dropping_tiles` | `_spatial_sort` keeps the tile set, groups same-quad tiles contiguously | real — §11.3 cache-locality ordering |
+| `test_crop_center_upsample_recovers_uniform_center` | `_crop_center_upsample` crops the centre `frac` + bilinear-resizes (§6.3 scale-s→1× map) | real — multiscale geometry |
+| `test_fuse_two_scales_averages_where_both_valid` | §7.3 arithmetic mean where both scales valid (0.8,0.4→0.6) | real — §7.3 fusion |
+| `test_fuse_falls_back_to_1x_where_05_invalid` | 0.5× invalid → 1×-only (§6.3 graceful degradation) | real — §6.3 |
+| `test_fuse_partial_05_coverage_mixes_per_pixel` | per-pixel mix: covered→mean, uncovered→1× | real — §7.3 per-pixel |
+| `test_fuse_all_invalid_is_nan` | all scales NoData → NaN (runner masks to −1.0) | real — §7.3/§5.3 |
+| `test_multiscale_dataset_yields_per_scale_images` | `scales=[1.0,0.5]` item carries per-scale image+valid; 0.5× reads the 2×-expanded bbox | real — §6.3 context read |
+| `test_run_inference_multiscale_writes_fused_cog` | end-to-end `run_inference` multiscale dispatch → fused COG (const model 0.5 at both scales → fused 0.5) | real — §6.3/§7.3 integration |
 
 > Not covered (deliberate): `scripts/inference.py` main loop and
 > `vectorize_predictions.py` are exercised by the Tier-2 real-data smoke

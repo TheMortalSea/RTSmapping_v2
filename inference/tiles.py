@@ -324,6 +324,7 @@ class InferenceTileDataset(Dataset):
         scale: float = 1.0,
         s2_index: pd.DataFrame | None = None,
         extra_bands: list[dict] | None = None,
+        scales: list[float] | None = None,
     ) -> None:
         """tile_list needs columns: tile_id, minx, miny, maxx, maxy.
 
@@ -334,11 +335,18 @@ class InferenceTileDataset(Dataset):
         EXTRA=NDVI (the locked v2 channel) is sourced on the fly from the bulk S2
         composites: pass ``s2_index`` (inference.s2_index) + ``extra_bands`` (the
         deployment ``model_config.channels.extra`` list). RGB-only when both are None.
+
+        ``scales``: when None (default), the dataset is single-scale (``scale``) and
+        each item is one image + NoData mask — the deploy path. When a list is given
+        (e.g. ``[1.0, 0.5]``, inference.md §6.3), each item carries a per-scale image
+        + valid mask so ``inference.runner`` can fuse them (§7.3); scale s<1 reads the
+        tile's bbox expanded 1/s× (2× ground at 0.5×) decimated to ``tile_size_px``.
         """
         required = {"tile_id", "minx", "miny", "maxx", "maxy"}
         missing = required - set(tile_list.columns)
         if missing:
             raise ValueError(f"tile list missing columns {sorted(missing)}")
+        self.scales = scales
         self.with_extra = bool(extra_bands)
         if self.with_extra:
             names = [c["name"] for c in extra_bands]
@@ -347,7 +355,7 @@ class InferenceTileDataset(Dataset):
                     f"inference EXTRA reader supports ndvi only, got {names}")
             if s2_index is None:
                 raise ValueError("extra_bands=[ndvi] requires an s2_index to window NDVI")
-            if scale != 1.0:
+            if scales is None and scale != 1.0:
                 raise NotImplementedError("NDVI EXTRA reader supports scale=1.0 only")
         # Spatial-sort so adjacent tiles share quads within a batch → the
         # per-worker open-handle cache hits instead of re-opening (§11.3).
@@ -364,7 +372,57 @@ class InferenceTileDataset(Dataset):
     def __len__(self) -> int:
         return len(self.tiles)
 
+    def _expand_bbox(self, bbox: tuple, scale: float) -> tuple:
+        """Bbox for a scale-s read: expanded 1/s× about its centre (§6.3 context)."""
+        minx, miny, maxx, maxy = bbox
+        cx, cy = (minx + maxx) / 2, (miny + maxy) / 2
+        hx, hy = (maxx - minx) / 2 / scale, (maxy - miny) / 2 / scale
+        return (cx - hx, cy - hy, cx + hx, cy + hy)
+
+    def _read_and_norm(self, bbox: tuple, scale: float) -> tuple[np.ndarray, np.ndarray]:
+        """Read + normalize one tile at ``scale``; returns (image (C,H,W), valid (H,W)).
+
+        For scale<1 the read covers the 1/s×-expanded bbox decimated to tile_size_px
+        (2× ground at 0.5×), so the image is the model input on the context-expanded
+        grid; the returned valid mask is on that same grid (the runner center-crops it
+        back to the 1× footprint when fusing).
+        """
+        read_bbox = bbox if scale == 1.0 else self._expand_bbox(bbox, scale)
+        rgb, nodata = read_tile(read_bbox, self.quad_index, self.tile_size_px,
+                                scale=scale, hits=self._quad_bbox_index.hits(read_bbox))
+        valid = ~nodata
+        n_ch = 4 if self.with_extra else 3
+        if nodata.all():
+            return np.zeros((n_ch, self.tile_size_px, self.tile_size_px), np.float32), valid
+        rgb = fill_nodata_with_mean(rgb, np.broadcast_to(nodata, rgb.shape),
+                                    self.rgb_mean, channel_axis=0)
+        if self.with_extra:
+            ndvi = read_ndvi_tile(read_bbox, self.s2_index, self.tile_size_px,
+                                  hits=self._s2_bbox_index.hits(read_bbox))
+            stack = np.concatenate([rgb, ndvi[None]], axis=0)
+        else:
+            stack = rgb
+        return apply_norm(stack, self.norm_params), valid
+
+    def _getitem_multiscale(self, i: int) -> dict:
+        """Per-scale image + valid mask for §7.3 fusion (self.scales set)."""
+        row = self.tiles.iloc[i]
+        bbox = (row["minx"], row["miny"], row["maxx"], row["maxy"])
+        images, valid = {}, {}
+        for s in self.scales:
+            img, val = self._read_and_norm(bbox, s)
+            images[s], valid[s] = img, val
+        return {
+            "tile_id": row["tile_id"],
+            "images": images,
+            "valid": valid,
+            "all_nodata": bool(not valid[1.0].any()),  # 1× footprint fully NoData
+            "bounds": np.array(bbox, dtype=np.float64),
+        }
+
     def __getitem__(self, i: int) -> dict:
+        if self.scales is not None:
+            return self._getitem_multiscale(i)
         row = self.tiles.iloc[i]
         bbox = (row["minx"], row["miny"], row["maxx"], row["maxy"])
         rgb, nodata = read_tile(bbox, self.quad_index, self.tile_size_px,

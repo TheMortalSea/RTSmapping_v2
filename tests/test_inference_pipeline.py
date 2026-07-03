@@ -605,3 +605,98 @@ def test_merge_ignores_missing_tiles(tmp_path):
                            np.full((512, 512), 0.3, dtype=np.float32), bounds)
     merged, _ = merge_tiles(tiles, str(tmp_path), sigma_px=128.0)
     assert np.allclose(merged[1:-1, 1:-1], 0.3, atol=1e-6)
+
+
+# ---------------------------------------------------------------------------
+# multi-scale inference (§6.3 context reads + §7.3 arithmetic-mean fusion)
+# ---------------------------------------------------------------------------
+from inference.runner import (  # noqa: E402
+    InferenceContext, fuse_scale_probs, run_inference, _crop_center_upsample,
+)
+from inference.writer import Manifest, NODATA_PROB  # noqa: E402
+
+
+def test_crop_center_upsample_recovers_uniform_center():
+    # 8x8 with a uniform 4x4 center; frac 0.5 crops that center and upsamples to 8.
+    a = np.zeros((8, 8), np.float32); a[2:6, 2:6] = 0.9
+    up = _crop_center_upsample(a, 8, 0.5)
+    assert up.shape == (8, 8)
+    assert np.allclose(up, 0.9)
+
+
+def test_fuse_two_scales_averages_where_both_valid():
+    p1 = np.full((8, 8), 0.8, np.float32); p5 = np.full((8, 8), 0.4, np.float32)
+    v = np.ones((8, 8), bool)
+    fused = fuse_scale_probs({1.0: p1, 0.5: p5}, {1.0: v, 0.5: v}, 8)
+    assert np.allclose(fused, 0.6)  # (0.8 + 0.4) / 2
+
+
+def test_fuse_falls_back_to_1x_where_05_invalid():
+    p1 = np.full((8, 8), 0.8, np.float32); p5 = np.full((8, 8), 0.4, np.float32)
+    fused = fuse_scale_probs({1.0: p1, 0.5: p5},
+                             {1.0: np.ones((8, 8), bool), 0.5: np.zeros((8, 8), bool)}, 8)
+    assert np.allclose(fused, 0.8)  # §6.3 graceful degradation to 1x-only
+
+
+def test_fuse_partial_05_coverage_mixes_per_pixel():
+    p1 = np.full((8, 8), 0.8, np.float32); p5 = np.full((8, 8), 0.4, np.float32)
+    v5 = np.zeros((8, 8), bool); v5[:, :4] = True  # left half of the 0.5x grid valid
+    fused = fuse_scale_probs({1.0: p1, 0.5: p5}, {1.0: np.ones((8, 8), bool), 0.5: v5}, 8)
+    r = np.round(fused, 3)
+    assert 0.6 in r and 0.8 in r  # both fused and 1x-only pixels present
+
+
+def test_fuse_all_invalid_is_nan():
+    p = np.full((4, 4), 0.5, np.float32); z = np.zeros((4, 4), bool)
+    fused = fuse_scale_probs({1.0: p, 0.5: p}, {1.0: z, 0.5: z}, 4)
+    assert np.isnan(fused).all()  # all scales NoData -> NaN (runner masks to -1.0)
+
+
+def test_multiscale_dataset_yields_per_scale_images(quad_setup):
+    b = quad_bounds(QX, QY)
+    res = (b[2] - b[0]) / 512
+    tsz = 128
+    cx, cy = (b[0] + b[2]) / 2, (b[1] + b[3]) / 2
+    half = tsz * res / 2  # 128px tile centered -> 0.5x reads 256px, both inside the quad
+    tiles = pd.DataFrame([{"tile_id": "t", "minx": cx - half, "miny": cy - half,
+                           "maxx": cx + half, "maxy": cy + half}])
+    ds = InferenceTileDataset(tiles, quad_setup["index"],
+                              _rgb_stats([100, 100, 100], [10, 10, 10]),
+                              tile_size_px=tsz, scales=[1.0, 0.5])
+    item = ds[0]
+    assert set(item["images"]) == {1.0, 0.5}
+    assert item["images"][1.0].shape == (3, tsz, tsz)
+    assert item["images"][0.5].shape == (3, tsz, tsz)
+    assert item["valid"][1.0].shape == (tsz, tsz)
+    assert not item["all_nodata"]
+    assert item["valid"][1.0].all() and item["valid"][0.5].all()  # uniform quad
+    assert np.allclose(item["images"][1.0], 0.0)  # (100-100)/10
+
+
+class _ConstLogitModel(torch.nn.Module):
+    """Returns a constant logit (0 -> prob 0.5) at the input spatial size."""
+    def forward(self, x):
+        return torch.zeros(x.shape[0], 1, x.shape[2], x.shape[3])
+
+
+def test_run_inference_multiscale_writes_fused_cog(quad_setup, tmp_path):
+    # Whole-quad bbox → 512 native px == the dataset's default tile_size.
+    b = quad_bounds(QX, QY)
+    tiles = pd.DataFrame([{"tile_id": "t", "minx": b[0], "miny": b[1],
+                           "maxx": b[2], "maxy": b[3]}])
+    model = _ConstLogitModel().eval()
+    ctx = InferenceContext(
+        models=[model], pkg={"model": model, "stats": _rgb_stats([100, 100, 100], [10, 10, 10])},
+        dep_cfg={"temperature": 1.0, "tta": "none", "precision": "fp32", "scales": [1.0, 0.5]},
+        run_cfg={"inference": {"batch_size": 2}}, quad_index=quad_setup["index"],
+        s2_index=None, extra_bands=[], ensemble=False, package_paths=["dummy"])
+    out = tmp_path / "out"
+    manifest = Manifest(str(tmp_path / "log.json"), {}, checkpoint_every=1)
+    counts = run_inference(ctx, tiles, str(out), manifest, torch.device("cpu"), num_workers=0)
+    assert counts["n_tiles_processed"] == 1
+    with rasterio.open(out / "t.tif") as src:
+        arr = src.read(1)
+    assert arr.shape == (512, 512)
+    # const logit 0 -> prob 0.5 at both scales -> fused 0.5 everywhere valid
+    valid = arr != NODATA_PROB
+    assert valid.any() and np.allclose(arr[valid], 0.5, atol=1e-6)

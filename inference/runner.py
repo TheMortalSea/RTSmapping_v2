@@ -20,6 +20,7 @@ from typing import Callable, Optional
 import numpy as np
 import pandas as pd
 import torch
+import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
 from inference.predictor import (
@@ -43,6 +44,61 @@ def _collate(items: list[dict]) -> dict:
         "all_nodata": [it["all_nodata"] for it in items],
         "bounds": [tuple(it["bounds"]) for it in items],
     }
+
+
+def _collate_multiscale(items: list[dict]) -> dict:
+    """Stack a multi-scale batch (dataset yields per-scale image + valid mask)."""
+    scales = list(items[0]["images"].keys())
+    return {
+        "tile_id": [it["tile_id"] for it in items],
+        "images": {s: torch.from_numpy(np.stack([it["images"][s] for it in items]))
+                   for s in scales},
+        "valid": {s: np.stack([it["valid"][s] for it in items]) for s in scales},
+        "all_nodata": [it["all_nodata"] for it in items],
+        "bounds": [tuple(it["bounds"]) for it in items],
+    }
+
+
+def _crop_center_upsample(arr: np.ndarray, out_size: int, frac: float) -> np.ndarray:
+    """Crop the centre ``frac`` fraction of ``arr`` and bilinear-resize to out_size.
+
+    A scale-s(<1) prediction covers 1/s× the 1× footprint; its centre s-fraction is
+    the 1× tile (inference.md §6.3 "crop center"), resized back to the output grid.
+    """
+    h, w = arr.shape
+    ch, cw = max(1, int(round(h * frac))), max(1, int(round(w * frac)))
+    r0, c0 = (h - ch) // 2, (w - cw) // 2
+    center = arr[r0:r0 + ch, c0:c0 + cw]
+    up = F.interpolate(torch.from_numpy(center.astype(np.float32))[None, None],
+                       size=(out_size, out_size), mode="bilinear", align_corners=False)
+    return up[0, 0].numpy()
+
+
+def fuse_scale_probs(scale_probs: dict[float, np.ndarray],
+                     scale_valid: dict[float, np.ndarray], out_size: int) -> np.ndarray:
+    """§7.3 fusion: per-pixel arithmetic mean over valid scales on the 1× grid.
+
+    Each scale's prob (already temperature-scaled per §7.3) is mapped to the 1×
+    output grid — scale 1.0 as-is; scale s<1 centre-cropped (fraction s) and
+    bilinear-upsampled — and averaged over the scales valid at that pixel. Pixels
+    valid only at 1× keep the 1× value (the §6.3 graceful degradation). 1.0 must be
+    present (the base grid); its valid mask defines the tile footprint. Returns the
+    fused prob (out_size, out_size); pixels outside the 1× footprint are NaN.
+    """
+    acc = np.zeros((out_size, out_size), np.float32)
+    cnt = np.zeros((out_size, out_size), np.float32)
+    for s, prob in scale_probs.items():
+        if s == 1.0:
+            pm, vm = prob, scale_valid[s]
+        else:
+            pm = _crop_center_upsample(prob, out_size, s)
+            vm = _crop_center_upsample(scale_valid[s].astype(np.float32), out_size, s) > 0.5
+        acc[vm] += pm[vm]
+        cnt[vm] += 1.0
+    fused = np.full((out_size, out_size), np.nan, np.float32)
+    nz = cnt > 0
+    fused[nz] = acc[nz] / cnt[nz]
+    return fused
 
 
 def weights_sha256(package: str) -> str:
@@ -141,6 +197,69 @@ def run_metadata(ctx: InferenceContext, device: torch.device) -> dict:
     }
 
 
+def _predict_batch(ctx: InferenceContext, images: torch.Tensor, dep_cfg: dict) -> np.ndarray:
+    """Forward one batch → clamped prob array (H,W per tile), ensemble or single."""
+    if ctx.ensemble:
+        probs = predict_probs_ensemble(ctx.models, images,
+                                       temperature=dep_cfg["temperature"],
+                                       tta=dep_cfg.get("tta", "none"),
+                                       precision=dep_cfg.get("precision", "fp32"))
+    else:
+        probs = predict_probs(ctx.pkg["model"], images,
+                              temperature=dep_cfg["temperature"],
+                              tta=dep_cfg.get("tta", "none"),
+                              precision=dep_cfg.get("precision", "fp32"))
+    return probs.clamp_(0.0, 1.0).cpu().numpy()  # §10.1 range guard
+
+
+def _run_inference_multiscale(ctx: InferenceContext, todo: pd.DataFrame, out: str,
+                              manifest: Manifest, device: torch.device, num_workers: int,
+                              scales: list[float],
+                              progress_cb: Optional[Callable[[int, int], None]]) -> dict:
+    """Multi-scale inference (inference.md §6.3/§7.3): predict each scale, fuse per
+    tile, write one fused probability COG. ``scales`` must contain 1.0 (base grid)."""
+    if 1.0 not in scales:
+        raise ValueError(f"multiscale inference requires 1.0 in scales, got {scales}")
+    pkg, dep_cfg = ctx.pkg, ctx.dep_cfg
+    dataset = InferenceTileDataset(todo, ctx.quad_index, pkg["stats"],
+                                   s2_index=ctx.s2_index, extra_bands=ctx.extra_bands,
+                                   scales=scales)
+    loader = DataLoader(dataset, batch_size=ctx.run_cfg["inference"]["batch_size"],
+                        num_workers=num_workers, collate_fn=_collate_multiscale)
+    logger.info("MULTISCALE inference: scales=%s (§7.3 arithmetic-mean fusion)", scales)
+
+    t0, n_done = time.time(), 0
+    for batch in loader:
+        keep = [i for i, nd in enumerate(batch["all_nodata"]) if not nd]
+        for i, nd in enumerate(batch["all_nodata"]):
+            if nd:
+                manifest.mark(batch["tile_id"][i], "all_nodata")
+        if keep:
+            scale_probs = {s: _predict_batch(ctx, batch["images"][s][keep].to(device), dep_cfg)
+                           for s in scales}
+            out_size = scale_probs[1.0].shape[-1]
+            for j, i in enumerate(keep):
+                per = {s: scale_probs[s][j] for s in scales}
+                valid = {s: batch["valid"][s][i] for s in scales}
+                fused = fuse_scale_probs(per, valid, out_size)
+                # §5.3: output NoData = the 1× footprint; within it, 1× always
+                # contributes so fused is finite (0.5× only adds where also valid).
+                fused = np.where(valid[1.0], fused, NODATA_PROB).astype(np.float32)
+                tile_id = batch["tile_id"][i]
+                write_probability_tile(f"{out}/{tile_id}.tif", fused, batch["bounds"][i])
+                manifest.mark(tile_id, "done")
+        n_done += len(batch["tile_id"])
+        rate = n_done / (time.time() - t0)
+        if n_done % 512 < len(batch["tile_id"]):
+            logger.info("%d/%d tiles (%.1f tiles/s, ETA %.1f h)", n_done, len(todo),
+                        rate, (len(todo) - n_done) / rate / 3600)
+            if progress_cb is not None:
+                progress_cb(n_done, len(todo))
+    manifest.save()
+    logger.info("Done (multiscale): %s", manifest.counts())
+    return manifest.counts()
+
+
 def run_inference(ctx: InferenceContext, tiles: pd.DataFrame, output: str,
                   manifest: Manifest, device: torch.device, num_workers: int = 8,
                   scale: float = 1.0,
@@ -160,6 +279,10 @@ def run_inference(ctx: InferenceContext, tiles: pd.DataFrame, output: str,
         return manifest.counts()
 
     pkg, dep_cfg = ctx.pkg, ctx.dep_cfg
+    scales = dep_cfg.get("scales") or [1.0]
+    if len(scales) > 1:  # inference.md §6.3/§7.3 multi-scale fusion
+        return _run_inference_multiscale(ctx, todo, out, manifest, device,
+                                         num_workers, scales, progress_cb)
     dataset = InferenceTileDataset(todo, ctx.quad_index, pkg["stats"], scale=scale,
                                    s2_index=ctx.s2_index, extra_bands=ctx.extra_bands)
     loader = DataLoader(dataset, batch_size=ctx.run_cfg["inference"]["batch_size"],
@@ -172,18 +295,7 @@ def run_inference(ctx: InferenceContext, tiles: pd.DataFrame, output: str,
             if all_nd:
                 manifest.mark(batch["tile_id"][i], "all_nodata")
         if keep:
-            images = batch["image"][keep].to(device)
-            if ctx.ensemble:
-                probs = predict_probs_ensemble(ctx.models, images,
-                                               temperature=dep_cfg["temperature"],
-                                               tta=dep_cfg.get("tta", "none"),
-                                               precision=dep_cfg.get("precision", "fp32"))
-            else:
-                probs = predict_probs(pkg["model"], images,
-                                      temperature=dep_cfg["temperature"],
-                                      tta=dep_cfg.get("tta", "none"),
-                                      precision=dep_cfg.get("precision", "fp32"))
-            probs = probs.clamp_(0.0, 1.0).cpu().numpy()  # §10.1 range guard
+            probs = _predict_batch(ctx, batch["image"][keep].to(device), dep_cfg)
             for j, i in enumerate(keep):
                 prob = probs[j]
                 prob[batch["nodata_mask"][i]] = NODATA_PROB  # §5.3 output mask

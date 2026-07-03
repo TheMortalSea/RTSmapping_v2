@@ -9,8 +9,12 @@
 > appear under several order UUIDs). Tiles are therefore 512×512 **windowed reads** that may
 > straddle quad boundaries (`inference/tiles.py` mosaics intersecting quads per tile). The §14
 > calibration-mismatch assertion is implemented (`inference/predictor.py:assert_runtime_matches_package`).
-> Deferred, per spec gates: multi-scale (§6.4), TTA validation (§7.4/8.5b),
-> final calibration (threshold/temperature still null). Smoke
+> **Multi-scale inference implemented (2026-07-03)** — `inference/runner.py` (`fuse_scale_probs`,
+> `_run_inference_multiscale`) + `InferenceTileDataset(scales=…)` do the §6.3 context-expanded per-scale
+> reads and §7.3 arithmetic-mean fusion when `deployment.yaml.scales` has >1 entry (default stays `[1.0]`).
+> The multiscale training POC is ledger family M (gates 1+2 pass, gate-3 fusion-recall fail); **whether to
+> deploy `scales:[1.0,0.5]` remains a separate decision** needing calibration + the §6.4 test-side gate.
+> Deferred, per spec gates: TTA validation (§7.4/8.5b). Smoke
 > evidence: `/mnt/outputs/inference/` (dev package from phase0c_seed42 with DEV-ONLY threshold).
 >
 > **EXTRA=NDVI implemented (2026-06-24).** The locked v2 recipe is RGB+NDVI; NDVI is windowed
