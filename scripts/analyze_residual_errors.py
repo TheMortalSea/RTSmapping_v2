@@ -46,6 +46,7 @@ from scipy import ndimage
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from data.label_cleaning import apply_min_mapping_unit  # noqa: E402
 from data.splits import load_metadata  # noqa: E402
 from training.metrics import (  # noqa: E402
     _filter_small_blobs,
@@ -369,6 +370,9 @@ def main() -> int:
     p.add_argument("--iou-thr", type=float, default=0.3, help="object match IoU")
     p.add_argument("--parity-min-blob", type=int, default=10,
                    help="min_blob matching the report deployed-block (parity check)")
+    p.add_argument("--min-mapping-unit", type=int, default=0,
+                   help="Minimum Mapping Unit (px): GT positive components smaller than this are "
+                        "relabeled to ignore before scoring (0 = off). Frozen-model re-score.")
     args = p.parse_args()
 
     out_dir = Path(args.out); out_dir.mkdir(parents=True, exist_ok=True)
@@ -382,8 +386,13 @@ def main() -> int:
     z = np.load(args.cache, allow_pickle=True)
     tids = [str(t) for t in z["tids"]]
     probs, labels = z["probs"], z["labels"]
-    logger.info("%d val tiles | deploy_thr=%.3f product_min_blob=%d",
-                len(tids), deploy_thr, product_min_blob)
+    if args.min_mapping_unit > 1:
+        labels = np.stack([
+            apply_min_mapping_unit(lab, args.min_mapping_unit, ignore_index=args.ignore_index)
+            for lab in labels
+        ])
+    logger.info("%d val tiles | deploy_thr=%.3f product_min_blob=%d min_mapping_unit=%d",
+                len(tids), deploy_thr, product_min_blob, args.min_mapping_unit)
 
     meta = load_metadata(args.metadata)
     tid_region = dict(zip(meta["Tile_ID"], meta["RegionName"]))
@@ -409,6 +418,7 @@ def main() -> int:
 
     report = {
         "_source_cache": args.cache,
+        "_min_mapping_unit": args.min_mapping_unit,
         "_caveats": [
             "n GT objects is small (~val positives) — typology is qualitative, "
             "not proportions with CIs.",

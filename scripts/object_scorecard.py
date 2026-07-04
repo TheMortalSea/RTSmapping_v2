@@ -39,6 +39,7 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from data.label_cleaning import apply_min_mapping_unit  # noqa: E402
 from data.splits import load_metadata  # noqa: E402
 from scripts.analyze_residual_errors import (  # noqa: E402
     bootstrap_region_object_ci,
@@ -203,6 +204,9 @@ def main() -> int:
     p.add_argument("--deployment-yaml", default="configs/deployment.yaml")
     p.add_argument("--min-blob", type=int, default=None,
                    help="override min_blob (default: deployment.yaml min_blob_size_px)")
+    p.add_argument("--min-mapping-unit", type=int, default=0,
+                   help="Minimum Mapping Unit (px): GT positive components smaller than this are "
+                        "relabeled to ignore before scoring (0 = off). Frozen-model re-score; no retrain.")
     p.add_argument("--low-thr", type=float, default=0.3)
     p.add_argument("--iou-thr", type=float, default=0.3)
     p.add_argument("--overlap-frac", type=float, default=0.1,
@@ -223,7 +227,15 @@ def main() -> int:
     z = np.load(args.cache, allow_pickle=True)
     tids = [str(t) for t in z["tids"]]
     probs, labels = z["probs"], z["labels"]
-    logger.info("%d tiles | tag=%s thr=%.3f min_blob=%d", len(tids), args.tag, thr, min_blob)
+    if args.min_mapping_unit > 1:
+        # Sub-Minimum-Mapping-Unit GT positives → ignore, once, so all three scoring
+        # paths (score_by_region / typology / detail) see identical labels (parity holds).
+        labels = np.stack([
+            apply_min_mapping_unit(lab, args.min_mapping_unit, ignore_index=args.ignore_index)
+            for lab in labels
+        ])
+    logger.info("%d tiles | tag=%s thr=%.3f min_blob=%d min_mapping_unit=%d",
+                len(tids), args.tag, thr, min_blob, args.min_mapping_unit)
 
     meta = load_metadata(args.metadata)
     tid_region = dict(zip(meta["Tile_ID"], meta["RegionName"]))
@@ -235,18 +247,21 @@ def main() -> int:
     )
     scorecard["_tag"] = args.tag
     scorecard["_source_cache"] = args.cache
+    scorecard["config"]["min_mapping_unit"] = args.min_mapping_unit
 
     if not scorecard["self_check"]["detail_vs_score_by_region_counts_match"]:
         logger.error("SELF-CHECK FAILED: detail counts != score_by_region: %s",
                      scorecard["self_check"])
 
-    out_path = out_dir / f"object_scorecard_{args.tag}.json"
+    mmu_sfx = f"_mmu{args.min_mapping_unit}" if args.min_mapping_unit > 1 else ""
+    out_path = out_dir / f"object_scorecard_{args.tag}{mmu_sfx}.json"
     out_path.write_text(json.dumps(scorecard, indent=2))
     logger.info("Wrote %s", out_path)
 
     agg = scorecard["aggregate"]
     print(json.dumps({
         "tag": args.tag,
+        "min_mapping_unit": args.min_mapping_unit,
         "n_gt_objects": agg["n_gt_objects"],
         "obj_precision": agg["obj_precision"],
         "obj_recall": agg["obj_recall"],

@@ -28,7 +28,29 @@ for inference. Docker `rts-train:v2`. Data in `gs://abrupt_thaw/` + `gs://rts-ma
 ## Rolling progress
 
 ### Just completed
-**Multi-scale inference implemented (§6.3/§7.3) + multiscale-poc merged.** The inference pipeline now does
+**data-v1.1 closed out (branch `data-v1.1`, ledger N + N-retrain).** Two deliverables: (1) the **Minimum
+Mapping Unit metric fix** — the real object-score win (test invisible floor 0.223→0.159, obj-F1 0.526→0.560
+at MMU600, precision invariant, no retrain); (2) the **v1.1 data-correctness retrain** (+28 restored pos,
+−49 black neg, vjn7 promotion) which came back an **ability WASH**: calibration-free test pixel PR-AUC
+0.9976≈0.9970 and fair val-optimal obj-F1 tie (v1.0 0.567/v1.1 0.562 val; 0.627 vs 0.607 test, ≈noise).
+The apparent val/object drops were confounds — a −29-black-negative val-set change and a calibration
+mismatch (v1.1's optimal threshold is 0.45, not the deployed 0.65). v1.1 does show a **tighter val−test gap
+(0.045 vs 0.060)** and a **precision lean**, both mild positives, but not enough to beat v1.0.
+**Decision: keep v1.0 deployed; retain v1.1 (cleaner labels + checkpoints) for the next real modeling
+change** (shipping it would need its own thr≈0.45 calibration). Prior: **Minimum Mapping Unit metric
+correction.** Object-wise scoring counted every GT
+component as a full object while predictions are size-filtered (deploy min_blob 2000) — so any GT
+`< min_blob*iou_thr = 600 px` was a structurally-guaranteed false negative and inflated the Finding-K
+invisible floor. Domain-expert re-diagnosis: 0–50 px = rasterization artefacts, 50–400 px = real but
+boundary-clipped slump tails (body off-tile). Fix = mark sub-Minimum-Mapping-Unit positives as ignore
+(255) uniformly via one shared `apply_min_mapping_unit` (data/label_cleaning.py), wired into the loader
+(`RTSDataset.min_mapping_unit_px`, loss + live metric) and the cached-npz scoring path
+(`object_scorecard.py`/`analyze_residual_errors.py` `--min-mapping-unit`); default off, **no retrain**.
+Free 3-seed re-score at the deploy point (self-check True): **obj-precision invariant** (0.793 val /
+0.768 test), obj-recall +3.2 pt val / +4.1 pt test, invisible floor 0.280→0.231 val, 0.223→0.159 test.
+6 new tests (`test_gt_mmu_scoring.py`), suite green. Track B (restore 28 positives + drop 49 black + promote
+`vjn7wxyufczs`) in progress. Prior: **multi-scale inference (§6.3/§7.3) + multiscale-poc merged** — the
+inference pipeline now does
 per-tile multi-scale fusion when `deployment.yaml.scales` has >1 entry (default stays `[1.0]`, deploy path
 unchanged): `InferenceTileDataset(scales=…)` reads each scale (scale s<1 = bbox expanded 1/s×, the §6.3
 context read; NDVI at the same expanded bbox), and `inference/runner.fuse_scale_probs` averages over valid
