@@ -29,6 +29,7 @@ from data.normalization import (
     apply_norm, build_norm_arrays, fill_nodata_with_mean, load_stats, stats_to_arrays,
 )
 from data.mixing import MixingAugmenter
+from data.label_cleaning import apply_min_mapping_unit
 from data.transforms import dilate_label_boundary
 
 logger = logging.getLogger(__name__)
@@ -133,6 +134,7 @@ class RTSDataset(Dataset):
         label_ignore_index: int = 255,
         boundary_handling: str = "none",   # none | ignore (soft_labels deferred to a later iteration)
         boundary_ignore_width: int = 3,
+        min_mapping_unit_px: int = 0,       # sub-MMU positives → ignore (0/1 = off; data-v1.1 metric fix)
         nodata_handling: bool = False,      # §4.4: zero→mean input + 255 label for all-band-zero
         aug_cfg: dict | None = None,        # train-only; enables sample-mixing augs (data/mixing.py)
         seed: int = 42,                     # base seed for reproducible sample-mixing RNG
@@ -169,6 +171,7 @@ class RTSDataset(Dataset):
         self.label_ignore_index = label_ignore_index
         self.boundary_handling = boundary_handling
         self.boundary_ignore_width = boundary_ignore_width
+        self.min_mapping_unit_px = min_mapping_unit_px
         self.nodata_handling = nodata_handling
         self.seed = seed
 
@@ -274,6 +277,12 @@ class RTSDataset(Dataset):
 
         if self.nodata_handling:                              # §4.4 (before boundary/aug)
             rgb, label = substitute_nodata(rgb, label, self.mean, self.label_ignore_index)
+
+        # Sub-Minimum-Mapping-Unit positives → ignore (default-off; data-v1.1 metric fix).
+        # Before boundary dilation so the floor sees raw components, and the resulting
+        # ignore rides the same geometric transform as the rest of the mask.
+        label = apply_min_mapping_unit(label, self.min_mapping_unit_px,
+                                       ignore_index=self.label_ignore_index)
 
         if self.boundary_handling == "ignore":
             label = dilate_label_boundary(label, self.boundary_ignore_width,

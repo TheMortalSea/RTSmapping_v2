@@ -352,6 +352,32 @@ fused vs 0.704/0.630/0.756 1x). Fused geomean +0.0189 / +0.0095 / −0.0016 and 
 Consistent with Finding K: residual val misses are perception-invisible, not FOV-limited (val objects
 are small/medium, one dominant region). Deferred with the rest of inference validation: tiny-AOI
 `--scale05` 2025 rerun (needs the S2-gated s2_index for NDVI-at-inference over Banks Island).
+
+**N — Minimum Mapping Unit metric correction (2026-07-04, `data.apply_min_mapping_unit`, free re-score).**
+Object-wise scoring counted every GT connected-component as a full object regardless of size, while
+predictions are size-filtered (`_filter_small_blobs`, deploy min_blob 2000). At min_blob 2000 / iou_thr
+0.3 any GT `< min_blob*iou_thr = 600 px` is structurally unmatchable → a guaranteed false negative, and
+also inflates the Finding-K perception-invisible floor. Domain-expert diagnosis: 0–50 px GT blobs are
+rasterization artefacts; 50–400 px are real RTS pixels but the boundary-clipped tail of a slump whose
+body is in the neighbouring tile (negligible pixel-IoU weight, full object-count weight). Fix: mark
+sub-Minimum-Mapping-Unit positive components as ignore (255) uniformly at load (loss + live metric) and
+at scoring — one shared `apply_min_mapping_unit` (pure size floor, no fill/close), default off
+(reproducibility preserved), no retrain. Frozen 3-seed ensemble re-score at the deploy point (thr 0.65 /
+min_blob 2000), scorecard self-check True at every value:
+
+| MMU px | Val obj-P/R/F1 · floor (132 GT) | Test obj-P/R/F1 · floor (215 GT) |
+|---|---|---|
+| 0 (off) | 0.793 / 0.348 / 0.484 · 0.280 | 0.768 / 0.400 / 0.526 · 0.223 |
+| 50 | 0.793 / 0.357 / 0.492 · 0.271 | 0.768 / 0.410 / 0.534 · 0.205 |
+| 400 | 0.793 / 0.374 / 0.508 · 0.244 | 0.768 / 0.430 / 0.551 · 0.170 |
+| 600 | 0.793 / 0.380 / 0.514 · 0.231 | 0.768 / 0.441 / 0.560 · 0.159 |
+
+**Object precision is invariant** (0.793 val / 0.768 test at every value): the floor only removes
+unmatchable-GT false negatives, never a false positive. MMU 50 (artefacts only) barely moves; the bulk
+of the correction is the 50–600 px edge-partial band. Excluded set at 600: val 11/132 (8.3%), test
+20/215 (9.3%). The Finding-K perception-invisible floor 0.280 → 0.231 (val) and the shipped test floor
+0.223 → 0.159 (−6.4 pt, ~29% of the "floor" was un-scoreable slivers). Artifacts:
+`/mnt/outputs/v1.0/staging/data_v1_1_audit/mmu_rescore/` (per-MMU scorecards + `excluded_audit_{val,test}.json`).
 <!-- FINDINGS:END -->
 
 ---

@@ -380,6 +380,19 @@ Object-level scorecard + applicability probes (Phase 0 of the v3 object-improvem
 | `test_seed_noise_handles_none_metric` | None metric values dropped before stats | shallow |
 | `test_find_invisible_objects_selects_only_below_threshold` | Contact-sheet selection: only max_prob<thr GT objects, with correct area + bbox | real — D1 audit selection |
 
+### [test_gt_mmu_scoring.py](test_gt_mmu_scoring.py)
+
+Minimum Mapping Unit (sub-MMU positive → ignore) *metric/loss semantics* — validates the data-v1.1 fix composing through the existing 255-ignore machinery (the primitive itself is covered by `test_label_cleaning.py`). Synthetic, CPU-only; imports `training.metrics` → torch + `losses` (test deps).
+
+| Test | Checks | Strictness |
+|---|---|---|
+| `test_apply_min_mapping_unit_off_is_identity` | `mmu_px≤1` returns the input object unchanged (reproducibility-preserving default) | real — guards the off-default |
+| `test_sub_mmu_gt_plus_correct_pred_zero_fp_zero_fn` | sub-MMU GT + correct pred: without floor → 1 FN; with floor → (0,0,0) — the core ignore assertion | real — core semantics |
+| `test_real_object_survives_mmu` | ≥3000px GT + matching pred → 1 TP unchanged at mmu=600 (no over-exclusion) | real |
+| `test_straddle_pred_still_fp_on_background` | Pred straddling a sub-MMU sliver + genuine background → exactly 1 FP (background FP not masked away) | real — FP-carve-out edge case |
+| `test_scorecard_self_check_holds_with_mmu` | Clean labels once → `build_scorecard` parity self-check stays True (all 3 paths see identical labels) | real — parity regression guard |
+| `test_pixel_metrics_and_loss_ignore_sub_mmu` | Real-object pixel counts unmoved; sliver's 4px leave the FN count; focal loss invariant to logits under the 255 sliver | real — pixel + loss ignore |
+
 ### [test_freeze.py](test_freeze.py)
 
 | Test | Checks | Strictness |
@@ -638,3 +651,4 @@ Deliberately deferred — most are better caught by Tier 2 against real data tha
 - 2026-04-22 — Initial suite: 24 tests across 4 files, all green. Covers Phase 0 data pipeline. See plan for context.
 - 2026-04-23 — Phase 1 additions: 81 new tests across 10 files covering models, losses, EMA, scheduler, metrics, checkpointing, freeze/unfreeze, early stopping, MLflow utilities, visualizations, deployment-package guards, and an end-to-end training smoke. Fast suite 105 tests (~12 s), plus the train-smoke at ~130 s. Total 113 tests. All green.
 - 2026-06-30 — Object-scorecard instrument (v3 object-improvement plan, Phase 0): +4 `_object_match_detail` tests in `test_metrics.py` (tp/fp/fn parity with the frozen gate path + split/merge/geometry), and new `test_object_scorecard.py` (14 tests) covering `object_detail_counts`, per-region bootstrap CIs, `_geometry_summary`, `build_scorecard` self-check, the region-stratified train sampler, the D2 change-signal probe, and the seed-noise aggregator. All report-only/synthetic; verified green off-VM under a torch stub (real torch on the L4 runs them in the full suite). Tier-2 execution gaps recorded in Coverage gaps #8.
+- 2026-07-04 — Minimum Mapping Unit fix (data-v1.1): new `test_gt_mmu_scoring.py` (6 tests) validating `apply_min_mapping_unit` composing through the 255-ignore machinery — sub-MMU GT + correct pred → (0,0,0); real object survives; straddle keeps 1 FP; `build_scorecard` parity self-check holds; pixel counts unmoved + focal loss invariant to logits under the 255 sliver. The primitive itself stays covered by `test_label_cleaning.py`. All synthetic/CPU. Green under real torch (`test_gt_mmu_scoring.py` + `test_label_cleaning.py` + `test_object_scorecard.py` = 28 passed; `test_dataset.py` + `test_metrics.py` = 35 passed).

@@ -262,6 +262,7 @@ def _setup_data(cfg: dict) -> dict:
             label_ignore_index=ignore_idx,
             boundary_handling=boundary,
             boundary_ignore_width=boundary_w,
+            min_mapping_unit_px=int(cfg["data"].get("min_mapping_unit_px", 0)),
             nodata_handling=cfg["data"].get("nodata_handling", False),
             aug_cfg=aug_cfg,
             seed=int(cfg.get("seed", 42)),

@@ -28,7 +28,19 @@ for inference. Docker `rts-train:v2`. Data in `gs://abrupt_thaw/` + `gs://rts-ma
 ## Rolling progress
 
 ### Just completed
-**Multi-scale inference implemented (§6.3/§7.3) + multiscale-poc merged.** The inference pipeline now does
+**Minimum Mapping Unit metric correction (data-v1.1, ledger N).** Object-wise scoring counted every GT
+component as a full object while predictions are size-filtered (deploy min_blob 2000) — so any GT
+`< min_blob*iou_thr = 600 px` was a structurally-guaranteed false negative and inflated the Finding-K
+invisible floor. Domain-expert re-diagnosis: 0–50 px = rasterization artefacts, 50–400 px = real but
+boundary-clipped slump tails (body off-tile). Fix = mark sub-Minimum-Mapping-Unit positives as ignore
+(255) uniformly via one shared `apply_min_mapping_unit` (data/label_cleaning.py), wired into the loader
+(`RTSDataset.min_mapping_unit_px`, loss + live metric) and the cached-npz scoring path
+(`object_scorecard.py`/`analyze_residual_errors.py` `--min-mapping-unit`); default off, **no retrain**.
+Free 3-seed re-score at the deploy point (self-check True): **obj-precision invariant** (0.793 val /
+0.768 test), obj-recall +3.2 pt val / +4.1 pt test, invisible floor 0.280→0.231 val, 0.223→0.159 test.
+6 new tests (`test_gt_mmu_scoring.py`), suite green. Track B (restore 28 positives + drop 49 black + promote
+`vjn7wxyufczs`) in progress. Prior: **multi-scale inference (§6.3/§7.3) + multiscale-poc merged** — the
+inference pipeline now does
 per-tile multi-scale fusion when `deployment.yaml.scales` has >1 entry (default stays `[1.0]`, deploy path
 unchanged): `InferenceTileDataset(scales=…)` reads each scale (scale s<1 = bbox expanded 1/s×, the §6.3
 context read; NDVI at the same expanded bbox), and `inference/runner.fuse_scale_probs` averages over valid
