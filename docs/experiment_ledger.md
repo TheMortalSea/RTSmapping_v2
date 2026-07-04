@@ -378,6 +378,42 @@ of the correction is the 50–600 px edge-partial band. Excluded set at 600: val
 20/215 (9.3%). The Finding-K perception-invisible floor 0.280 → 0.231 (val) and the shipped test floor
 0.223 → 0.159 (−6.4 pt, ~29% of the "floor" was un-scoreable slivers). Artifacts:
 `/mnt/outputs/v1.0/staging/data_v1_1_audit/mmu_rescore/` (per-MMU scorecards + `excluded_audit_{val,test}.json`).
+
+**N-retrain — v1.1 data-correctness 3-seed retrain = ability WASH (2026-07-04, `v1_1_seed{42,43,44}`).**
+v1.1 applied three unambiguous row-level fixes (small-blob deletion dropped — superseded by the MMU
+metric fix): +28 restored positives (hotfixed regions), −49 all-black negatives, +`vjn7wxyufczs`
+promotion (test-region label correction). **Training-relevant delta = +25 train pos / −16 train black
+neg = 0.14% of 17,951 train tiles** → predicted within seed noise. Staged multiroot (v1.0 symlink
+primary + 29-tile delta root; the 28 restores needed NDVI regenerated via GEE, S2-2024, scale-matched
+mean 0.440). Same locked recipe (`aug_trivialaugment_deploy`); only the data differs.
+
+*Raw gate looked like a regression, but both "worse" signals are confounds:*
+- val best_smoothed 0.9029/0.9086/0.8906 (mean **0.9007**) vs v1.0 0.9167/0.9216/0.9270 (**0.9218**) —
+  **confounded**: v1.1 val_realistic lost 29 all-black (trivial) negatives (2151→2122), a different,
+  harder prevalence-conditioned val set.
+- object P/R at the fixed deploy point (thr 0.65 on v1.0's T=0.512321) dropped ~6 pt — **pure
+  calibration**: v1.1's val-optimal threshold is **0.45, not 0.65** (`tune_object_operating_point`).
+
+*Calibration-free / fairly-calibrated metrics say TIE:*
+- Temperature-invariant test **pixel PR-AUC: v1.1 0.9976 ≈ v1.0 0.9970**; MMU600 invisible floor
+  0.154 vs 0.159 (v1.1 hair better).
+- Each model at its **own** val-tuned operating point (v1.0 thr0.3/mb80, v1.1 thr0.45/mb80):
+
+  | | VAL obj-F1 | TEST obj-F1 | val−test gap |
+  |---|---|---|---|
+  | v1.0 | 0.5669 (P.489/R.674) | 0.6272 (P.668/R.591) | −0.060 |
+  | v1.1 | 0.5615 (P.570/R.553) | 0.6069 (P.701/R.535) | −0.045 |
+
+  VAL F1 tied (0.567 vs 0.562); TEST F1 v1.0 +0.020 (≈ seed noise). **v1.1 has a tighter val−test gap
+  (0.045 vs 0.060)** — more honest generalization — and **leans precision** (higher P / lower R at both
+  splits), a bias aligned with the precision-leaning deploy (min_blob 2000).
+
+**Verdict:** v1.1 model ability = v1.0 (the 0.14% delta did not move it); the apparent drop was
+calibration + a val-set change, not a regression. **Deploy decision: keep v1.0** (incumbent, calibrated
+at thr 0.65); retain the v1.1 cleaner-label dataset + checkpoints for the next real modeling change
+(shipping v1.1 would need its own thr≈0.45 calibration first). The object-score win from the data-v1.1
+effort is finding N (the MMU metric fix), not the retrain. Artifacts: `/mnt/outputs/v1_1/`
+(runs, diagnostics, object_operating_point) + `/mnt/outputs/v1.0/staging/data_v1_1_audit/`.
 <!-- FINDINGS:END -->
 
 ---

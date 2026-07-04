@@ -28,7 +28,17 @@ for inference. Docker `rts-train:v2`. Data in `gs://abrupt_thaw/` + `gs://rts-ma
 ## Rolling progress
 
 ### Just completed
-**Minimum Mapping Unit metric correction (data-v1.1, ledger N).** Object-wise scoring counted every GT
+**data-v1.1 closed out (branch `data-v1.1`, ledger N + N-retrain).** Two deliverables: (1) the **Minimum
+Mapping Unit metric fix** — the real object-score win (test invisible floor 0.223→0.159, obj-F1 0.526→0.560
+at MMU600, precision invariant, no retrain); (2) the **v1.1 data-correctness retrain** (+28 restored pos,
+−49 black neg, vjn7 promotion) which came back an **ability WASH**: calibration-free test pixel PR-AUC
+0.9976≈0.9970 and fair val-optimal obj-F1 tie (v1.0 0.567/v1.1 0.562 val; 0.627 vs 0.607 test, ≈noise).
+The apparent val/object drops were confounds — a −29-black-negative val-set change and a calibration
+mismatch (v1.1's optimal threshold is 0.45, not the deployed 0.65). v1.1 does show a **tighter val−test gap
+(0.045 vs 0.060)** and a **precision lean**, both mild positives, but not enough to beat v1.0.
+**Decision: keep v1.0 deployed; retain v1.1 (cleaner labels + checkpoints) for the next real modeling
+change** (shipping it would need its own thr≈0.45 calibration). Prior: **Minimum Mapping Unit metric
+correction.** Object-wise scoring counted every GT
 component as a full object while predictions are size-filtered (deploy min_blob 2000) — so any GT
 `< min_blob*iou_thr = 600 px` was a structurally-guaranteed false negative and inflated the Finding-K
 invisible floor. Domain-expert re-diagnosis: 0–50 px = rasterization artefacts, 50–400 px = real but
