@@ -18,7 +18,7 @@ degenerate · killed (ran to a verdict but failed) · lr-test.
 
 **Families:** A Baseline/gate · B Data · C Loss/boundary · D Channels/fusion · E Architecture/encoder ·
 F Augmentation · G Sampling · H Calibration/TTA · I Final-lock/Test · J Deploy/inference · K Deferred ·
-M Multi-scale (0.5x context-expanded training POC).
+M Multi-scale (0.5x context-expanded training POC) · N Data-v1.1 (MMU metric fix + correctness retrain).
 
 <!-- GATE:BEGIN -->
 ## Gate
@@ -152,7 +152,10 @@ sign-flipped → rejected).
 | deploy_v1_ndvi_seed44 | I | corrected | 0.9156 | done | final-lock 3-seed (mean 0.9123) |
 | multiscale_poc_seed42 | M | corrected | 0.9165 | done | multiscale POC — gates 1+2 pass, gate 3 fail (family-M finding) |
 | multiscale_poc_seed43 | M | corrected | 0.9284 | done | multiscale POC seed-confirm |
-| multiscale_poc_seed44 | M | corrected | 0.9282 | done | multiscale POC seed-confirm |<!-- RUN-TABLE:END -->
+| multiscale_poc_seed44 | M | corrected | 0.9282 | done | multiscale POC seed-confirm |
+| v1_1_seed42 | N | corrected | 0.9029 | done | v1.1 correctness retrain — ability WASH (val set −29 black neg; own-thr 0.45) |
+| v1_1_seed43 | N | corrected | 0.9086 | done | v1.1 correctness retrain seed-confirm |
+| v1_1_seed44 | N | corrected | 0.8906 | done | v1.1 correctness retrain seed-confirm (mean 0.9007; keep v1.0 deployed) |<!-- RUN-TABLE:END -->
 
 ---
 
