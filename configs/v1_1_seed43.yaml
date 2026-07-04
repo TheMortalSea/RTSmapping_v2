@@ -1,0 +1,27 @@
+# v1.1 data-correctness retrain (Track B), seed 43. IDENTICAL locked recipe to the
+# deployed baseline aug_trivialaugment_deploy (deploy_v1 stack + TrivialAugment - RandomScale);
+# the ONLY delta is the v1.1 dataset: +25 train positives restored, -16 train black negatives,
+# +vjn7 promotion (test-region label correction). data.min_mapping_unit_px stays 0 (the Minimum
+# Mapping Unit is a scoring-time correction, not a training change). Fair A/B vs the v1.0 3-seed.
+base: base_v2_fast.yaml
+seed: 43
+data:
+  data_root: /outputs/v1.1/data_local
+  metadata_csv: metadata_v1_1.csv
+  additional_roots:
+    - /outputs/v1.1_delta/data_local
+  normalization_stats_path: /outputs/v1.0/staging/v1_splits/normalization_stats_ndvi.json
+channels:
+  rgb: true
+  extra:
+    - {name: ndvi, band: 0}
+loss:
+  boundary_handling: ignore
+  boundary_ignore_width: 2
+augmentation:
+  multi_scale: {p: 0.0}
+  auto_policy:
+    mode: trivialaugment
+    magnitude: 1.0
+mlflow:
+  run_name: v1_1_seed43
