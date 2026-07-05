@@ -497,6 +497,7 @@ Inference pipeline (`inference/` + grid/merge entry scripts), GPU-free. Fixtures
 | `test_ensemble_mean_prob_then_temperature_math` | 2 const-logit models → mean of per-model sigmoids, then T on the fused logit (matches deployment.yaml recipe) | real |
 | `test_ensemble_identical_members_equal_single` | N identical members == single model | shallow |
 | `test_ensemble_empty_raises` | empty model list → ValueError | shallow |
+| `test_gcs_package_path_is_staged` | gs:// package dir routes through `_stage_gcs_package`, not the local config loader | real — regression: fleet workers crashed on gs:// packages (2026-07-05 audit) |
 | `test_runtime_package_mismatch_aborts` | runtime vs package precision/tta mismatch aborts; null defers | real — §14 calibration-mismatch guard |
 | `test_probability_tile_roundtrip` | float32, NoData −1.0, EPSG:3857 roundtrip | real — §9.1 |
 | `test_binary_mask_roundtrip` | uint8, NoData 255 roundtrip | real — §9.2 |

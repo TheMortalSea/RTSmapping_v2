@@ -38,15 +38,44 @@ TTA_PASSES: dict[str, list[tuple[bool, bool, bool]]] = {
 }
 
 
+def _stage_gcs_package(pkg: str) -> str:
+    """Download a gs:// package dir to a local cache dir; return the local path.
+
+    The config/stats loaders are local-only, so a gs:// package is staged once
+    per process (idempotent: files already present with the right size are kept).
+    The fleet startup passes gs:// package paths to every worker — without this
+    staging step each worker crashed on `Config not found: gs:/...` (found by
+    the 2026-07-05 pre-launch audit GPU smoke).
+    """
+    import tempfile
+
+    from google.cloud import storage
+
+    bucket_name, prefix = pkg[5:].split("/", 1)
+    dest = Path(tempfile.gettempdir()) / "rts_packages" / prefix.strip("/").replace("/", "_")
+    dest.mkdir(parents=True, exist_ok=True)
+    for blob in storage.Client().bucket(bucket_name).list_blobs(prefix=prefix.rstrip("/") + "/"):
+        name = blob.name.rsplit("/", 1)[-1]
+        if not name:  # directory placeholder
+            continue
+        target = dest / name
+        if not target.exists() or target.stat().st_size != blob.size:
+            blob.download_to_filename(str(target))
+    return str(dest)
+
+
 def load_deployment_package(package_dir: str | Path, device: torch.device) -> dict:
     """Load and validate a deployment package (inference.md §2.2, §8.2 step 1).
 
-    Returns dict with: model (eval mode, on device), model_cfg, dep_cfg,
-    stats, mean, std, n_channels.
+    Accepts a local directory or a ``gs://`` package prefix (staged to a local
+    cache first). Returns dict with: model (eval mode, on device), model_cfg,
+    dep_cfg, stats, mean, std, n_channels.
 
     Raises on the §5.1 channel-name-binding mismatch.
     """
     pkg = str(package_dir).rstrip("/")
+    if pkg.startswith("gs://"):
+        pkg = _stage_gcs_package(pkg)
     model_cfg = load_config(f"{pkg}/model_config.yaml")
     dep_cfg = load_config(f"{pkg}/deployment_config.yaml")
     stats = load_stats(f"{pkg}/normalization_stats.json")
