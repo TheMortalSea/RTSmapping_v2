@@ -51,7 +51,10 @@ echo "Creating $N_VMS x $MACHINE in $ZONE (image $IMAGE)"
 echo "  run base: $RUN_BASE"
 echo "  packages: $PACKAGES"
 
-sa_args=()
+# Always request cloud-platform scopes: without them the VM gets the legacy
+# default devstorage.read_only scope and every GCS write 403s regardless of
+# IAM (found live, 2026-07-05 audit). IAM stays the real access control.
+sa_args=(--scopes cloud-platform)
 [ -n "$SA" ] && sa_args=(--service-account "$SA" --scopes cloud-platform)
 
 for i in $(seq 1 "$N_VMS"); do

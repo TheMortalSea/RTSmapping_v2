@@ -72,6 +72,9 @@ docker pull "$IMAGE"
 # GOOGLE_CLOUD_PROJECT lets google-cloud-storage bill list/read.
 for g in $(seq 0 $((GPUS_PER_VM - 1))); do
   log "launching worker on GPU $g"
+  # Idempotent across reboots: a previous boot's exited container holds the
+  # name and would make `docker run --name` fail (2026-07-05 audit).
+  docker rm -f "rts-worker-$g" >/dev/null 2>&1 || true
   docker run -d --restart=on-failure:3 \
     --name "rts-worker-$g" \
     --gpus "device=$g" \
