@@ -104,7 +104,12 @@ def load_deployment_package(package_dir: str | Path, device: torch.device) -> di
         # separate decision gated by §6.4 (calibration + test-side gate).
         raise ValueError(f"scales={scales}: 1.0 (the base grid) must be included")
 
-    model = build_model(model_cfg)
+    # Build with pretrained=False: weights.pth (strict load) replaces every
+    # parameter anyway, and pretrained=True makes each fleet worker download
+    # ImageNet encoder weights from the HF hub at startup — a pointless
+    # external dependency at launch time (2026-07-05 audit).
+    build_cfg = {**model_cfg, "model": {**model_cfg["model"], "pretrained": False}}
+    model = build_model(build_cfg)
     weights_path = f"{pkg}/weights.pth"
     if weights_path.startswith("gs://"):
         import gcsfs
