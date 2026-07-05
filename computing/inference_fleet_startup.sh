@@ -50,6 +50,16 @@ for i in $(seq 1 60); do
 done
 nvidia-smi -L || { log "FATAL: no GPUs visible"; exit 1; }
 
+# The current DLVM families (common-cu129-*-nvidia-580, verified 2026-07-05)
+# ship the NVIDIA driver + nvidia-ctk but NOT docker — install + wire the GPU
+# runtime if missing (idempotent; startup scripts run as root at every boot).
+if ! command -v docker >/dev/null 2>&1; then
+  log "docker not present — installing docker.io + NVIDIA runtime"
+  apt-get update -qq && apt-get install -y -qq docker.io
+  nvidia-ctk runtime configure --runtime=docker
+  systemctl restart docker
+fi
+
 # Authenticate docker to Artifact Registry via the VM service account.
 gcloud auth configure-docker us-west1-docker.pkg.dev --quiet
 docker pull "$IMAGE"
