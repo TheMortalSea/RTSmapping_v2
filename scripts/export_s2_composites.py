@@ -92,7 +92,14 @@ def domain_cells(domain: gpd.GeoDataFrame, dlat: float, dlon: float):
 
 # EE appends a "-<10digits>-<10digits>" tile suffix to multi-part (oversized) exports.
 # cell_id() uses only letters/digits/underscore, so stripping this can't clobber a real id.
-_EE_TILE_SUFFIX = re.compile(r"-\d{10}-\d{10}$")
+# EE splits an oversized cell into <cid><XXXXXXXXXX>-<YYYYYYYYYY>.tif — the x
+# offset is appended to the description WITHOUT a separator dash (observed on
+# the 2025_south export: E0030_N05900000000000-0000000000.tif). The previous
+# pattern (r"-\d{10}-\d{10}$") required a leading dash, matched nothing, and so
+# a resume run saw every sharded cell as missing and would re-export ~90% of
+# the domain (2026-07-05 pre-launch audit). Cell ids always end in exactly 4
+# digits (N/S tag), so stripping a trailing 10+10 digit pair is unambiguous.
+_EE_TILE_SUFFIX = re.compile(r"\d{10}-\d{10}$")
 
 
 def _existing_cell_ids(bucket: str, prefix: str) -> set[str]:

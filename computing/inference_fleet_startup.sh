@@ -54,15 +54,17 @@ nvidia-smi -L || { log "FATAL: no GPUs visible"; exit 1; }
 gcloud auth configure-docker us-west1-docker.pkg.dev --quiet
 docker pull "$IMAGE"
 
-# One worker container per GPU. CUDA_VISIBLE_DEVICES + --gpus pin each to its L4;
-# the worker's id (host:pid:gpu) makes per-VM/per-GPU contribution visible in the
-# monitor. GOOGLE_CLOUD_PROJECT lets google-cloud-storage bill list/read.
+# One worker container per GPU. --gpus device=$g pins the container to its L4
+# (which the NVIDIA runtime renumbers to cuda:0 inside — do NOT also set
+# CUDA_VISIBLE_DEVICES=$g: that indexes the *visible* set, so for g>=1 it hides
+# the only GPU and torch sees zero devices; caught by the 2026-07-05 pre-launch
+# audit). --worker-id keeps per-VM/per-GPU contribution visible in the monitor.
+# GOOGLE_CLOUD_PROJECT lets google-cloud-storage bill list/read.
 for g in $(seq 0 $((GPUS_PER_VM - 1))); do
   log "launching worker on GPU $g"
   docker run -d --restart=on-failure:3 \
     --name "rts-worker-$g" \
     --gpus "device=$g" \
-    -e CUDA_VISIBLE_DEVICES="$g" \
     -e GOOGLE_CLOUD_PROJECT="$PROJECT" \
     "$IMAGE" \
     scripts/run_inference_worker.py \
@@ -71,7 +73,8 @@ for g in $(seq 0 $((GPUS_PER_VM - 1))); do
       --s2-index "$S2_INDEX" \
       $PKG_ARGS \
       --device cuda \
-      --num-workers "$DL_WORKERS"
+      --num-workers "$DL_WORKERS" \
+      --worker-id "$(hostname):gpu$g"
 done
 
 # Per-VM health check: all containers up a few seconds after launch.

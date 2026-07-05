@@ -7,7 +7,9 @@ the calibration definition):
     for each TTA pass: logits -> /temperature -> sigmoid -> inverse transform
     -> arithmetic mean over passes.
 
-Phase 1 runs scales [1.0] only; multi-scale is gated by §6.4 and not built.
+The deploy default is scales [1.0]; when a package declares >1 scale the runner
+does the §6.3/§7.3 per-tile multi-scale fusion (deploying that remains a separate
+decision gated by §6.4).
 """
 
 from __future__ import annotations
@@ -67,10 +69,11 @@ def load_deployment_package(package_dir: str | Path, device: torch.device) -> di
         raise ValueError(f"{pkg}/deployment_config.yaml: threshold/temperature "
                          "is null — package was assembled without calibration")
     scales = dep_cfg.get("scales", [1.0])
-    if scales != [1.0]:
-        raise NotImplementedError(
-            f"scales={scales}: multi-scale inference is gated by inference.md "
-            "§6.4 and not implemented in Phase 1")
+    if 1.0 not in scales:
+        # runner._run_inference_multiscale fuses on the 1x grid (§7.3); a package
+        # without the base scale can never be run. Deploying >1 scale remains a
+        # separate decision gated by §6.4 (calibration + test-side gate).
+        raise ValueError(f"scales={scales}: 1.0 (the base grid) must be included")
 
     model = build_model(model_cfg)
     weights_path = f"{pkg}/weights.pth"

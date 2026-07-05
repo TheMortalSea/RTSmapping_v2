@@ -175,9 +175,9 @@ sign-flipped → rejected).
 **Training schedule** (reproduce-training only, not a deploy param): `base_v2_fast` — patience 5,
 start_epoch 45, max_epochs 120; bf16; seeds 42/43/44; deterministic.
 
-**Deploy/inference** (`configs/deployment.yaml`): threshold + temperature + TTA ⏳ *(set by H
-calibration, still null)*; stride 344 px (~33% overlap); overlap fusion = distance-from-center Gaussian
-σ=128 px; NDVI windowed on-the-fly from S2 composites (inference.md §3.3/§4.3).
+**Deploy/inference** (`configs/deployment.yaml`): threshold 0.65 (object-tuned, H.2) · temperature
+0.512321 · TTA none — locked by H calibration 2026-06-25; stride 344 px (~33% overlap); overlap fusion =
+distance-from-center Gaussian σ=128 px; NDVI windowed on-the-fly from S2 composites (inference.md §3.3/§4.3).
 <!-- RECIPE-TABLE:END -->
 
 <!-- BUILDUP-TABLE:BEGIN -->
