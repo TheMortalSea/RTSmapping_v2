@@ -69,14 +69,25 @@ def load_shard_ids(base: str) -> list[str]:
 
 def work_loop(store: ClaimStore, shard_ids: Iterable[str],
               process_shard: Callable[[str], None], stale_after_s: float = 1800.0,
-              max_shards: Optional[int] = None) -> int:
+              max_shards: Optional[int] = None,
+              heartbeat_every_s: float = 240.0) -> int:
     """Drain the queue: claim -> process -> mark_done until no shard is free.
 
     GPU/torch-free so it is unit-testable. ``process_shard`` does the actual
     inference for one shard id; ``mark_done`` runs only after it returns, so a
     crash mid-shard leaves a reclaimable claim, never a false done marker.
     Returns the number of shards this worker completed.
+
+    A daemon thread heartbeats the claim every ``heartbeat_every_s`` for the
+    whole life of the shard. The progress-callback heartbeat alone fires only
+    every 512 processed tiles, so a cold worker's first tick can lag the claim
+    by many minutes — the 2026-07-05 pre-flight drill saw an *active* L4
+    worker's shard reclaimed because its heartbeat was 238 s old before the
+    first tile completed. Time-based heartbeats decouple staleness from
+    throughput; set ``heartbeat_every_s=0`` to disable (tests).
     """
+    import threading
+
     shard_ids = list(shard_ids)
     n = 0
     while max_shards is None or n < max_shards:
@@ -84,7 +95,23 @@ def work_loop(store: ClaimStore, shard_ids: Iterable[str],
         if sid is None:
             break
         logger.info("claimed shard %s", sid)
-        process_shard(sid)
+        stop = threading.Event()
+        beater = None
+        if heartbeat_every_s > 0:
+            def _beat(sid=sid, stop=stop):
+                while not stop.wait(heartbeat_every_s):
+                    try:
+                        store.heartbeat(sid)
+                    except Exception:  # noqa: BLE001 - never kill the shard for a beat
+                        logger.warning("heartbeat failed for %s", sid, exc_info=True)
+            beater = threading.Thread(target=_beat, daemon=True)
+            beater.start()
+        try:
+            process_shard(sid)
+        finally:
+            stop.set()
+            if beater is not None:
+                beater.join(timeout=5)
         store.mark_done(sid)
         n += 1
         logger.info("done shard %s (%d this worker)", sid, n)

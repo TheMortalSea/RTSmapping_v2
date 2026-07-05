@@ -564,6 +564,7 @@ Inference pipeline (`inference/` + grid/merge entry scripts), GPU-free. Fixtures
 | `test_resume_skips_already_done` | pre-done shards are skipped on (re)start | real — §8.3 resume |
 | `test_two_workers_cover_all_disjointly` | A (capped) + B drain cooperatively → union complete, intersection empty | real — multi-VM exactly-once |
 | `test_max_shards_stops_early` | `--max-shards` stops after N | shallow |
+| `test_time_based_heartbeat_during_slow_shard` | claim heartbeat refreshed by wall-clock thread while process_shard runs | real — an active worker's shard was reclaimed live when heartbeats depended on progress ticks (2026-07-05 drill) |
 
 ### [test_inference_progress.py](test_inference_progress.py)
 
