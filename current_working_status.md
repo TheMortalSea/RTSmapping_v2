@@ -28,7 +28,22 @@ for inference. Docker `rts-train:v2`. Data in `gs://abrupt_thaw/` + `gs://rts-ma
 ## Rolling progress
 
 ### Just completed
-**data-v1.1 closed out (branch `data-v1.1`, ledger N + N-retrain).** Two deliverables: (1) the **Minimum
+**Pre-launch full audit (branch `audit-prelaunch`, `docs/inference_launch_audit.md`).** Comprehensive
+audit before the pan-Arctic inference launch, against two goals: (1) past decisions rest on solid facts,
+(2) model + machinery are scientifically & engineering sound. **Science side: clean** — every headline
+number re-derived from primary artifacts (3-seed 0.9218, ensemble 0.9393/T 0.512321, test 0.584/0.437/0.500,
+MMU-600 floor 0.159), splits spatially leakage-free (0 overlapping cross-split tiles), norm-stats/EMA
+weights/calibration chain all verified, v1.1-wash verdict sound; ledger sync zero-drift. **Machinery side:
+10 defects found, 6 blockers**, all in the fleet/execution path and only reachable by loading GCS packages
++ booting a real L4 VM: gs:// packages unloadable, fleet-startup GPU-visibility bug, no `--shm-size` (every
+worker crashed), SA scopes/IAM (all writes 403), retired DLVM image family, `--metadata` comma parse, no
+docker on the image, `pretrained=True` HF-hub pull, heartbeat starvation, reboot non-idempotency. All fixed
+(8 commits) + `rts-infer:v1` rebuilt/pushed (digest `7772dbc7…`) + 2 IAM grants (our bucket + read on
+`pdg-planet-data`). **Headline benchmark: real L4 rate ~4.2 tiles/s (3-model ensemble, GPU-bound) → full run
+~2–5 days, NOT the plan's 12–29 h.** E9 smoke passed (Banks AOI, NDVI parity 0.95–0.97, detections sane,
+output uint8 ~8 KB vs float32 570 KB/tile). Also: S2 export was actually **1,797/1,799 done** (diary's 76%
+was stale), 2 cells relaunched (GEE PENDING); `s2_index` built + uploaded; drill VM stopped (not deleted).
+Prior: **data-v1.1 closed out (branch `data-v1.1`, ledger N + N-retrain).** Two deliverables: (1) the **Minimum
 Mapping Unit metric fix** — the real object-score win (test invisible floor 0.223→0.159, obj-F1 0.526→0.560
 at MMU600, precision invariant, no retrain); (2) the **v1.1 data-correctness retrain** (+28 restored pos,
 −49 black neg, vjn7 promotion) which came back an **ability WASH**: calibration-free test pixel PR-AUC
@@ -64,32 +79,27 @@ suite **338 green**. Also merged the **multiscale-poc** branch (family M: 0.5× 
 
 <!-- NOW:BEGIN -->
 ### Now
-**Multiscale (family M) — POC merged + inference path implemented (2026-07-03).** POC verdict (ledger M):
-gates 1+2 **pass** (1× unhurt 0.9244 vs 0.9218; 0.5× capability 0.82 geomean vs baseline 0.75), gate 3
-**fail** (naive average-fusion adds precision, not recall). The **inference pipeline now supports
-`scales:[1.0,0.5]`** (§6.3/§7.3 per-tile fusion in `inference/runner.py`) as a **capability** — default is
-still `[1.0]`. **Deploying multiscale remains a separate decision**: needs calibration + the §6.4 test-side
-gate (and a tiny-AOI 2025 `--scale05` check, S2-gated). Not on the inference-launch critical path.
-**(v3 pre-deploy side-track, done in parallel — does NOT gate the inference launch below):** object-scorecard
-bias/variance diagnosis landed — F_in 14% (in-sample) / F_held 28% (held-out) → pre-registered rule =
-**ambiguous / bake-off**; both a ≥14% representation-or-label bias floor and a ~14 pt generalisation gap are
-present. Next v3 step = **D1 label audit** of the 73 in-sample invisibles (contact sheet ready in
-`staging/object_scorecard_diagnostics/`); D2 change-probe still needs the 2023 prior-year imagery. Phase-1 POCs
-(change / data arms) remain gated behind D1 + a decision to divert from deploy.
+**Pre-launch audit done — machinery now launch-ready; awaiting go + spend at the corrected ETA (2026-07-05).**
+Full audit landed on branch `audit-prelaunch` (`docs/inference_launch_audit.md`, 8 fix commits). The
+inference pipeline is now genuinely bootable end-to-end on the fleet — validated live on a real L4 VM
+(`rts-infer-1`, now stopped): 4 L4 + 2 A100 workers claimed a 200k staging queue collision-free, kill/restart
++ stale-reclaim verified, all workers stable at GPU 100% after the `--shm-size` fix. **`rts-infer:v1`
+rebuilt from the fixed branch + pushed** (digest `7772dbc7…`); 3 GCS packages hash-verified; `s2_index`
+built + uploaded. **Remaining gates before Phase-4 launch (all standard, none new-blocking):** (1) last 2 S2
+cells `E0450_N0680`/`E1530_N0480` (GEE PENDING; on land, re-run `build_s2_index.py` + re-upload — otherwise
+~8,500 tiles run RGB-effective per §3.3, acceptable); (2) **explicit go + spend at the corrected ETA
+~2–5 days / ~$1–3k** (the benchmark moved this materially from the plan's 12–29 h → warrants fresh sign-off);
+(3) **fleet-sizing decision** given the g2-standard-96 STOCKOUT in all us-west1 zones — use 6–8× g2-standard-48,
+and decide whether to add the 8 A100 master workers (halves wallclock); (4) **output-dtype decision**
+scaled-uint8 (~0.3 TB) vs Float32 (~24 TB) — small `writer.py` change if yes. **Also pending user
+confirmation:** the cleanup/archive candidate list (stale scripts + `normalization_stats.json` at repo root +
+old plan files) — nothing moved yet. **Merge `audit-prelaunch` → `main` after review.**
 
-**Inference phase — orchestration + artifacts done; gated on S2 + Phase-3 pre-flight.** Built & pushed:
-shard-claim queue + worker + monitor (Phase 1), 3 ensemble deployment packages + self-contained `rts-infer:v1`
-image (Phase 2). **Blocking long pole = the 2025_south Sentinel-2 export** (NDVI source): GEE-bound, but
-the 2024 competition has largely cleared → ~4.7 cells/hr realized, **1375/1799 done (76%, 2026-07-03),
-ETA ~2026-07-07 (~4 days)** (~112 cells/day; tracking the earlier 5–6 d estimate). South launcher finished submitting all tasks
-(container exited — normal); GEE processes the rest server-side. **Phase 3 code done:** fleet scripts (`create_inference_fleet.sh` + `inference_fleet_startup.sh` +
-`inference_watchdog.sh`) + live L4-quota check (32 limit / 1 phantom-used → 31 schedulable → default **3×
-g2-standard-96**, not 4). **All remaining work is GATED:** (a) on the S2 export (~12 d) — `s2_index` +
-coverage audit (Phase 0 tail), Banks Island RGB+NDVI parity, launch; (b) on explicit go + spend — live VM
-pre-flight (1-VM startup smoke, multi-VM claim/kill drill, throughput benchmark → shard size + output dtype)
-and Phase 4 launch. Shard the tile list at the benchmark-tuned size at launch (splitter ready; tile list
-exists, not S2-gated). **Master = `a100-8x-train`, never stop/rename (A100 scarcity); shared PDG project —
-only ever touch our `rts-`/`rts-infer-*` resources.**
+**Multiscale (family M) — capability only, not on the launch path.** POC gates 1+2 pass, gate 3 fail;
+`scales:[1.0,0.5]` fusion implemented in `inference/runner.py` but deploy stays `[1.0]` (needs §6.4 gate +
+calibration). **v3 backlog** (D1 label audit of the 73 in-sample invisibles; D2 change-probe needs 2023
+imagery) remains gated behind a decision to divert from deploy. **Master = `a100-8x-train`, never stop/rename
+(A100 scarcity); shared PDG project — only ever touch our `rts-`/`rts-infer-*` resources.**
 <!-- NOW:END -->
 
 ### Future plans (inference phase — full plan in `.claude/plans/elegant-exploring-lemur.md`)
