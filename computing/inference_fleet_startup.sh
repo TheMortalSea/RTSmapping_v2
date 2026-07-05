@@ -75,9 +75,14 @@ for g in $(seq 0 $((GPUS_PER_VM - 1))); do
   # Idempotent across reboots: a previous boot's exited container holds the
   # name and would make `docker run --name` fail (2026-07-05 audit).
   docker rm -f "rts-worker-$g" >/dev/null 2>&1 || true
+  # --shm-size: the DataLoader's $DL_WORKERS worker processes share tensors via
+  # /dev/shm; docker's 64MB default fills within a shard and every worker dies
+  # with "No space left on device" (torch shm write) — reproduced live on the
+  # drill VM, 2026-07-05 audit. 16g matches the master's docker invocation.
   docker run -d --restart=on-failure:3 \
     --name "rts-worker-$g" \
     --gpus "device=$g" \
+    --shm-size 16g \
     -e GOOGLE_CLOUD_PROJECT="$PROJECT" \
     "$IMAGE" \
     scripts/run_inference_worker.py \
