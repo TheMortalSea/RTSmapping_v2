@@ -34,7 +34,8 @@ from inference.tiles import (
     read_ndvi_tile, read_tile,
 )
 from inference.writer import (
-    NODATA_MASK, NODATA_PROB, Manifest, write_binary_mask, write_probability_tile,
+    NODATA_MASK, NODATA_PROB, NODATA_SCALED_U8, SCALE_U8, Manifest,
+    read_probability_tile, write_binary_mask, write_probability_tile,
 )
 from scripts.generate_tile_grid import generate_tile_grid
 from scripts.merge_predictions import gaussian_center_weights, merge_tiles
@@ -540,6 +541,57 @@ def test_probability_tile_roundtrip(tmp_path):
         assert src.nodata == NODATA_PROB
         assert src.crs.to_string() == "EPSG:3857"
         assert np.allclose(src.read(1), probs)
+
+
+def test_scaled_uint8_roundtrip_precision_and_nodata(tmp_path):
+    # scaled_uint8 encoding: prob×250 uint8 / NoData 255. Round-trip via
+    # read_probability_tile must recover probs within 1/250=0.004 and preserve NoData.
+    probs = np.random.rand(64, 64).astype(np.float32)
+    probs[0, :] = NODATA_PROB
+    path = str(tmp_path / "u8.tif")
+    write_probability_tile(path, probs, (0, 0, 64 * 3.0, 64 * 3.0),
+                           dtype="scaled_uint8")
+    with rasterio.open(path) as src:
+        assert src.dtypes[0] == "uint8"
+        assert src.nodata == NODATA_SCALED_U8
+        raw = src.read(1)
+    assert (raw[0, :] == NODATA_SCALED_U8).all()          # NoData row
+    assert raw[1:].max() <= SCALE_U8                       # valid ≤ 250
+    decoded = read_probability_tile(path)
+    assert (decoded[0, :] == NODATA_PROB).all()            # NoData preserved on decode
+    assert np.abs(decoded[1:] - probs[1:]).max() <= 1.0 / SCALE_U8 + 1e-6
+
+
+def test_read_probability_tile_reads_float32(tmp_path):
+    # read_probability_tile auto-detects the float32 encoding (returns as-is).
+    probs = np.random.rand(16, 16).astype(np.float32)
+    probs[0, 0] = NODATA_PROB
+    path = str(tmp_path / "f32.tif")
+    write_probability_tile(path, probs, (0, 0, 48.0, 48.0))  # default float32
+    assert np.allclose(read_probability_tile(path), probs)
+
+
+def test_merge_decodes_scaled_uint8_tiles(tmp_path):
+    # merge_tiles must decode scaled_uint8 COGs identically to float32 (via
+    # read_probability_tile): two overlapping constant tiles 0.2/0.8 -> mean 0.5,
+    # and the NoData strip stays NoData in the merged output.
+    res = RESOLUTION_M
+    bounds = (0.0, 0.0, 512 * res, 512 * res)
+    tiles = pd.DataFrame([
+        {"tile_id": "a", "minx": bounds[0], "miny": bounds[1],
+         "maxx": bounds[2], "maxy": bounds[3]},
+        {"tile_id": "b", "minx": bounds[0], "miny": bounds[1],
+         "maxx": bounds[2], "maxy": bounds[3]},
+    ])
+    pa = np.full((512, 512), 0.2, dtype=np.float32)
+    pb = np.full((512, 512), 0.8, dtype=np.float32)
+    pb[:, :10] = NODATA_PROB
+    write_probability_tile(str(tmp_path / "a.tif"), pa, bounds, dtype="scaled_uint8")
+    write_probability_tile(str(tmp_path / "b.tif"), pb, bounds, dtype="scaled_uint8")
+    merged, _ = merge_tiles(tiles, str(tmp_path), sigma_px=128.0)
+    assert np.allclose(merged[1:-1, 10:-1], 0.5, atol=1.0 / SCALE_U8)
+    # NoData strip: only tile a (0.2) contributes there.
+    assert np.allclose(merged[1:-1, 1:9], 0.2, atol=1.0 / SCALE_U8)
 
 
 def test_binary_mask_roundtrip(tmp_path):

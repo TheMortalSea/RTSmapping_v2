@@ -500,6 +500,9 @@ Inference pipeline (`inference/` + grid/merge entry scripts), GPU-free. Fixtures
 | `test_gcs_package_path_is_staged` | gs:// package dir routes through `_stage_gcs_package`, not the local config loader | real — regression: fleet workers crashed on gs:// packages (2026-07-05 audit) |
 | `test_runtime_package_mismatch_aborts` | runtime vs package precision/tta mismatch aborts; null defers | real — §14 calibration-mismatch guard |
 | `test_probability_tile_roundtrip` | float32, NoData −1.0, EPSG:3857 roundtrip | real — §9.1 |
+| `test_scaled_uint8_roundtrip_precision_and_nodata` | scaled_uint8 (prob×250/NoData 255): on-disk uint8+255, decode within 0.004, NoData preserved | real — §9.1 scaled_uint8 encoding |
+| `test_read_probability_tile_reads_float32` | `read_probability_tile` auto-detects float32 encoding (returns as-is) | real — §9.1 decode dispatch |
+| `test_merge_decodes_scaled_uint8_tiles` | `merge_tiles` decodes scaled_uint8 COGs → same mean 0.5 + NoData strip as float32 | real — §4.3 merge dtype-agnostic |
 | `test_binary_mask_roundtrip` | uint8, NoData 255 roundtrip | real — §9.2 |
 | `test_manifest_resume_skips_completed` | restart resumes from inference_log.json; skip reasons + counts kept | real — §8.3 |
 | `test_gaussian_weights_peak_center_symmetric` | σ=128 weight grid peaks center, symmetric | shallow |

@@ -35,7 +35,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from inference.quad_index import RESOLUTION_M  # noqa: E402
 from inference.tiles import TILE_SIZE_PX  # noqa: E402
 from inference.writer import (  # noqa: E402
-    NODATA_MASK, NODATA_PROB, write_binary_mask, write_probability_tile,
+    NODATA_MASK, NODATA_PROB, read_probability_tile, write_binary_mask,
+    write_probability_tile,
 )
 from utils.config import load_config  # noqa: E402
 from utils.logging import setup_logging  # noqa: E402
@@ -92,8 +93,7 @@ def merge_tiles(
     for _, t in tile_list.iterrows():
         path = f"{tiles_dir.rstrip('/')}/{t['tile_id']}.tif"
         try:
-            with rasterio.open(path) as src:
-                probs = src.read(1)
+            probs = read_probability_tile(path)  # decodes float32 or scaled_uint8
         except rasterio.errors.RasterioIOError:
             continue  # skipped tile (all-NoData) or not yet produced
         valid = probs != NODATA_PROB

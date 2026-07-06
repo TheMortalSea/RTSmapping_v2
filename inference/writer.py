@@ -1,6 +1,7 @@
 """Probability-tile COG writing + inference_log.json manifest (inference.md §8.3, §9).
 
-Outputs follow §9.1: Float32 COG, NoData -1.0, EPSG:3857, deflate. GCS writes
+Outputs follow §9.1: Float32 COG (NoData -1.0) or the scaled_uint8 encoding
+(prob×250, NoData 255 — ~71× smaller), EPSG:3857, deflate. GCS writes
 go through a local temp file then a single upload (GCS object creation is
 atomic, so a crashed upload never leaves a half-written object). The manifest
 records completed/skipped tiles so a restarted job skips finished work.
@@ -23,6 +24,12 @@ logger = logging.getLogger(__name__)
 
 NODATA_PROB = -1.0  # §9.1 sentinel
 NODATA_MASK = 255   # §9.2
+
+# scaled_uint8 probability encoding (§9.1 alt): prob×250 → uint8 [0,250],
+# NoData = 255. ~8 KB/tile vs ~570 KB Float32 (71×), re-threshold precision
+# 1/250 = 0.004. Values 251–254 are unused. Decode: value/250, 255→NoData.
+SCALE_U8 = 250
+NODATA_SCALED_U8 = 255
 
 _COG_PROFILE = dict(
     driver="GTiff", compress="deflate", tiled=True,
@@ -56,9 +63,47 @@ def _write_raster(path: str, array: np.ndarray, bounds: tuple, dtype: str,
         os.replace(tmp_path, path)  # atomic on the same filesystem
 
 
-def write_probability_tile(path: str, probs: np.ndarray, bounds: tuple) -> None:
-    """Write a §9.1 probability tile (float32, NoData -1.0)."""
-    _write_raster(path, probs, bounds, "float32", NODATA_PROB)
+def _encode_scaled_uint8(probs: np.ndarray) -> np.ndarray:
+    """Encode a float prob array (NoData -1.0) → uint8 (prob×250, NoData 255)."""
+    nodata = probs == NODATA_PROB
+    out = np.clip(np.round(probs * SCALE_U8), 0, SCALE_U8).astype(np.uint8)
+    out[nodata] = NODATA_SCALED_U8
+    return out
+
+
+def write_probability_tile(path: str, probs: np.ndarray, bounds: tuple,
+                           dtype: str = "float32") -> None:
+    """Write a §9.1 probability tile.
+
+    dtype="float32" (default) → NoData -1.0; dtype="scaled_uint8" → prob×250
+    uint8, NoData 255 (~71× smaller, 0.004 precision). Read back with
+    :func:`read_probability_tile`, which auto-detects the on-disk encoding.
+    """
+    if dtype == "scaled_uint8":
+        _write_raster(path, _encode_scaled_uint8(probs), bounds, "uint8",
+                      NODATA_SCALED_U8)
+    elif dtype == "float32":
+        _write_raster(path, probs, bounds, "float32", NODATA_PROB)
+    else:
+        raise ValueError(f"unknown output dtype {dtype!r} "
+                         "(expected 'float32' or 'scaled_uint8')")
+
+
+def read_probability_tile(path: str) -> np.ndarray:
+    """Read a probability COG → float32 with the NODATA_PROB (-1.0) sentinel.
+
+    Auto-detects the on-disk encoding: uint8 rasters are decoded (value/250,
+    255→NoData); float32 rasters are returned as-is. Raises the underlying
+    ``rasterio`` error if the file is missing (callers treat that as a skipped
+    tile). Keeps the encode↔decode contract in one place (Rule 3 / SSoT).
+    """
+    with rasterio.open(path) as src:
+        arr = src.read(1)
+        if src.dtypes[0] == "uint8":
+            out = (arr.astype(np.float32) / SCALE_U8)
+            out[arr == NODATA_SCALED_U8] = NODATA_PROB
+            return out
+        return arr.astype(np.float32)
 
 
 def write_binary_mask(path: str, mask: np.ndarray, bounds: tuple) -> None:

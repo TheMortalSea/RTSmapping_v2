@@ -221,6 +221,7 @@ def _run_inference_multiscale(ctx: InferenceContext, todo: pd.DataFrame, out: st
     if 1.0 not in scales:
         raise ValueError(f"multiscale inference requires 1.0 in scales, got {scales}")
     pkg, dep_cfg = ctx.pkg, ctx.dep_cfg
+    output_dtype = ctx.run_cfg["inference"].get("output_dtype", "float32")
     dataset = InferenceTileDataset(todo, ctx.quad_index, pkg["stats"],
                                    s2_index=ctx.s2_index, extra_bands=ctx.extra_bands,
                                    scales=scales)
@@ -246,7 +247,8 @@ def _run_inference_multiscale(ctx: InferenceContext, todo: pd.DataFrame, out: st
                 # contributes so fused is finite (0.5× only adds where also valid).
                 fused = np.where(valid[1.0], fused, NODATA_PROB).astype(np.float32)
                 tile_id = batch["tile_id"][i]
-                write_probability_tile(f"{out}/{tile_id}.tif", fused, batch["bounds"][i])
+                write_probability_tile(f"{out}/{tile_id}.tif", fused,
+                                       batch["bounds"][i], dtype=output_dtype)
                 manifest.mark(tile_id, "done")
         n_done += len(batch["tile_id"])
         rate = n_done / (time.time() - t0)
@@ -279,6 +281,7 @@ def run_inference(ctx: InferenceContext, tiles: pd.DataFrame, output: str,
         return manifest.counts()
 
     pkg, dep_cfg = ctx.pkg, ctx.dep_cfg
+    output_dtype = ctx.run_cfg["inference"].get("output_dtype", "float32")
     scales = dep_cfg.get("scales") or [1.0]
     if len(scales) > 1:  # inference.md §6.3/§7.3 multi-scale fusion
         return _run_inference_multiscale(ctx, todo, out, manifest, device,
@@ -301,7 +304,7 @@ def run_inference(ctx: InferenceContext, tiles: pd.DataFrame, output: str,
                 prob[batch["nodata_mask"][i]] = NODATA_PROB  # §5.3 output mask
                 tile_id = batch["tile_id"][i]
                 write_probability_tile(f"{out}/{tile_id}.tif", prob,
-                                       batch["bounds"][i])
+                                       batch["bounds"][i], dtype=output_dtype)
                 manifest.mark(tile_id, "done")
         n_done += len(batch["tile_id"])
         rate = n_done / (time.time() - t0)

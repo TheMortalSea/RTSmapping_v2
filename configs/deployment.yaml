@@ -74,3 +74,8 @@ inference:
   stride_px: 344            # tile-grid stride; 33% overlap at 512 tile size (inference.md §4.2)
   fusion_sigma_px: 128      # σ for distance-from-center weighted-mean fusion (inference.md §4.3)
   batch_size: 64            # per-GPU batch at inference (inference.md §8.1)
+  # Probability-COG output encoding (§9.1). scaled_uint8 = prob×250 uint8 /
+  # NoData 255 (~8 KB/tile, 0.004 precision, ~0.3 TB full run); float32 = exact
+  # / NoData -1.0 (~570 KB/tile, ~24 TB). Not a calibration key (not §14-checked);
+  # merge_predictions decodes either via writer.read_probability_tile.
+  output_dtype: scaled_uint8   # scaled_uint8 | float32

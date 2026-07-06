@@ -71,7 +71,7 @@ gs://rts-mapping-v2-usw1/inference/2025q3_south/   # single-region us-west1 (co-
 │   └── shard_<NNNNNN>.csv            # contiguous tile lists
 ├── claims/<shard_id>                 # atomic claim locks (inference/claim.py)
 ├── done/<shard_id>                   # done markers (source of truth on restart)
-├── probs/<shard_id>/<tile_id>.tif    # Float32 probability COGs (§9.1); shard-scoped to avoid GCS write-hotspotting
+├── probs/<shard_id>/<tile_id>.tif    # probability COGs (§9.1, scaled_uint8 deploy default); shard-scoped to avoid GCS write-hotspotting
 ├── logs/<shard_id>.json              # one manifest per shard (not per-tile markers)
 ├── merged/                           # post-inference: merged probability rasters (§4.3)
 └── vectors/                          # post-inference: vectorized polygons (§9.3)
@@ -429,12 +429,14 @@ The inference job must be resumable after interruption:
 | Attribute | Value |
 |-----------|-------|
 | Format | Cloud-Optimized GeoTIFF (COG) |
-| Data type | Float32 |
-| Valid range | [0.0, 1.0] |
-| NoData sentinel | -1.0 (out-of-range; uniquely identifies NoData) |
+| Data type | **scaled_uint8** (deploy default) — prob×250 → uint8 [0,250], NoData 255; ~8 KB/tile, ~0.3 TB full run, re-threshold precision 0.004. `float32` (NoData −1.0, exact, ~570 KB/tile, ~24 TB) is the alternative. Set by `configs/deployment.yaml:inference.output_dtype`. |
+| Valid range | [0.0, 1.0] (uint8: [0,250] → ÷250) |
+| NoData sentinel | scaled_uint8: **255** · float32: **−1.0** (out-of-range; uniquely identifies NoData) |
 | CRS | EPSG:3857 |
 | Resolution | 4.77 m projected (native; Web Mercator zoom 15) |
 | Compression | Deflate |
+
+Encode/decode live in `inference/writer.py` (`write_probability_tile(…, dtype=)` / `read_probability_tile` — SSoT; `merge_predictions.py` decodes either encoding). `output_dtype` is **not** a §14 calibration-bound key (it does not affect thresholds/probabilities, only their on-disk quantization).
 
 ### 9.2 Binary Mask
 
