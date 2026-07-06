@@ -90,16 +90,22 @@ PDG bucket `rts-mapping-v2`, in the same region as the VMs** (see §4–§4b).
 |--------|---------|---------|-------|
 | `gs://abrupt_thaw/` | abruptthawmapping (non-PDG) | Current home of v2-alpha training data under `RTS_MODEL_V2/DATA/` | Reading from PDG VMs crosses projects → egress. |
 | `gs://rts-mapping-v2/` | PDG | Compute-adjacent **training** data, outputs, artifacts, deployment packages | Region **US (multi-region)** — verified 2026-06-15. |
-| `gs://pdg-planet-data/` | PDG | **2025 Planet basemap quads** (pan-arctic inference input) | Region **US-WEST1 (single)** — verified 2026-06-15. Drives the inference region. |
-| `gs://woodwell-rts-inference-arts-south/` | PDG | **Inference I/O** (probability COGs, masks, vectors, logs) + deployment-package copy | **us-west1 (single region)** — co-located with `pdg-planet-data` + the inference fleet → egress-free. (To be created.) |
-| `gs://rts-mapping-v2-usw1/` | PDG | **Sentinel-2 imagery** (`S2_RGB/<year>_<region>/` cells) for the pure-S2 model + the Planet-model NDVI source | **us-west1 (single region)** — created **2026-06-24**. egress-free for the us-west1 inference fleet. NDVI is derived on-the-fly from these composites (B8/B4), not stored separately. |
+| `gs://pdg-planet-data/` | PDG | **2025 Planet basemap quads** (pan-arctic inference input) | Region **US-WEST1 (single)**. The 309,100 domain quads (RGB `gcs_path`) are **staged to `rts-mapping-v2-usc1`** for the co-located run (see region note). |
+| `gs://rts-mapping-v2-usc1/` | PDG | **Inference — transient staging + I/O** in the compute region: staged quads + pre-computed NDVI (inputs) and scaled-uint8 probability COGs (outputs) | **us-central1 (single region)** — created **2026-07-06**, co-located with the A100 master → egress-free. **Transient** (deleted post-run, before the Sept `abruptthawmapping` migration). Supersedes the planned us-west1 `woodwell-rts-inference-arts-south`. |
+| `gs://rts-mapping-v2-usw1/` | PDG | **Sentinel-2 imagery** (`S2_RGB/<year>_<region>/` cells) — NDVI source; earlier us-west1 inference I/O | **us-west1 (single region)** — created **2026-06-24**. NDVI is pre-computed from these (B8/B4) and staged to `rts-mapping-v2-usc1`. *(Legacy inference-region bucket; kept until the us-central1 cutover is validated.)* |
 
-**Region co-location (verified 2026-06-15):** bucket regions — `pdg-planet-data` = **us-west1**,
-`rts-mapping-v2` = **US multi-region**, `abrupt_thaw` = **US multi-region**. **Training** runs in
-**us-central1-a** (`a100-8x-train`). **Inference** runs in **us-west1** to co-locate with
-`pdg-planet-data` (the TB-scale Planet read): a us-central1 inference VM would pay cross-region egress +
-latency on the ~3.4M-quad read. Keep the inference output bucket single-region us-west1 to guarantee
-egress-free reads/writes.
+**Region co-location — inference runs in `us-central1` (updated 2026-07-06; supersedes the us-west1
+plan).** The anchor is **compute, not data**: GPU capacity is scarce and effectively immovable (the
+8×A100-80GB master `a100-8x-train` took ~500 retry attempts to acquire; a stopped A100-80GB may never
+be reclaimable), whereas data is a routine parallel transfer. **us-west1 was chosen for inference
+before we knew GPU availability there — and it turned out to have no A100 quota and 100%-stocked-out L4
+(all zones, down to 1-L4 shapes, 2026-07-06).** So we **anchor on the secured us-central1 master and move
+the data to it**, into `gs://rts-mapping-v2-usc1` (transient staging, deleted post-run). Cross-region
+reads were measured at **448 ms per 512×512 windowed quad read vs 27 ms local (~94% of per-tile time)** —
+co-location is the fix, not a tweak. Only the RGB quad (`gcs_path`) + S2 NDVI are staged; NDVI is
+pre-computed to a single band to minimise the transfer. **Training** also runs on the same master.
+Everything migrates to the `abruptthawmapping` project ~Sept 2026, so this staging is intentionally
+transient. *(Historical: the us-west1-anchored plan is retained in `docs/inference_launch_audit.md`.)*
 
 ### On-VM storage tiers
 

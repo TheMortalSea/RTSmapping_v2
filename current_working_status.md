@@ -79,27 +79,28 @@ suite **338 green**. Also merged the **multiscale-poc** branch (family M: 0.5× 
 
 <!-- NOW:BEGIN -->
 ### Now
-**Pre-launch audit done — machinery now launch-ready; awaiting go + spend at the corrected ETA (2026-07-05).**
-Full audit landed on branch `audit-prelaunch` (`docs/inference_launch_audit.md`, 8 fix commits). The
-inference pipeline is now genuinely bootable end-to-end on the fleet — validated live on a real L4 VM
-(`rts-infer-1`, now stopped): 4 L4 + 2 A100 workers claimed a 200k staging queue collision-free, kill/restart
-+ stale-reclaim verified, all workers stable at GPU 100% after the `--shm-size` fix. **`rts-infer:v1`
-rebuilt from the fixed branch + pushed** (digest `7772dbc7…`); 3 GCS packages hash-verified; `s2_index`
-built + uploaded. **Remaining gates before Phase-4 launch (all standard, none new-blocking):** (1) last 2 S2
-cells `E0450_N0680`/`E1530_N0480` (GEE PENDING; on land, re-run `build_s2_index.py` + re-upload — otherwise
-~8,500 tiles run RGB-effective per §3.3, acceptable); (2) **explicit go + spend at the corrected ETA
-~2–5 days / ~$1–3k** (the benchmark moved this materially from the plan's 12–29 h → warrants fresh sign-off);
-(3) **fleet-sizing decision** given the g2-standard-96 STOCKOUT in all us-west1 zones — use 6–8× g2-standard-48,
-and decide whether to add the 8 A100 master workers (halves wallclock); (4) **output-dtype decision**
-scaled-uint8 (~0.3 TB) vs Float32 (~24 TB) — small `writer.py` change if yes. **Also pending user
-confirmation:** the cleanup/archive candidate list (stale scripts + `normalization_stats.json` at repo root +
-old plan files) — nothing moved yet. **Merge `audit-prelaunch` → `main` after review.**
+**Banks Island first run LIVE + inference infra pivoted to us-central1 co-location (2026-07-06).** Two-stage
+launch: **Banks first → team quality review → full South.** Banks (331,935 tiles) is running on the 8×A100
+master, ~40% done, writing **scaled_uint8** COGs (new `output_dtype`, shipped + baked into `rts-infer:v1`
+git_sha `1505d1d`); on completion → merge (§4.3) → threshold 0.65 → vectorize min_blob 2000 →
+`banks_rts.gpkg` + `banks_prob.tif` for team review (the gate before any full-South spend). `audit-prelaunch`
++ scaled_uint8 merged to `main` (suite 356).
 
-**Multiscale (family M) — capability only, not on the launch path.** POC gates 1+2 pass, gate 3 fail;
-`scales:[1.0,0.5]` fusion implemented in `inference/runner.py` but deploy stays `[1.0]` (needs §6.4 gate +
-calibration). **v3 backlog** (D1 label audit of the 73 in-sample invisibles; D2 change-probe needs 2023
-imagery) remains gated behind a decision to divert from deploy. **Master = `a100-8x-train`, never stop/rename
-(A100 scarcity); shared PDG project — only ever touch our `rts-`/`rts-infer-*` resources.**
+**Data-starvation solved by co-location — the big infra decision.** Root cause measured: the master is
+us-central1 but the data is us-west1 → **448 ms per cross-region windowed quad read vs 27 ms local (~94% of
+per-tile time)**; GPUs sit at 0% util; full South would take **~23 days** cross-region. us-west1 L4 (our
+32-quota) is **100% stocked out** (all zones, all shapes) and us-west1 has **no A100** → unusable. Decision
+(principle: *GPUs are scarce/immovable — the master took ~500 retries; data is trivially movable*): **anchor
+on the secured us-central1 master, move the data to it.** Plan (`.claude/plans/elegant-exploring-lemur.md`):
+stage the 309k RGB quads (~14 TB) + pre-computed single-band NDVI (~3 TB, from S2 B4/B8) to the new
+**`gs://rts-mapping-v2-usc1`** (us-central1, transient — deleted post-run before the Sept `abruptthawmapping`
+migration); benchmark the co-located master (expect GPU-bound, master-alone ~5 d); then run the full South
+co-located on the master + **opportunistic** us-central1 spot A100 (16) + L4 (8) via the shared claim queue.
+Infra SSoT updated (`computing/infrastructure.md` §4). **us-west1 inference plan abandoned.**
+
+**Full South run is GATED on Banks team-approval + explicit go.** Multiscale (family M) = capability only,
+not on the path. **Master `a100-8x-train` never stop/rename (A100 scarcity, ~500-retry acquire); shared PDG
+project — only ever touch our `rts-`/`rts-infer-*` resources.**
 <!-- NOW:END -->
 
 ### Future plans (inference phase — full plan in `.claude/plans/elegant-exploring-lemur.md`)

@@ -34,10 +34,13 @@ The data and model operation in inference should exactly match those in training
 
 ### 2.1 Compute Environment
 
-Decided 2026-06-15 (`computing/infrastructure.md`). Everything inference-side is **co-located in
-`us-west1`** with the input imagery — `pdg-planet-data` is single-region **US-WEST1** (verified), so a
-us-west1 fleet reads the 309,100 Planet quads (TBs) **egress-free**; a us-central1 VM (where training runs)
-would pay cross-region egress + latency on every read.
+**Region: `us-central1` — SSoT is `computing/infrastructure.md` §4 (updated 2026-07-06; supersedes the
+us-west1 plan below).** We **anchor on the secured us-central1 A100 master and stage the data to it**
+(`gs://rts-mapping-v2-usc1`, transient) rather than run in us-west1: us-west1 has no A100 quota and its L4 is
+100%-stocked-out, and GPU capacity is far harder to secure than data is to move. Co-location removes the
+measured **448 ms** cross-region per-read penalty (~94% of per-tile time). *(Historical context — the
+original us-west1-co-located rationale, valid when a us-west1 L4 fleet was the plan: `pdg-planet-data` is
+single-region US-WEST1, so a us-west1 fleet would have read the 309,100 quads egress-free.)*
 
 **Fleet scaled to 32× L4 (2026-06-17, user decision).** `g2-standard-96` carries **8× L4** (the max L4
 per single G2 VM), so **32× L4 = 4 × `g2-standard-96`** — there is no single-VM 16/32-L4 option; an N-L4
