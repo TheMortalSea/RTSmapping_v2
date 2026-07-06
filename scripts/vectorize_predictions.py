@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
+from math import ceil, floor
 from pathlib import Path
 
 import geopandas as gpd
@@ -37,31 +38,45 @@ _GEOD = Geod(ellps="WGS84")
 
 
 def vectorize(mask_path: str, prob_path: str, tile_list_path: str,
-              scales: list[float]) -> gpd.GeoDataFrame:
-    """Build the §9.3 polygon layer from mask + probability rasters."""
+              scales: list[float], min_blob_px: int = 0) -> gpd.GeoDataFrame:
+    """Build the §9.3 polygon layer from mask + probability rasters.
+
+    Blobs smaller than ``min_blob_px`` pixels are dropped (the deployment
+    ``min_blob_size_px`` object-decision filter — a vectorization-stage param,
+    see configs/deployment.yaml). Probability pixel-stats are read windowed from
+    the COG per polygon, so this scales to region rasters far larger than RAM.
+    """
     import pandas as pd
 
     with rasterio.open(mask_path) as msk:
         mask = msk.read(1)
         transform = msk.transform
-    with rasterio.open(prob_path) as prb:
-        probs = prb.read(1)
 
     tiles = pd.read_csv(tile_list_path)
     records = []
     geoms = []
-    shapes = features.shapes((mask == 1).astype(np.uint8), mask=(mask == 1),
+    binmask = mask == 1
+    shapes = features.shapes(binmask.astype(np.uint8), mask=binmask,
                              transform=transform)
-    for rts_id, (geom_json, _) in enumerate(shapes, start=1):
+    prb = rasterio.open(prob_path)
+    rts_id = 0
+    for geom_json, _ in shapes:
         geom = shape(geom_json)
-        # Pixel stats: rasterize this polygon's window only.
-        win = rasterio.windows.from_bounds(*geom.bounds, transform=transform)
-        win = win.round_offsets("floor").round_lengths("ceil")
+        # Pixel stats: rasterize this polygon's window only. Round to an integer
+        # window that fully covers the float window (floor the near edge, ceil
+        # the far edge) — version-robust vs rasterio's Window.round_* API.
+        fwin = rasterio.windows.from_bounds(*geom.bounds, transform=transform)
+        c0, r0 = floor(fwin.col_off), floor(fwin.row_off)
+        c1 = ceil(fwin.col_off + fwin.width)
+        r1 = ceil(fwin.row_off + fwin.height)
+        win = rasterio.windows.Window(c0, r0, c1 - c0, r1 - r0)
         local = features.rasterize([geom_json], out_shape=(int(win.height), int(win.width)),
                                    transform=rasterio.windows.transform(win, transform))
-        r0, c0 = int(win.row_off), int(win.col_off)
-        pvals = probs[r0:r0 + int(win.height),
-                      c0:c0 + int(win.width)][local == 1]
+        blob_px = int((local == 1).sum())
+        if blob_px < min_blob_px:
+            continue  # sub-min_blob_size object (speckle FP)
+        rts_id += 1
+        pvals = prb.read(1, window=win)[local == 1]
         pvals = pvals[pvals >= 0]  # drop NoData
 
         geom_wgs = gpd.GeoSeries([geom], crs="EPSG:3857").to_crs("EPSG:4326").iloc[0]
@@ -82,6 +97,7 @@ def vectorize(mask_path: str, prob_path: str, tile_list_path: str,
             "tile_ids": ",".join(hit["tile_id"].astype(str)),
         })
         geoms.append(geom)
+    prb.close()
 
     gdf = gpd.GeoDataFrame(records, geometry=geoms, crs="EPSG:3857")
     logger.info("Vectorized %d polygons, total %.2f km2",
@@ -101,7 +117,8 @@ def main() -> int:
 
     dep_cfg = load_config(f"{str(args.package).rstrip('/')}/deployment_config.yaml")
     gdf = vectorize(args.mask, args.prob, args.tile_list,
-                    scales=dep_cfg.get("scales", [1.0]))
+                    scales=dep_cfg.get("scales", [1.0]),
+                    min_blob_px=int(dep_cfg.get("min_blob_size_px", 0)))
     args.output.parent.mkdir(parents=True, exist_ok=True)
     gdf.to_file(args.output, driver="GPKG")
     logger.info("Wrote %s", args.output)

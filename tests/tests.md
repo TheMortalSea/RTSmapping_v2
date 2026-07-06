@@ -502,10 +502,45 @@ Inference pipeline (`inference/` + grid/merge entry scripts), GPU-free. Fixtures
 | `test_multiscale_dataset_yields_per_scale_images` | `scales=[1.0,0.5]` item carries per-scale image+valid; 0.5× reads the 2×-expanded bbox | real — §6.3 context read |
 | `test_run_inference_multiscale_writes_fused_cog` | end-to-end `run_inference` multiscale dispatch → fused COG (const model 0.5 at both scales → fused 0.5) | real — §6.3/§7.3 integration |
 
-> Not covered (deliberate): `scripts/inference.py` main loop and
-> `vectorize_predictions.py` are exercised by the Tier-2 real-data smoke
-> (see inference.md §13 pre-inference checklist), not unit tests — they are
-> thin glue over the tested modules.
+> Not covered (deliberate): `scripts/inference.py` main loop is exercised by the
+> Tier-2 real-data smoke (see inference.md §13 pre-inference checklist), not unit
+> tests — it is thin glue over the tested modules.
+
+### [test_vectorize_predictions.py](test_vectorize_predictions.py)
+
+`scripts/vectorize_predictions.py` — mask→polygon vectorization with the
+deployment `min_blob_size_px` object filter + windowed prob pixel-stats.
+GPU-free; synthetic mask/prob rasters.
+
+| Test | Checks | Strictness |
+|---|---|---|
+| `test_min_blob_filter_drops_small_and_keeps_large` | min_blob=2000 keeps the 3600px blob, drops the 144px one; compact rts_id; windowed `mean_prob`==0.8; CRS 3857 | real — object filter + rasterio-1.4 window-rounding regression |
+| `test_no_filter_keeps_both_blobs` | min_blob=0 vectorizes both blobs | real — filter off path |
+
+### [test_vectorize_region.py](test_vectorize_region.py)
+
+`scripts/vectorize_region.py` — parallel block-mask polygonize + cross-seam
+dissolve (post-inference.md §9.3 at region scale; mandatory for South where the
+merged mask exceeds RAM). Validated bit-for-bit against the monolithic
+`vectorize_predictions` on Banks (3010 polys / 69.42 km², both). GPU-free; two
+synthetic adjacent block masks sharing a seam.
+
+| Test | Checks | Strictness |
+|---|---|---|
+| `test_seam_split_slump_reassembles_and_survives_min_blob` | a slump split into two 200px halves (each < min_blob 300) reassembles to one 400px polygon and is KEPT — proves min_blob is applied AFTER the dissolve, no double-count | real — the core seam-stitch invariant |
+| `test_min_blob_zero_keeps_all_including_tiny` | min_blob=0 → interior + tiny + reassembled seam slump all kept | real — filter-off path |
+
+### [test_assemble_region.py](test_assemble_region.py)
+
+`scripts/assemble_region.py` — blocked windowed merge that assembles a whole
+region's per-tile prob COGs into one mosaicked COG without holding the
+(200k×310k) canvas in RAM (post-inference.md §7). GPU-free; synthetic
+constant-value overlapping tile COGs.
+
+| Test | Checks | Strictness |
+|---|---|---|
+| `test_blocked_merge_matches_single_shot` | blocked `merge_window` reconstruction == single-shot `merge_tiles` (incl. NoData mask) at 3 block sizes — the seamlessness guarantee | real — §7 mosaic == merge |
+| `test_iter_blocks_tiles_the_canvas_without_gaps` | `iter_blocks` partitions the canvas exactly once (no gap/overlap) | real — block grid |
 
 ### [test_claim.py](test_claim.py)
 
