@@ -32,7 +32,8 @@ N_VMS="${N_VMS:-3}"                            # safe default given the 31 sched
 IMAGE="${IMAGE:-us-west1-docker.pkg.dev/pdg-project-406720/pdg-artifact-registry/rts-infer:v1}"
 DL_WORKERS="${DL_WORKERS:-8}"                  # DataLoader workers per GPU worker
 # DLVM image with NVIDIA drivers + Docker + nvidia-container-toolkit preinstalled.
-IMAGE_FAMILY="${IMAGE_FAMILY:-common-cu123}"
+# (common-cu123 was retired by Google — family verified live 2026-07-05 audit.)
+IMAGE_FAMILY="${IMAGE_FAMILY:-common-cu129-ubuntu-2204-nvidia-580}"
 IMAGE_PROJECT="${IMAGE_PROJECT:-deeplearning-platform-release}"
 BOOT_DISK_GB="${BOOT_DISK_GB:-200}"
 SA="${SA:-}"                                   # optional explicit service account
@@ -50,7 +51,10 @@ echo "Creating $N_VMS x $MACHINE in $ZONE (image $IMAGE)"
 echo "  run base: $RUN_BASE"
 echo "  packages: $PACKAGES"
 
-sa_args=()
+# Always request cloud-platform scopes: without them the VM gets the legacy
+# default devstorage.read_only scope and every GCS write 403s regardless of
+# IAM (found live, 2026-07-05 audit). IAM stays the real access control.
+sa_args=(--scopes cloud-platform)
 [ -n "$SA" ] && sa_args=(--service-account "$SA" --scopes cloud-platform)
 
 for i in $(seq 1 "$N_VMS"); do
@@ -67,7 +71,7 @@ for i in $(seq 1 "$N_VMS"); do
     --image-family "$IMAGE_FAMILY" --image-project "$IMAGE_PROJECT" \
     --boot-disk-size "${BOOT_DISK_GB}GB" --boot-disk-type pd-balanced \
     --labels "owner=rts,purpose=inference,fleet=rts-infer" \
-    --metadata "install-nvidia-driver=True,docker-image=$IMAGE,run-base=$RUN_BASE,quad-index=$QUAD_INDEX,s2-index=$S2_INDEX,packages=$PACKAGES,gpus-per-vm=$GPUS_PER_VM,dataloader-workers=$DL_WORKERS" \
+    --metadata "^|^install-nvidia-driver=True|docker-image=$IMAGE|run-base=$RUN_BASE|quad-index=$QUAD_INDEX|s2-index=$S2_INDEX|packages=$PACKAGES|gpus-per-vm=$GPUS_PER_VM|dataloader-workers=$DL_WORKERS" \
     --metadata-from-file "startup-script=$STARTUP" \
     "${sa_args[@]}" \
     || { echo "FAILED to create $name (quota/capacity?). Stopping — fix before continuing."; exit 1; }

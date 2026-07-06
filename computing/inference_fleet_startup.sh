@@ -50,19 +50,39 @@ for i in $(seq 1 60); do
 done
 nvidia-smi -L || { log "FATAL: no GPUs visible"; exit 1; }
 
+# The current DLVM families (common-cu129-*-nvidia-580, verified 2026-07-05)
+# ship the NVIDIA driver + nvidia-ctk but NOT docker — install + wire the GPU
+# runtime if missing (idempotent; startup scripts run as root at every boot).
+if ! command -v docker >/dev/null 2>&1; then
+  log "docker not present — installing docker.io + NVIDIA runtime"
+  apt-get update -qq && apt-get install -y -qq docker.io
+  nvidia-ctk runtime configure --runtime=docker
+  systemctl restart docker
+fi
+
 # Authenticate docker to Artifact Registry via the VM service account.
 gcloud auth configure-docker us-west1-docker.pkg.dev --quiet
 docker pull "$IMAGE"
 
-# One worker container per GPU. CUDA_VISIBLE_DEVICES + --gpus pin each to its L4;
-# the worker's id (host:pid:gpu) makes per-VM/per-GPU contribution visible in the
-# monitor. GOOGLE_CLOUD_PROJECT lets google-cloud-storage bill list/read.
+# One worker container per GPU. --gpus device=$g pins the container to its L4
+# (which the NVIDIA runtime renumbers to cuda:0 inside — do NOT also set
+# CUDA_VISIBLE_DEVICES=$g: that indexes the *visible* set, so for g>=1 it hides
+# the only GPU and torch sees zero devices; caught by the 2026-07-05 pre-launch
+# audit). --worker-id keeps per-VM/per-GPU contribution visible in the monitor.
+# GOOGLE_CLOUD_PROJECT lets google-cloud-storage bill list/read.
 for g in $(seq 0 $((GPUS_PER_VM - 1))); do
   log "launching worker on GPU $g"
+  # Idempotent across reboots: a previous boot's exited container holds the
+  # name and would make `docker run --name` fail (2026-07-05 audit).
+  docker rm -f "rts-worker-$g" >/dev/null 2>&1 || true
+  # --shm-size: the DataLoader's $DL_WORKERS worker processes share tensors via
+  # /dev/shm; docker's 64MB default fills within a shard and every worker dies
+  # with "No space left on device" (torch shm write) — reproduced live on the
+  # drill VM, 2026-07-05 audit. 16g matches the master's docker invocation.
   docker run -d --restart=on-failure:3 \
     --name "rts-worker-$g" \
     --gpus "device=$g" \
-    -e CUDA_VISIBLE_DEVICES="$g" \
+    --shm-size 16g \
     -e GOOGLE_CLOUD_PROJECT="$PROJECT" \
     "$IMAGE" \
     scripts/run_inference_worker.py \
@@ -71,7 +91,8 @@ for g in $(seq 0 $((GPUS_PER_VM - 1))); do
       --s2-index "$S2_INDEX" \
       $PKG_ARGS \
       --device cuda \
-      --num-workers "$DL_WORKERS"
+      --num-workers "$DL_WORKERS" \
+      --worker-id "$(hostname):gpu$g"
 done
 
 # Per-VM health check: all containers up a few seconds after launch.

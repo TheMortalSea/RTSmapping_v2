@@ -107,3 +107,25 @@ def test_max_shards_stops_early():
     assert n == 2
     assert len(processed) == 2
     assert store.done_ids() == set(SHARDS[:2])
+
+
+def test_time_based_heartbeat_during_slow_shard():
+    """A slow shard must be heartbeaten by wall-clock, not by progress ticks —
+    an active worker's first 512-tile tick can lag its claim by minutes and the
+    shard gets stolen (seen live in the 2026-07-05 pre-flight drill)."""
+    import json
+    import time
+
+    bucket = _FakeBucket()
+    store = ClaimStore(bucket, "inf/run", worker_id="A")
+    beats = []
+
+    def slow_shard(sid):
+        time.sleep(0.35)  # several heartbeat periods at 0.1s
+        claim = json.loads(bucket.blob(f"inf/run/claims/{sid}").download_as_text())
+        beats.append(claim["heartbeat_at"])
+
+    t0 = time.time()
+    work_loop(store, SHARDS[:1], slow_shard, max_shards=1, heartbeat_every_s=0.1)
+    # the claim's heartbeat_at was refreshed while process_shard was running
+    assert beats and beats[0] > t0 + 0.1

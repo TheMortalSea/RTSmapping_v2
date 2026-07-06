@@ -498,6 +498,24 @@ def test_ensemble_empty_raises():
         predict_probs_ensemble([], torch.zeros(1, 3, 4, 4), temperature=1.0)
 
 
+def test_gcs_package_path_is_staged(monkeypatch):
+    """gs:// package dirs must route through _stage_gcs_package, not the local
+    config loader (regression: every fleet worker crashed on
+    `Config not found: gs:/...` — 2026-07-05 pre-launch audit)."""
+    import inference.predictor as predictor_mod
+
+    staged = {}
+
+    def fake_stage(pkg):
+        staged["pkg"] = pkg
+        raise RuntimeError("staged-sentinel")
+
+    monkeypatch.setattr(predictor_mod, "_stage_gcs_package", fake_stage)
+    with pytest.raises(RuntimeError, match="staged-sentinel"):
+        predictor_mod.load_deployment_package("gs://bucket/pkgs/seed42/", torch.device("cpu"))
+    assert staged["pkg"] == "gs://bucket/pkgs/seed42"
+
+
 def test_runtime_package_mismatch_aborts():
     dep = {"precision": "bf16", "tta": "none", "torch_compile": False,
            "scales": [1.0], "temperature": 1.5, "threshold": 0.6}
