@@ -79,28 +79,27 @@ suite **338 green**. Also merged the **multiscale-poc** branch (family M: 0.5× 
 
 <!-- NOW:BEGIN -->
 ### Now
-**Banks Island first run LIVE + inference infra pivoted to us-central1 co-location (2026-07-06).** Two-stage
-launch: **Banks first → team quality review → full South.** Banks (331,935 tiles) is running on the 8×A100
-master, ~40% done, writing **scaled_uint8** COGs (new `output_dtype`, shipped + baked into `rts-infer:v1`
-git_sha `1505d1d`); on completion → merge (§4.3) → threshold 0.65 → vectorize min_blob 2000 →
-`banks_rts.gpkg` + `banks_prob.tif` for team review (the gate before any full-South spend). `audit-prelaunch`
-+ scaled_uint8 merged to `main` (suite 356).
+**Banks delivered + the throughput bottleneck root-caused & fixed (2026-07-07).** Banks Island is
+**complete**: 331,935 tiles → assembled to `probability.tif` (7 GB COG) + `mask.tif` + **3,010 RTS
+polygons / 69.42 km²** (`banks_rts.gpkg`), all uploaded to `gs://rts-mapping-v2-usw1/inference/banks/products/`
+for the team quality gate. New region tooling built + tested: `assemble_region.py` (parallel blocked
+merge) + `vectorize_region.py` (parallel polygonize + seam-dissolve, 28× faster, bit-identical) +
+`monitor_jobs.sh`.
 
-**Data-starvation solved by co-location — the big infra decision.** Root cause measured: the master is
-us-central1 but the data is us-west1 → **448 ms per cross-region windowed quad read vs 27 ms local (~94% of
-per-tile time)**; GPUs sit at 0% util; full South would take **~23 days** cross-region. us-west1 L4 (our
-32-quota) is **100% stocked out** (all zones, all shapes) and us-west1 has **no A100** → unusable. Decision
-(principle: *GPUs are scarce/immovable — the master took ~500 retries; data is trivially movable*): **anchor
-on the secured us-central1 master, move the data to it.** Plan (`.claude/plans/elegant-exploring-lemur.md`):
-stage the 309k RGB quads (~14 TB) + pre-computed single-band NDVI (~3 TB, from S2 B4/B8) to the new
-**`gs://rts-mapping-v2-usc1`** (us-central1, transient — deleted post-run before the Sept `abruptthawmapping`
-migration); benchmark the co-located master (expect GPU-bound, master-alone ~5 d); then run the full South
-co-located on the master + **opportunistic** us-central1 spot A100 (16) + L4 (8) via the shared claim queue.
-Infra SSoT updated (`computing/infrastructure.md` §4). **us-west1 inference plan abandoned.**
+**The big correction: the inference bottleneck was the OUTPUT WRITE, not read locality — the co-location
+plan was wrong.** Benchmark: per-tile prob-COG write ran synchronously in the batch loop and opened a
+*new* `storage.Client` per tile → A100 stalled to 2.8 t/s at 0% util. Local *reads* changed nothing;
+local *writes* gave 29–36 t/s. **Fixed in code** (`d56e7ef`: async thread-pool writes
+`runner.py::_ProbWriter` + cached GCS client `writer.py`) → **~33 t/s/A100 reading in-region GCS, ~12×**,
+validated on the real worker. **Baked into `rts-infer:v1`** (rebuilt+pushed, git_sha `d56e7ef`). SSoT
+corrected (`infrastructure.md` §4): **no 14 TB transfer, no co-location staging** — the master reads
+us-west1 directly; **South ≈ 1.8 d on the 8-A100 master alone.** The `rts-mapping-v2-usc1` staging is now
+stale/deletable.
 
-**Full South run is GATED on Banks team-approval + explicit go.** Multiscale (family M) = capability only,
-not on the path. **Master `a100-8x-train` never stop/rename (A100 scarcity, ~500-retry acquire); shared PDG
-project — only ever touch our `rts-`/`rts-infer-*` resources.**
+**Full South run GATED on Banks team-approval + explicit go.** Still-TODO for South robustness: DataLoader
+`spawn` fix (the Banks GPU-0 fork/gRPC hang) + sharded region-COG creation (`gdal_translate` was the slow
+step). **Master `a100-8x-train` never stop/rename (A100 scarcity, ~500-retry acquire); shared PDG project —
+only touch our `rts-`/`rts-infer-*` resources.** Work on branch `region-assembly-vectorize`.
 <!-- NOW:END -->
 
 ### Future plans (inference phase — full plan in `.claude/plans/elegant-exploring-lemur.md`)
