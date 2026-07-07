@@ -542,6 +542,22 @@ constant-value overlapping tile COGs.
 | `test_blocked_merge_matches_single_shot` | blocked `merge_window` reconstruction == single-shot `merge_tiles` (incl. NoData mask) at 3 block sizes — the seamlessness guarantee | real — §7 mosaic == merge |
 | `test_iter_blocks_tiles_the_canvas_without_gaps` | `iter_blocks` partitions the canvas exactly once (no gap/overlap) | real — block grid |
 
+### [test_build_rgb_chips.py](test_build_rgb_chips.py)
+
+`scripts/build_rgb_chips.py` — generates RGB "underlying tile" context chips
+for the ArcGIS Pro QC package, but only for the tiles a detected RTS polygon's
+`tile_ids` column references (not the whole region). Reuses the real
+`inference.tiles.read_tile` quad-windowing path. GPU-free; synthetic gpkg +
+one synthetic RGBA quad COG.
+
+| Test | Checks | Strictness |
+|---|---|---|
+| `test_collect_flagged_tile_ids_dedupes_across_polygons` | comma-separated `tile_ids` across rows dedupe into one set | real |
+| `test_collect_flagged_tile_ids_empty_gpkg_returns_empty_set` | zero-polygon gpkg → empty set, no crash | shallow |
+| `test_build_tile_bboxes_returns_only_requested_ids` | join against the tile-list CSV returns exactly the requested ids with correct bounds | real |
+| `test_build_tile_bboxes_raises_on_missing_tile_id` | a `tile_id` referenced by the gpkg but absent from the tile list raises (surfaced data-integrity mismatch, not silently dropped) | real |
+| `test_write_rgb_chip_is_georeferenced_uint8_and_matches_quad_values` | `write_rgb_chip` → `read_tile` end-to-end: output is a 3-band uint8 GeoTIFF, EPSG:3857, correct bounds, pixel values match the source quad | real — exercises the actual inference read path |
+
 ### [test_claim.py](test_claim.py)
 
 `inference/claim.py` — the GCS-atomic shard-claim queue for the dual-fleet run (plan Phase 1). GPU-free, network-free: a FakeBucket emulates GCS `if_generation_match=0` create-if-absent atomicity + listing + download + delete; a clock is injected for staleness.
@@ -672,3 +688,4 @@ Deliberately deferred — most are better caught by Tier 2 against real data tha
 - 2026-04-23 — Phase 1 additions: 81 new tests across 10 files covering models, losses, EMA, scheduler, metrics, checkpointing, freeze/unfreeze, early stopping, MLflow utilities, visualizations, deployment-package guards, and an end-to-end training smoke. Fast suite 105 tests (~12 s), plus the train-smoke at ~130 s. Total 113 tests. All green.
 - 2026-06-30 — Object-scorecard instrument (v3 object-improvement plan, Phase 0): +4 `_object_match_detail` tests in `test_metrics.py` (tp/fp/fn parity with the frozen gate path + split/merge/geometry), and new `test_object_scorecard.py` (14 tests) covering `object_detail_counts`, per-region bootstrap CIs, `_geometry_summary`, `build_scorecard` self-check, the region-stratified train sampler, the D2 change-signal probe, and the seed-noise aggregator. All report-only/synthetic; verified green off-VM under a torch stub (real torch on the L4 runs them in the full suite). Tier-2 execution gaps recorded in Coverage gaps #8.
 - 2026-07-04 — Minimum Mapping Unit fix (data-v1.1): new `test_gt_mmu_scoring.py` (6 tests) validating `apply_min_mapping_unit` composing through the 255-ignore machinery — sub-MMU GT + correct pred → (0,0,0); real object survives; straddle keeps 1 FP; `build_scorecard` parity self-check holds; pixel counts unmoved + focal loss invariant to logits under the 255 sliver. The primitive itself stays covered by `test_label_cleaning.py`. All synthetic/CPU. Green under real torch (`test_gt_mmu_scoring.py` + `test_label_cleaning.py` + `test_object_scorecard.py` = 28 passed; `test_dataset.py` + `test_metrics.py` = 35 passed).
+- 2026-07-07 — ArcGIS Pro QC package (Banks Island team review): new `test_build_rgb_chips.py` (5 tests) for `scripts/build_rgb_chips.py`, which generates RGB "underlying tile" context chips for the ArcGIS Pro QC package — only for the tiles a detected RTS polygon references, reusing `inference.tiles.read_tile`. All synthetic/GPU-free. Full suite 356 passed, 1 skipped (pre-existing) + these 5 = 361 green.
