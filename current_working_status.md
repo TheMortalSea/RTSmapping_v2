@@ -79,27 +79,33 @@ suite **338 green**. Also merged the **multiscale-poc** branch (family M: 0.5× 
 
 <!-- NOW:BEGIN -->
 ### Now
-**Banks delivered + the throughput bottleneck root-caused & fixed (2026-07-07).** Banks Island is
-**complete**: 331,935 tiles → assembled to `probability.tif` (7 GB COG) + `mask.tif` + **3,010 RTS
-polygons / 69.42 km²** (`banks_rts.gpkg`), all uploaded to `gs://rts-mapping-v2-usw1/inference/banks/products/`
-for the team quality gate. New region tooling built + tested: `assemble_region.py` (parallel blocked
-merge) + `vectorize_region.py` (parallel polygonize + seam-dissolve, 28× faster, bit-identical) +
-`monitor_jobs.sh`.
+**FULL SOUTH INFERENCE LAUNCHED (2026-07-07) — Banks approved by the user.** All **8 A100s** on the master
+are draining the GCS shard-claim queue (**2,079 shards / 41,567,572 tiles**, `scripts/shard_tiles.py`);
+distinct shards claimed, **zero restarts**, self-balancing. Launched via the new supervised launcher
+`scripts/launch_south_inference.sh` (one `rts-infer:v1` worker/GPU, git_sha `7b7d74c`). Monitor:
+`bash scripts/monitor_jobs.sh rts-infer` · logs `/mnt/outputs/inference/south/{launch.log,logs/gpu_*.log}`
+· **stop cleanly:** `touch /mnt/outputs/inference/south/STOP`.
 
-**The big correction: the inference bottleneck was the OUTPUT WRITE, not read locality — the co-location
-plan was wrong.** Benchmark: per-tile prob-COG write ran synchronously in the batch loop and opened a
-*new* `storage.Client` per tile → A100 stalled to 2.8 t/s at 0% util. Local *reads* changed nothing;
-local *writes* gave 29–36 t/s. **Fixed in code** (`d56e7ef`: async thread-pool writes
-`runner.py::_ProbWriter` + cached GCS client `writer.py`) → **~33 t/s/A100 reading in-region GCS, ~12×**,
-validated on the real worker. **Baked into `rts-infer:v1`** (rebuilt+pushed, git_sha `d56e7ef`). SSoT
-corrected (`infrastructure.md` §4): **no 14 TB transfer, no co-location staging** — the master reads
-us-west1 directly; **South ≈ 1.8 d on the 8-A100 master alone.** The `rts-mapping-v2-usc1` staging is now
-stale/deletable.
+**Three South-readiness fixes shipped (`7b7d74c`, 364 tests green):** (1) **forkserver DataLoader**
+(`runner._make_loader`) — the root-cause fix for the Banks GPU-0 fork/gRPC deadlock (workers no longer
+inherit the parent's gRPC threads); **verified live** — all 8 GPUs produce tiles, no hang. (2) **stall
+watchdog** (`runner._start_stall_watchdog`, `stall_timeout_s=900`) — `os._exit(3)`s a wedged worker so its
+shard is reclaimed. (3) **host supervisor** — restarts any worker that exits non-zero (crash/OOM/watchdog)
+with a crash-loop guard; a silent single-GPU failure self-heals. Plus **sharded region-COG**
+(`assemble_region --cog-tile-px`) for the ~40× South extent (parallel super-tile COGs + `.vrt`; Banks path
+unchanged).
 
-**Full South run GATED on Banks team-approval + explicit go.** Still-TODO for South robustness: DataLoader
-`spawn` fix (the Banks GPU-0 fork/gRPC hang) + sharded region-COG creation (`gdal_translate` was the slow
-step). **Master `a100-8x-train` never stop/rename (A100 scarcity, ~500-retry acquire); shared PDG project —
-only touch our `rts-`/`rts-infer-*` resources.** Work on branch `region-assembly-vectorize`.
+**MEASURED throughput ≈ 12 t/s/A100 (~96–100 t/s aggregate) → ETA ~5 days — NOT the 1.8 d the write-fix
+note projected.** That 33 t/s was an **in-region** rate; the us-central1 master reads us-west1
+**cross-region**, and now that the write fix removed the write stall, cross-region reads are the exposed
+ceiling (~2.7× penalty). Confirmed **I/O-bound** (bursty GPU util, **~61 idle vCPUs / ~780 GB free RAM**).
+Cheapest lever if we want it faster: raise `--num-workers` (idle CPU hides more read latency); the real
+2.7× would need in-region reads (fleet/staging). SSoT corrected: `infrastructure.md` §region/throughput +
+`inference.md`. **Post-run:** assemble (sharded COG) → vectorize → products; delete stale `rts-mapping-v2-usc1`.
+
+**Master `a100-8x-train` never stop/rename (A100 scarcity, ~500-retry acquire; on inference ~5 d → no v3
+training meanwhile); shared PDG project — only touch our `rts-`/`rts-infer-*` resources.** Branch
+`region-assembly-vectorize`.
 <!-- NOW:END -->
 
 ### Future plans (inference phase — full plan in `.claude/plans/elegant-exploring-lemur.md`)

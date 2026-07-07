@@ -107,19 +107,26 @@ nothing (2.8 → 3.0 t/s); making *writes* local gave 29–36 t/s — the write 
 Consequences:
 - The earlier rationale — *"cross-region reads (448 ms/512×512 window) are the bottleneck, so anchor on
   the secured us-central1 GPU and move the 14 TB of quads to `gs://rts-mapping-v2-usc1`"* — is
-  **withdrawn**. The 14 TB transfer is **not needed**. The 448 ms figure is real but is not the
-  throughput limiter (reads overlap across DataLoader workers; only the serial write stalled the GPU).
+  **withdrawn as the *primary* bottleneck**. With synchronous writes, the write dominated (2.8 t/s) and
+  hid the read cost; fixing writes exposed reads as the **second** bottleneck (see the measured launch
+  below). The 14 TB bulk transfer is still **not worth it** for a run already in flight.
 - **Inference runs on the us-central1 master (`a100-8x-train`) reading directly from the us-west1
-  buckets** (`pdg-planet-data` quads + `rts-mapping-v2-usw1` S2). **South ETA ≈ 1.8 days on the 8-A100
-  master alone** (~264 t/s), no spot fleet required.
-- Co-location is downgraded to an *optional, minor* read optimization: in-region staged reads measured
-  ~33 t/s; a clean cross-region-read rate *after* the write fix is unmeasured (the one attempt was
-  confounded by the 309k-quad index STRtree build at startup). Pursue staging only if a real benchmark
-  shows reads limiting post-fix. The GPU-scarcity fact still holds (the master took ~500 retries; never
-  stop it) — it's just no longer a reason to move data.
-- The write fix must be **baked into `rts-infer:v1`** before launch (rebuilt+pushed 2026-07-07,
-  `rts.git_sha=d56e7ef`). **Training** also runs on the same master. *(Historical: the us-west1-anchored
-  and the 2026-07-06 us-central1 "move data" plans are retained in git + `docs/inference_launch_audit.md`.)*
+  buckets** (`pdg-planet-data` quads + `rts-mapping-v2-usw1` S2).
+- **MEASURED AT THE ACTUAL SOUTH LAUNCH (2026-07-07, git_sha `7b7d74c`, 3-model ensemble, 8×A100,
+  num_workers=8):** warm steady-state **~12 tiles/s per A100** (~96–100 t/s aggregate) → **South ETA
+  ≈ 5 days**, *not* the 1.8 d the write-fix note projected. The 33 t/s figure was an **in-region** read
+  rate; the production path reads **cross-region** (us-central1 ← us-west1), which — now that the write
+  no longer stalls the GPU — caps throughput at ~12 t/s (a ~2.7× cross-region penalty the earlier note
+  explicitly flagged as unmeasured). Confirmed **I/O-bound, not GPU- or CPU-bound**: GPU util is bursty
+  0↔100%, and the master has ~61 idle vCPUs + ~780 GB free RAM at 64 DataLoader workers.
+- **Levers (not applied unless the run needs to be faster):** (a) raise `--num-workers` (idle CPU →
+  hide more cross-region read latency; cheapest); (b) an **in-region** us-west1 fleet or staging would
+  recover toward ~33 t/s (the real ~2.7× gain), at the cost of stockout risk / 14 TB movement. The
+  GPU-scarcity fact still holds (the master took ~500 retries; never stop it).
+- The write + fork-safety fixes are **baked into `rts-infer:v1`** (rebuilt+pushed 2026-07-07,
+  `rts.git_sha=7b7d74c`). **Training** also runs on the same master (unavailable for v3 during the run).
+  *(Historical: the us-west1-anchored and the 2026-07-06 us-central1 "move data" plans are retained in
+  git + `docs/inference_launch_audit.md`.)*
 
 ### On-VM storage tiers
 
