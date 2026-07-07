@@ -34,13 +34,13 @@ The data and model operation in inference should exactly match those in training
 
 ### 2.1 Compute Environment
 
-**Region: `us-central1` — SSoT is `computing/infrastructure.md` §4 (updated 2026-07-06; supersedes the
-us-west1 plan below).** We **anchor on the secured us-central1 A100 master and stage the data to it**
-(`gs://rts-mapping-v2-usc1`, transient) rather than run in us-west1: us-west1 has no A100 quota and its L4 is
-100%-stocked-out, and GPU capacity is far harder to secure than data is to move. Co-location removes the
-measured **448 ms** cross-region per-read penalty (~94% of per-tile time). *(Historical context — the
-original us-west1-co-located rationale, valid when a us-west1 L4 fleet was the plan: `pdg-planet-data` is
-single-region US-WEST1, so a us-west1 fleet would have read the 309,100 quads egress-free.)*
+**Region + throughput — SSoT is `computing/infrastructure.md` §4 (corrected 2026-07-07).** Inference runs
+on the secured **us-central1 A100 master (`a100-8x-train`) reading directly from the us-west1 buckets** —
+no data staging. The throughput bottleneck was the **output write**, not read locality: fixed in code
+(async prob-COG writes + a cached GCS client, `rts-infer:v1` git_sha `d56e7ef`) → **~33 t/s/A100**, a
+~12× gain. *(Withdrawn: the 448 ms cross-region-read figure and the "move 14 TB to `us-central1`"
+co-location plan — the reads were never the limiter. See the infrastructure SSoT for the full correction
+and the historical designs.)*
 
 **Fleet scaled to 32× L4 (2026-06-17, user decision).** `g2-standard-96` carries **8× L4** (the max L4
 per single G2 VM), so **32× L4 = 4 × `g2-standard-96`** — there is no single-VM 16/32-L4 option; an N-L4
@@ -50,9 +50,9 @@ embarrassingly parallel + resumable).
 | Resource | Specification |
 |----------|---------------|
 | Cloud | Google Cloud Platform (`pdg-project-406720`) |
-| Region | **us-west1** (co-located with `pdg-planet-data`) |
-| VM fleet | **4× `g2-standard-96`** = **32× NVIDIA L4** (forward-only bf16 is GCS-I/O-bound; no A100 needed). Spot for the bulk pass, on-demand for final re-runs. **Stop when idle** (L4 = low stockout). |
-| Throughput / wallclock | ~15–43 tiles/s/L4 co-located → **~8–25 h** for the **41.57M** tile-inferences on 32 L4 (≈270–770 GPU-hr, ~$170–500; benchmark one subregion to pin it — the earlier 10.5 t/s was cross-region read-bound, which co-location removes). |
+| Region | **us-central1 master** reading us-west1 buckets directly (corrected 2026-07-07; the rows below are the *superseded* us-west1 L4-fleet design — SSoT `computing/infrastructure.md` §4). |
+| VM fleet | **The 8-A100 master alone** suffices (~264 t/s → ~1.8 d). An L4/spot fleet is now **optional** acceleration, not required. *(Historical: 4× `g2-standard-96` = 32× L4.)* |
+| Throughput / wallclock | **~33 tiles/s/A100** (post write-fix, real worker) → **~1.8 d** for the **41.57M** tiles on the 8-A100 master. *(The old ~8–25 h / 32-L4 estimate assumed an I/O-bound read bottleneck that turned out to be the write path.)* |
 | Storage | `gs://rts-mapping-v2-usw1/inference/2025q3_south/` (single-region **us-west1**, co-located with `pdg-planet-data`/`S2_RGB` → egress-free) — outputs, deployment packages, queue markers. (Supersedes the earlier planned `woodwell-rts-inference-arts-south` — one fewer bucket; see `computing/artifact_inventory.md`.) |
 | Orchestration | **Self-balancing GCS shard-claim queue** (decided 2026-06-25; `inference/claim.py` + `scripts/shard_tiles.py` + `scripts/run_inference_worker.py`). The domain tile list is spatially sorted + split into many contiguous shards (`shards/*.csv` + `index.json`); each worker (one per GPU, **8 on the A100 master + 8 per L4 VM**) atomically claims the next free shard (`if_generation_match=0`), so the heterogeneous A100+L4 fleet auto-balances. Done markers are the source of truth; stale claims are reclaimed → preemption/stragglers just resume. |
 | Collaboration | PDG workflow optimization team (Luigi/Todd) |
