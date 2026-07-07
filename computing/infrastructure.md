@@ -53,10 +53,11 @@ PDG bucket `rts-mapping-v2`, in the same region as the VMs** (see §4–§4b).
 - **~$70,000 GCP credit in the PDG project, expiring September 2026** (must be substantially spent),
   **plus ~$100k borrowable from other teams (~$170k total) — budget is not the binding constraint**
   (per user, 2026-06-15). Size compute for *wallclock*, not cost.
-- **Credit scope — confirm:** earlier notes said the credit is *compute-only* (storage + egress billed
-  separately); the user now states it *covers everything*. **TODO: confirm with the PDG admin.** Either
-  way, **co-location is the right default** — running inference in us-west1 keeps the TB-scale Planet
-  reads egress-free (and cuts latency), so the question is moot for the dominant flow.
+- **Credit scope:** the ~$70k credit **covers everything** (compute, storage, egress) — per user; not a
+  compute-only ceiling. So cross-region egress from the us-central1 master reading us-west1 quads is a
+  non-issue cost-wise. (Superseded 2026-07-07: an earlier bullet argued for "run inference in us-west1
+  to keep reads egress-free" — withdrawn. Inference runs on the us-central1 master reading cross-region;
+  the throughput bottleneck was the **write path**, fixed in code, not the reads. See §4 region note.)
 - **Spend plan** (from `current_working_status.md`):
   - Ablation program — **short bursts, ~$5–15k** on a multi-GPU node.
   - Bulk of budget — **pan-arctic inference + EXTRA-channel generation + multi-year/ensemble runs,
@@ -90,22 +91,42 @@ PDG bucket `rts-mapping-v2`, in the same region as the VMs** (see §4–§4b).
 |--------|---------|---------|-------|
 | `gs://abrupt_thaw/` | abruptthawmapping (non-PDG) | Current home of v2-alpha training data under `RTS_MODEL_V2/DATA/` | Reading from PDG VMs crosses projects → egress. |
 | `gs://rts-mapping-v2/` | PDG | Compute-adjacent **training** data, outputs, artifacts, deployment packages | Region **US (multi-region)** — verified 2026-06-15. |
-| `gs://pdg-planet-data/` | PDG | **2025 Planet basemap quads** (pan-arctic inference input) | Region **US-WEST1 (single)**. The 309,100 domain quads (RGB `gcs_path`) are **staged to `rts-mapping-v2-usc1`** for the co-located run (see region note). |
-| `gs://rts-mapping-v2-usc1/` | PDG | **Inference — transient staging + I/O** in the compute region: staged quads + pre-computed NDVI (inputs) and scaled-uint8 probability COGs (outputs) | **us-central1 (single region)** — created **2026-07-06**, co-located with the A100 master → egress-free. **Transient** (deleted post-run, before the Sept `abruptthawmapping` migration). Supersedes the planned us-west1 `woodwell-rts-inference-arts-south`. |
-| `gs://rts-mapping-v2-usw1/` | PDG | **Sentinel-2 imagery** (`S2_RGB/<year>_<region>/` cells) — NDVI source; earlier us-west1 inference I/O | **us-west1 (single region)** — created **2026-06-24**. NDVI is pre-computed from these (B8/B4) and staged to `rts-mapping-v2-usc1`. *(Legacy inference-region bucket; kept until the us-central1 cutover is validated.)* |
+| `gs://pdg-planet-data/` | PDG | **2025 Planet basemap quads** (pan-arctic inference input) | Region **US-WEST1 (single)**. The us-central1 master **reads the 309,100 domain quads (RGB `gcs_path`) directly cross-region** — the write-path fix (2026-07-07) removed the need to stage them (see region note). |
+| `gs://rts-mapping-v2-usc1/` | PDG | (was: transient co-location staging) | **us-central1 (single region)** — created 2026-07-06 for the co-located run. **NOTE 2026-07-07: the co-location plan is withdrawn** (bottleneck was the write path, not reads). This bucket now holds only a **stale Banks-quad staging slice (~250 GB) that can be deleted**; no longer on the launch path. |
+| `gs://rts-mapping-v2-usw1/` | PDG | **Sentinel-2 imagery** (`S2_RGB/<year>_<region>/` cells) — NDVI source; **primary inference I/O** (shard queue + probability COG outputs) | **us-west1 (single region)** — created **2026-06-24**. NDVI is computed on-the-fly from these (B8/B4) at read time (no pre-compute/stage). Banks products live under `inference/banks/`. |
 
-**Region co-location — inference runs in `us-central1` (updated 2026-07-06; supersedes the us-west1
-plan).** The anchor is **compute, not data**: GPU capacity is scarce and effectively immovable (the
-8×A100-80GB master `a100-8x-train` took ~500 retry attempts to acquire; a stopped A100-80GB may never
-be reclaimable), whereas data is a routine parallel transfer. **us-west1 was chosen for inference
-before we knew GPU availability there — and it turned out to have no A100 quota and 100%-stocked-out L4
-(all zones, down to 1-L4 shapes, 2026-07-06).** So we **anchor on the secured us-central1 master and move
-the data to it**, into `gs://rts-mapping-v2-usc1` (transient staging, deleted post-run). Cross-region
-reads were measured at **448 ms per 512×512 windowed quad read vs 27 ms local (~94% of per-tile time)** —
-co-location is the fix, not a tweak. Only the RGB quad (`gcs_path`) + S2 NDVI are staged; NDVI is
-pre-computed to a single band to minimise the transfer. **Training** also runs on the same master.
-Everything migrates to the `abruptthawmapping` project ~Sept 2026, so this staging is intentionally
-transient. *(Historical: the us-west1-anchored plan is retained in `docs/inference_launch_audit.md`.)*
+**Region / throughput — CORRECTED 2026-07-07 (supersedes the 2026-07-06 "move the data to us-central1"
+plan).** The pan-Arctic inference bottleneck was **not** read locality — it was the **output write**. On
+the A100 master the per-tile probability-COG write ran *synchronously* in the batch loop and opened a
+**new `storage.Client` per tile**, stalling the GPU to ~2.8 tiles/s at 0% util. Fixed in code (commit
+`d56e7ef`: async thread-pool writes in `inference/runner.py::_ProbWriter` + one cached GCS client in
+`inference/writer.py`) → the real worker now sustains **~33 tiles/s per A100 reading in-region GCS, a
+~12× gain with no data movement.** Controlled benchmark (2026-07-07): making *reads* local changed
+nothing (2.8 → 3.0 t/s); making *writes* local gave 29–36 t/s — the write was ~90% of the cost.
+
+Consequences:
+- The earlier rationale — *"cross-region reads (448 ms/512×512 window) are the bottleneck, so anchor on
+  the secured us-central1 GPU and move the 14 TB of quads to `gs://rts-mapping-v2-usc1`"* — is
+  **withdrawn as the *primary* bottleneck**. With synchronous writes, the write dominated (2.8 t/s) and
+  hid the read cost; fixing writes exposed reads as the **second** bottleneck (see the measured launch
+  below). The 14 TB bulk transfer is still **not worth it** for a run already in flight.
+- **Inference runs on the us-central1 master (`a100-8x-train`) reading directly from the us-west1
+  buckets** (`pdg-planet-data` quads + `rts-mapping-v2-usw1` S2).
+- **MEASURED AT THE ACTUAL SOUTH LAUNCH (2026-07-07, git_sha `7b7d74c`, 3-model ensemble, 8×A100,
+  num_workers=8):** warm steady-state **~12 tiles/s per A100** (~96–100 t/s aggregate) → **South ETA
+  ≈ 5 days**, *not* the 1.8 d the write-fix note projected. The 33 t/s figure was an **in-region** read
+  rate; the production path reads **cross-region** (us-central1 ← us-west1), which — now that the write
+  no longer stalls the GPU — caps throughput at ~12 t/s (a ~2.7× cross-region penalty the earlier note
+  explicitly flagged as unmeasured). Confirmed **I/O-bound, not GPU- or CPU-bound**: GPU util is bursty
+  0↔100%, and the master has ~61 idle vCPUs + ~780 GB free RAM at 64 DataLoader workers.
+- **Levers (not applied unless the run needs to be faster):** (a) raise `--num-workers` (idle CPU →
+  hide more cross-region read latency; cheapest); (b) an **in-region** us-west1 fleet or staging would
+  recover toward ~33 t/s (the real ~2.7× gain), at the cost of stockout risk / 14 TB movement. The
+  GPU-scarcity fact still holds (the master took ~500 retries; never stop it).
+- The write + fork-safety fixes are **baked into `rts-infer:v1`** (rebuilt+pushed 2026-07-07,
+  `rts.git_sha=7b7d74c`). **Training** also runs on the same master (unavailable for v3 during the run).
+  *(Historical: the us-west1-anchored and the 2026-07-06 us-central1 "move data" plans are retained in
+  git + `docs/inference_launch_audit.md`.)*
 
 ### On-VM storage tiers
 

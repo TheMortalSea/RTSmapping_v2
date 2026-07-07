@@ -11,7 +11,10 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
+import threading
 import time
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -57,6 +60,54 @@ def _collate_multiscale(items: list[dict]) -> dict:
         "all_nodata": [it["all_nodata"] for it in items],
         "bounds": [tuple(it["bounds"]) for it in items],
     }
+
+
+def _make_loader(dataset, batch_size: int, num_workers: int, collate_fn) -> DataLoader:
+    """Build the inference DataLoader with a fork-safe worker start method.
+
+    ``build_context`` and the queue worker create ``storage.Client()`` (gRPC
+    background threads) in the parent *before* the loader spawns workers. The
+    default Linux ``fork`` copies those locked gRPC mutexes into every child, so
+    a worker can deadlock on its first GCS-adjacent call — the probabilistic
+    Banks GPU-0 hang where one shard never produced a tile. ``forkserver`` starts
+    each worker from a clean server process, so no parent thread/CUDA state
+    crosses. Workers read imagery via GDAL ``/vsigs/`` only and need no GCS client
+    of their own, and the dataset is picklable (DataFrames + lazily-built trees).
+    """
+    kwargs = dict(batch_size=batch_size, num_workers=num_workers, collate_fn=collate_fn)
+    if num_workers > 0:
+        kwargs["multiprocessing_context"] = "forkserver"
+    return DataLoader(dataset, **kwargs)
+
+
+def _start_stall_watchdog(last_active: list[float], timeout_s: float, label: str):
+    """Kill the worker process if the batch loop makes no progress for ``timeout_s``.
+
+    Defence-in-depth behind the ``forkserver`` fix: if a DataLoader worker still
+    wedges (any cause), the main thread blocks inside ``for batch in loader`` and
+    the claim's heartbeat thread keeps the shard alive forever — the exact way
+    Banks stranded a shard. This daemon watches a timestamp the loop bumps each
+    batch and, on a hard stall, ``os._exit``s so the claim goes stale and a
+    supervised restart (launch script's per-GPU ``until`` loop) picks up fresh
+    work; the stalled shard is later reclaimed and resumed from its manifest.
+    ``timeout_s <= 0`` disables it (tests / single-shot CLI). Returns a stop fn.
+    """
+    if not timeout_s or timeout_s <= 0:
+        return lambda: None
+    stop = threading.Event()
+
+    def _watch() -> None:
+        while not stop.wait(min(30.0, timeout_s / 4)):
+            idle = time.time() - last_active[0]
+            if idle > timeout_s:
+                logger.critical(
+                    "STALL: no tile progress for %.0fs (%s) — exiting worker for "
+                    "supervised restart; the shard will be reclaimed and resumed",
+                    idle, label)
+                os._exit(3)
+
+    threading.Thread(target=_watch, daemon=True).start()
+    return stop.set
 
 
 def _crop_center_upsample(arr: np.ndarray, out_size: int, frac: float) -> np.ndarray:
@@ -212,6 +263,51 @@ def _predict_batch(ctx: InferenceContext, images: torch.Tensor, dep_cfg: dict) -
     return probs.clamp_(0.0, 1.0).cpu().numpy()  # §10.1 range guard
 
 
+class _ProbWriter:
+    """Background prob-COG writer (inference.md §8.2).
+
+    The per-tile COG write — a temp-file COG + a single GCS upload — is a
+    latency-bound round-trip. Done synchronously in the batch loop it stalls the
+    GPU: on an A100 the write, not the read, was the throughput bottleneck
+    (benchmark 2026-07-07: GCS-write 2.8 t/s → local/async write ~29–36 t/s).
+    Writes run in a thread pool (uploads are I/O-bound → threads overlap them
+    with the next batch's read+compute). Bounded in-flight applies backpressure;
+    a tile is marked ``done`` only after its write **succeeds** (a crash leaves
+    unwritten tiles unmarked → reprocessed on resume). Not thread-safe: only the
+    owning loop calls ``submit``/``flush`` (manifest marking stays single-thread).
+    """
+
+    def __init__(self, manifest: "Manifest", dtype: str,
+                 max_workers: int = 16, max_inflight: int = 512) -> None:
+        self._pool = ThreadPoolExecutor(max_workers=max_workers)
+        self._manifest = manifest
+        self._dtype = dtype
+        self._max_inflight = max_inflight
+        self._pending: dict = {}  # future -> tile_id
+
+    def _reap(self, futures) -> None:
+        for fut in futures:
+            tile_id = self._pending.pop(fut)
+            fut.result()  # re-raise a failed write on the owning thread
+            self._manifest.mark(tile_id, "done")
+
+    def submit(self, path: str, prob: np.ndarray, bounds, tile_id: str) -> None:
+        fut = self._pool.submit(write_probability_tile, path, prob, bounds,
+                                dtype=self._dtype)
+        self._pending[fut] = tile_id
+        self._reap([f for f in self._pending if f.done()])  # non-blocking sweep
+        while len(self._pending) >= self._max_inflight:  # backpressure
+            done, _ = wait(list(self._pending), return_when=FIRST_COMPLETED)
+            self._reap(done)
+
+    def flush(self) -> None:
+        """Wait for all writes to finish, marking each done; then shut down."""
+        while self._pending:
+            done, _ = wait(list(self._pending), return_when=FIRST_COMPLETED)
+            self._reap(done)
+        self._pool.shutdown(wait=True)
+
+
 def _run_inference_multiscale(ctx: InferenceContext, todo: pd.DataFrame, out: str,
                               manifest: Manifest, device: torch.device, num_workers: int,
                               scales: list[float],
@@ -225,12 +321,18 @@ def _run_inference_multiscale(ctx: InferenceContext, todo: pd.DataFrame, out: st
     dataset = InferenceTileDataset(todo, ctx.quad_index, pkg["stats"],
                                    s2_index=ctx.s2_index, extra_bands=ctx.extra_bands,
                                    scales=scales)
-    loader = DataLoader(dataset, batch_size=ctx.run_cfg["inference"]["batch_size"],
-                        num_workers=num_workers, collate_fn=_collate_multiscale)
+    loader = _make_loader(dataset, ctx.run_cfg["inference"]["batch_size"],
+                          num_workers, _collate_multiscale)
     logger.info("MULTISCALE inference: scales=%s (§7.3 arithmetic-mean fusion)", scales)
 
+    writer = _ProbWriter(manifest, output_dtype,
+                         max_workers=ctx.run_cfg["inference"].get("write_threads", 16))
     t0, n_done = time.time(), 0
+    last_active = [time.time()]
+    stop_watchdog = _start_stall_watchdog(
+        last_active, ctx.run_cfg["inference"].get("stall_timeout_s", 900.0), out)
     for batch in loader:
+        last_active[0] = time.time()
         keep = [i for i, nd in enumerate(batch["all_nodata"]) if not nd]
         for i, nd in enumerate(batch["all_nodata"]):
             if nd:
@@ -247,9 +349,8 @@ def _run_inference_multiscale(ctx: InferenceContext, todo: pd.DataFrame, out: st
                 # contributes so fused is finite (0.5× only adds where also valid).
                 fused = np.where(valid[1.0], fused, NODATA_PROB).astype(np.float32)
                 tile_id = batch["tile_id"][i]
-                write_probability_tile(f"{out}/{tile_id}.tif", fused,
-                                       batch["bounds"][i], dtype=output_dtype)
-                manifest.mark(tile_id, "done")
+                writer.submit(f"{out}/{tile_id}.tif", fused, batch["bounds"][i],
+                              tile_id)
         n_done += len(batch["tile_id"])
         rate = n_done / (time.time() - t0)
         if n_done % 512 < len(batch["tile_id"]):
@@ -257,6 +358,8 @@ def _run_inference_multiscale(ctx: InferenceContext, todo: pd.DataFrame, out: st
                         rate, (len(todo) - n_done) / rate / 3600)
             if progress_cb is not None:
                 progress_cb(n_done, len(todo))
+    writer.flush()
+    stop_watchdog()
     manifest.save()
     logger.info("Done (multiscale): %s", manifest.counts())
     return manifest.counts()
@@ -288,11 +391,17 @@ def run_inference(ctx: InferenceContext, tiles: pd.DataFrame, output: str,
                                          num_workers, scales, progress_cb)
     dataset = InferenceTileDataset(todo, ctx.quad_index, pkg["stats"], scale=scale,
                                    s2_index=ctx.s2_index, extra_bands=ctx.extra_bands)
-    loader = DataLoader(dataset, batch_size=ctx.run_cfg["inference"]["batch_size"],
-                        num_workers=num_workers, collate_fn=_collate)
+    loader = _make_loader(dataset, ctx.run_cfg["inference"]["batch_size"],
+                          num_workers, _collate)
 
+    writer = _ProbWriter(manifest, output_dtype,
+                         max_workers=ctx.run_cfg["inference"].get("write_threads", 16))
     t0, n_done = time.time(), 0
+    last_active = [time.time()]
+    stop_watchdog = _start_stall_watchdog(
+        last_active, ctx.run_cfg["inference"].get("stall_timeout_s", 900.0), out)
     for batch in loader:
+        last_active[0] = time.time()
         keep = [i for i, all_nd in enumerate(batch["all_nodata"]) if not all_nd]
         for i, all_nd in enumerate(batch["all_nodata"]):
             if all_nd:
@@ -303,9 +412,8 @@ def run_inference(ctx: InferenceContext, tiles: pd.DataFrame, output: str,
                 prob = probs[j]
                 prob[batch["nodata_mask"][i]] = NODATA_PROB  # §5.3 output mask
                 tile_id = batch["tile_id"][i]
-                write_probability_tile(f"{out}/{tile_id}.tif", prob,
-                                       batch["bounds"][i], dtype=output_dtype)
-                manifest.mark(tile_id, "done")
+                writer.submit(f"{out}/{tile_id}.tif", np.ascontiguousarray(prob),
+                              batch["bounds"][i], tile_id)
         n_done += len(batch["tile_id"])
         rate = n_done / (time.time() - t0)
         if n_done % 512 < len(batch["tile_id"]):
@@ -314,6 +422,8 @@ def run_inference(ctx: InferenceContext, tiles: pd.DataFrame, output: str,
             if progress_cb is not None:
                 progress_cb(n_done, len(todo))
 
+    writer.flush()
+    stop_watchdog()
     manifest.save()
     logger.info("Done: %s", manifest.counts())
     return manifest.counts()

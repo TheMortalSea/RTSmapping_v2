@@ -502,10 +502,85 @@ Inference pipeline (`inference/` + grid/merge entry scripts), GPU-free. Fixtures
 | `test_multiscale_dataset_yields_per_scale_images` | `scales=[1.0,0.5]` item carries per-scale image+valid; 0.5× reads the 2×-expanded bbox | real — §6.3 context read |
 | `test_run_inference_multiscale_writes_fused_cog` | end-to-end `run_inference` multiscale dispatch → fused COG (const model 0.5 at both scales → fused 0.5) | real — §6.3/§7.3 integration |
 
-> Not covered (deliberate): `scripts/inference.py` main loop and
-> `vectorize_predictions.py` are exercised by the Tier-2 real-data smoke
-> (see inference.md §13 pre-inference checklist), not unit tests — they are
-> thin glue over the tested modules.
+> Not covered (deliberate): `scripts/inference.py` main loop is exercised by the
+> Tier-2 real-data smoke (see inference.md §13 pre-inference checklist), not unit
+> tests — it is thin glue over the tested modules.
+
+### [test_vectorize_predictions.py](test_vectorize_predictions.py)
+
+`scripts/vectorize_predictions.py` — mask→polygon vectorization with the
+deployment `min_blob_size_px` object filter + windowed prob pixel-stats.
+GPU-free; synthetic mask/prob rasters.
+
+| Test | Checks | Strictness |
+|---|---|---|
+| `test_min_blob_filter_drops_small_and_keeps_large` | min_blob=2000 keeps the 3600px blob, drops the 144px one; compact rts_id; windowed `mean_prob`==0.8; CRS 3857 | real — object filter + rasterio-1.4 window-rounding regression |
+| `test_no_filter_keeps_both_blobs` | min_blob=0 vectorizes both blobs | real — filter off path |
+
+### [test_vectorize_region.py](test_vectorize_region.py)
+
+`scripts/vectorize_region.py` — parallel block-mask polygonize + cross-seam
+dissolve (post-inference.md §9.3 at region scale; mandatory for South where the
+merged mask exceeds RAM). Validated bit-for-bit against the monolithic
+`vectorize_predictions` on Banks (3010 polys / 69.42 km², both). GPU-free; two
+synthetic adjacent block masks sharing a seam.
+
+| Test | Checks | Strictness |
+|---|---|---|
+| `test_seam_split_slump_reassembles_and_survives_min_blob` | a slump split into two 200px halves (each < min_blob 300) reassembles to one 400px polygon and is KEPT — proves min_blob is applied AFTER the dissolve, no double-count | real — the core seam-stitch invariant |
+| `test_min_blob_zero_keeps_all_including_tiny` | min_blob=0 → interior + tiny + reassembled seam slump all kept | real — filter-off path |
+
+### [test_prob_writer.py](test_prob_writer.py)
+
+`inference/runner.py::_ProbWriter` — background thread-pool prob-COG writer that
+un-blocks the GPU from the per-tile GCS upload (the A100 throughput bottleneck;
+benchmark 2026-07-07: 2.8 → 33 t/s on the real worker once writes went async +
+the GCS client was cached). GPU-free.
+
+| Test | Checks | Strictness |
+|---|---|---|
+| `test_writes_all_tiles_and_marks_done_after_success` | all tiles written + marked done via the pool | real — async write correctness |
+| `test_backpressure_caps_inflight` | pending writes never exceed `max_inflight` on any submit | real — bounded-memory backpressure |
+| `test_write_error_propagates_and_tile_not_marked_done` | a failed write re-raises on the owning thread; the tile is NOT marked done (crash-safe resume) | real — the done-only-after-success invariant |
+
+Also covers the South-readiness fork-safety fixes in `inference/runner.py` (2026-07-07):
+`_make_loader` (forkserver worker start, avoiding the fork+gRPC deadlock that stranded Banks GPU-0) and `_start_stall_watchdog` (os._exit a wedged worker so its shard is reclaimed).
+
+| Test | Checks | Strictness |
+|---|---|---|
+| `test_make_loader_uses_forkserver_only_with_workers` | num_workers>0 → ForkServerContext; num_workers=0 → in-process (None) | real — the deadlock fix |
+| `test_stall_watchdog_disabled_is_noop` | `stall_timeout_s<=0` returns a no-op stop fn, starts no thread | shallow — off-switch |
+| `test_stall_watchdog_does_not_kill_while_progressing` | a live `last_active` never triggers os._exit | real — no false positives |
+| `test_stall_watchdog_exits_process_on_hard_stall` | a stale `last_active` os._exit(3)s (asserted in a subprocess) | real — the self-heal trigger |
+
+### [test_assemble_region.py](test_assemble_region.py)
+
+`scripts/assemble_region.py` — blocked windowed merge that assembles a whole
+region's per-tile prob COGs into one mosaicked COG without holding the
+(200k×310k) canvas in RAM (post-inference.md §7). GPU-free; synthetic
+constant-value overlapping tile COGs.
+
+| Test | Checks | Strictness |
+|---|---|---|
+| `test_blocked_merge_matches_single_shot` | blocked `merge_window` reconstruction == single-shot `merge_tiles` (incl. NoData mask) at 3 block sizes — the seamlessness guarantee | real — §7 mosaic == merge |
+| `test_cog_grid_mosaic_matches_single_cog` | the parallel super-tile-COG grid + `.vrt` (`cog_tile_px>0`, the South-scale path) reads back pixel-identical to the monolithic single-COG path (`cog_tile_px=0`) | real — grid is a scale/perf change only; skips w/o GDAL CLI |
+| `test_iter_blocks_tiles_the_canvas_without_gaps` | `iter_blocks` partitions the canvas exactly once (no gap/overlap) | real — block grid |
+
+### [test_build_rgb_chips.py](test_build_rgb_chips.py)
+
+`scripts/build_rgb_chips.py` — generates RGB "underlying tile" context chips
+for the ArcGIS Pro QC package, but only for the tiles a detected RTS polygon's
+`tile_ids` column references (not the whole region). Reuses the real
+`inference.tiles.read_tile` quad-windowing path. GPU-free; synthetic gpkg +
+one synthetic RGBA quad COG.
+
+| Test | Checks | Strictness |
+|---|---|---|
+| `test_collect_flagged_tile_ids_dedupes_across_polygons` | comma-separated `tile_ids` across rows dedupe into one set | real |
+| `test_collect_flagged_tile_ids_empty_gpkg_returns_empty_set` | zero-polygon gpkg → empty set, no crash | shallow |
+| `test_build_tile_bboxes_returns_only_requested_ids` | join against the tile-list CSV returns exactly the requested ids with correct bounds | real |
+| `test_build_tile_bboxes_raises_on_missing_tile_id` | a `tile_id` referenced by the gpkg but absent from the tile list raises (surfaced data-integrity mismatch, not silently dropped) | real |
+| `test_write_rgb_chip_is_georeferenced_uint8_and_matches_quad_values` | `write_rgb_chip` → `read_tile` end-to-end: output is a 3-band uint8 GeoTIFF, EPSG:3857, correct bounds, pixel values match the source quad | real — exercises the actual inference read path |
 
 ### [test_claim.py](test_claim.py)
 
@@ -637,3 +712,4 @@ Deliberately deferred — most are better caught by Tier 2 against real data tha
 - 2026-04-23 — Phase 1 additions: 81 new tests across 10 files covering models, losses, EMA, scheduler, metrics, checkpointing, freeze/unfreeze, early stopping, MLflow utilities, visualizations, deployment-package guards, and an end-to-end training smoke. Fast suite 105 tests (~12 s), plus the train-smoke at ~130 s. Total 113 tests. All green.
 - 2026-06-30 — Object-scorecard instrument (v3 object-improvement plan, Phase 0): +4 `_object_match_detail` tests in `test_metrics.py` (tp/fp/fn parity with the frozen gate path + split/merge/geometry), and new `test_object_scorecard.py` (14 tests) covering `object_detail_counts`, per-region bootstrap CIs, `_geometry_summary`, `build_scorecard` self-check, the region-stratified train sampler, the D2 change-signal probe, and the seed-noise aggregator. All report-only/synthetic; verified green off-VM under a torch stub (real torch on the L4 runs them in the full suite). Tier-2 execution gaps recorded in Coverage gaps #8.
 - 2026-07-04 — Minimum Mapping Unit fix (data-v1.1): new `test_gt_mmu_scoring.py` (6 tests) validating `apply_min_mapping_unit` composing through the 255-ignore machinery — sub-MMU GT + correct pred → (0,0,0); real object survives; straddle keeps 1 FP; `build_scorecard` parity self-check holds; pixel counts unmoved + focal loss invariant to logits under the 255 sliver. The primitive itself stays covered by `test_label_cleaning.py`. All synthetic/CPU. Green under real torch (`test_gt_mmu_scoring.py` + `test_label_cleaning.py` + `test_object_scorecard.py` = 28 passed; `test_dataset.py` + `test_metrics.py` = 35 passed).
+- 2026-07-07 — ArcGIS Pro QC package (Banks Island team review): new `test_build_rgb_chips.py` (5 tests) for `scripts/build_rgb_chips.py`, which generates RGB "underlying tile" context chips for the ArcGIS Pro QC package — only for the tiles a detected RTS polygon references, reusing `inference.tiles.read_tile`. All synthetic/GPU-free. Full suite 356 passed, 1 skipped (pre-existing) + these 5 = 361 green.

@@ -34,13 +34,15 @@ The data and model operation in inference should exactly match those in training
 
 ### 2.1 Compute Environment
 
-**Region: `us-central1` — SSoT is `computing/infrastructure.md` §4 (updated 2026-07-06; supersedes the
-us-west1 plan below).** We **anchor on the secured us-central1 A100 master and stage the data to it**
-(`gs://rts-mapping-v2-usc1`, transient) rather than run in us-west1: us-west1 has no A100 quota and its L4 is
-100%-stocked-out, and GPU capacity is far harder to secure than data is to move. Co-location removes the
-measured **448 ms** cross-region per-read penalty (~94% of per-tile time). *(Historical context — the
-original us-west1-co-located rationale, valid when a us-west1 L4 fleet was the plan: `pdg-planet-data` is
-single-region US-WEST1, so a us-west1 fleet would have read the 309,100 quads egress-free.)*
+**Region + throughput — SSoT is `computing/infrastructure.md` §4 (corrected 2026-07-07).** Inference runs
+on the secured **us-central1 A100 master (`a100-8x-train`) reading directly from the us-west1 buckets** —
+no data staging. The *first* bottleneck was the **output write** (sync per-tile COG write + a new
+`storage.Client` per tile → 2.8 t/s at 0% util); fixed in code (async prob-COG writes + a cached GCS
+client) → the write no longer stalls the GPU. **At the actual launch (2026-07-07, `rts-infer:v1` git_sha
+`7b7d74c`, 3-model ensemble) the master sustains ~12 t/s/A100 → ~5 d**, cross-region reads being the
+now-exposed second bottleneck (the 33 t/s write-fix figure was in-region). *(Withdrawn as the run's
+blocker: the "move 14 TB to `us-central1`" co-location plan — not worth it mid-run; an in-region fleet
+is the real ~2.7× lever if needed. See the infrastructure SSoT for the full correction.)*
 
 **Fleet scaled to 32× L4 (2026-06-17, user decision).** `g2-standard-96` carries **8× L4** (the max L4
 per single G2 VM), so **32× L4 = 4 × `g2-standard-96`** — there is no single-VM 16/32-L4 option; an N-L4
@@ -50,11 +52,11 @@ embarrassingly parallel + resumable).
 | Resource | Specification |
 |----------|---------------|
 | Cloud | Google Cloud Platform (`pdg-project-406720`) |
-| Region | **us-west1** (co-located with `pdg-planet-data`) |
-| VM fleet | **4× `g2-standard-96`** = **32× NVIDIA L4** (forward-only bf16 is GCS-I/O-bound; no A100 needed). Spot for the bulk pass, on-demand for final re-runs. **Stop when idle** (L4 = low stockout). |
-| Throughput / wallclock | ~15–43 tiles/s/L4 co-located → **~8–25 h** for the **41.57M** tile-inferences on 32 L4 (≈270–770 GPU-hr, ~$170–500; benchmark one subregion to pin it — the earlier 10.5 t/s was cross-region read-bound, which co-location removes). |
+| Region | **us-central1 master** reading us-west1 buckets directly (corrected 2026-07-07; the rows below are the *superseded* us-west1 L4-fleet design — SSoT `computing/infrastructure.md` §4). |
+| VM fleet | **The 8-A100 master alone** (launched 2026-07-07). An in-region L4/spot fleet would ~2.7× throughput (reads become in-region) but is **optional** — the master reads us-west1 cross-region. *(Historical: 4× `g2-standard-96` = 32× L4.)* |
+| Throughput / wallclock | **MEASURED at launch: ~12 tiles/s/A100** (3-model ensemble, cross-region reads, num_workers=8) → **~5 d** for the **41.57M** tiles on the 8-A100 master. *(The write fix lifted 2.8→~12; the earlier ~33 t/s / 1.8 d was an in-region rate — cross-region reads are the post-write-fix ceiling. I/O-bound, ~61 idle vCPUs → `--num-workers` is a live knob. SSoT: `computing/infrastructure.md` §region/throughput.)* |
 | Storage | `gs://rts-mapping-v2-usw1/inference/2025q3_south/` (single-region **us-west1**, co-located with `pdg-planet-data`/`S2_RGB` → egress-free) — outputs, deployment packages, queue markers. (Supersedes the earlier planned `woodwell-rts-inference-arts-south` — one fewer bucket; see `computing/artifact_inventory.md`.) |
-| Orchestration | **Self-balancing GCS shard-claim queue** (decided 2026-06-25; `inference/claim.py` + `scripts/shard_tiles.py` + `scripts/run_inference_worker.py`). The domain tile list is spatially sorted + split into many contiguous shards (`shards/*.csv` + `index.json`); each worker (one per GPU, **8 on the A100 master + 8 per L4 VM**) atomically claims the next free shard (`if_generation_match=0`), so the heterogeneous A100+L4 fleet auto-balances. Done markers are the source of truth; stale claims are reclaimed → preemption/stragglers just resume. |
+| Orchestration | **Self-balancing GCS shard-claim queue** (decided 2026-06-25; `inference/claim.py` + `scripts/shard_tiles.py` + `scripts/run_inference_worker.py`). The domain tile list is spatially sorted + split into many contiguous shards (`shards/*.csv` + `index.json`); each worker (one per GPU, **8 on the A100 master + 8 per L4 VM**) atomically claims the next free shard (`if_generation_match=0`), so the heterogeneous A100+L4 fleet auto-balances. Done markers are the source of truth; stale claims are reclaimed → preemption/stragglers just resume. **Fork-safety (2026-07-07):** the DataLoader uses a `forkserver` start method (`runner._make_loader`) so workers don't inherit the parent's gRPC/CUDA threads — the fix for the probabilistic Banks GPU-0 fork deadlock. A per-shard **stall watchdog** (`runner._start_stall_watchdog`, `inference.stall_timeout_s=900`) `os._exit(3)`s a worker that wedges so its claim goes stale + is reclaimed, and a **host supervisor** (`scripts/launch_south_inference.sh`, one worker/GPU) restarts any non-zero exit with a crash-loop guard → a silent single-GPU failure self-heals. |
 | Collaboration | PDG workflow optimization team (Luigi/Todd) |
 
 ### 2.2 Storage Structure
