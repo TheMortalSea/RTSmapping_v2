@@ -33,7 +33,8 @@ S2_INDEX="${S2_INDEX:-$BASE/s2_index_2025_south.csv}"
 CONFIG="${CONFIG:-configs/deployment.yaml}"
 IMAGE="${IMAGE:-us-west1-docker.pkg.dev/pdg-project-406720/pdg-artifact-registry/rts-infer:v1}"
 NGPU="${NGPU:-8}"
-NUM_WORKERS="${NUM_WORKERS:-8}"
+NUM_WORKERS="${NUM_WORKERS:-16}"   # measured 2026-07-07: 8→16 workers ~doubled t/s (12→~24 t/s/A100)
+#                                    by hiding cross-region read latency; master has ~61 spare vCPUs
 LOGDIR="${LOGDIR:-/mnt/outputs/inference/south/logs}"
 STOP_FILE="${STOP_FILE:-/mnt/outputs/inference/south/STOP}"
 RESTART_DELAY_S="${RESTART_DELAY_S:-15}"

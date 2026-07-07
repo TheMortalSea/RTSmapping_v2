@@ -112,17 +112,19 @@ Consequences:
   below). The 14 TB bulk transfer is still **not worth it** for a run already in flight.
 - **Inference runs on the us-central1 master (`a100-8x-train`) reading directly from the us-west1
   buckets** (`pdg-planet-data` quads + `rts-mapping-v2-usw1` S2).
-- **MEASURED AT THE ACTUAL SOUTH LAUNCH (2026-07-07, git_sha `7b7d74c`, 3-model ensemble, 8×A100,
-  num_workers=8):** warm steady-state **~12 tiles/s per A100** (~96–100 t/s aggregate) → **South ETA
-  ≈ 5 days**, *not* the 1.8 d the write-fix note projected. The 33 t/s figure was an **in-region** read
-  rate; the production path reads **cross-region** (us-central1 ← us-west1), which — now that the write
-  no longer stalls the GPU — caps throughput at ~12 t/s (a ~2.7× cross-region penalty the earlier note
-  explicitly flagged as unmeasured). Confirmed **I/O-bound, not GPU- or CPU-bound**: GPU util is bursty
-  0↔100%, and the master has ~61 idle vCPUs + ~780 GB free RAM at 64 DataLoader workers.
-- **Levers (not applied unless the run needs to be faster):** (a) raise `--num-workers` (idle CPU →
-  hide more cross-region read latency; cheapest); (b) an **in-region** us-west1 fleet or staging would
-  recover toward ~33 t/s (the real ~2.7× gain), at the cost of stockout risk / 14 TB movement. The
-  GPU-scarcity fact still holds (the master took ~500 retries; never stop it).
+- **MEASURED AT THE ACTUAL SOUTH LAUNCH (2026-07-07, git_sha `7b7d74c`, 3-model ensemble, 8×A100):**
+  at the default 8 DataLoader workers the run was **I/O-bound, not GPU- or CPU-bound** — ~12 t/s/A100,
+  GPU util bursty 0↔100%, with ~61 idle vCPUs + ~780 GB free RAM. The 33 t/s figure was an **in-region**
+  read rate; the production path reads **cross-region** (us-central1 ← us-west1), so once the write no
+  longer stalls the GPU the cross-region read latency became the ceiling.
+- **TUNED (applied):** `--num-workers 8→16` spent the idle CPU on more concurrent reads → **~24 t/s/A100
+  (~217 t/s aggregate) → South ETA ≈ 2.3 days**, GPU util now dense 68–100% (near the in-region ceiling).
+  16 is the launcher default (`scripts/launch_south_inference.sh`). Pushing higher isn't free — the
+  per-worker §11.3 quad-cache fragments (a shard's spatially-sorted tiles split across more workers →
+  fewer per-worker quad repeats → more GCS opens), so ~16 is the sweet spot, not "max".
+- **Remaining lever (not needed):** an **in-region** us-west1 fleet/staging would recover the last bit
+  toward 33 t/s, at stockout risk / 14 TB movement — not worth it at ~2.3 d. The GPU-scarcity fact still
+  holds (the master took ~500 retries; never stop it).
 - The write + fork-safety fixes are **baked into `rts-infer:v1`** (rebuilt+pushed 2026-07-07,
   `rts.git_sha=7b7d74c`). **Training** also runs on the same master (unavailable for v3 during the run).
   *(Historical: the us-west1-anchored and the 2026-07-06 us-central1 "move data" plans are retained in

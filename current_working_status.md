@@ -95,13 +95,14 @@ with a crash-loop guard; a silent single-GPU failure self-heals. Plus **sharded 
 (`assemble_region --cog-tile-px`) for the ~40× South extent (parallel super-tile COGs + `.vrt`; Banks path
 unchanged).
 
-**MEASURED throughput ≈ 12 t/s/A100 (~96–100 t/s aggregate) → ETA ~5 days — NOT the 1.8 d the write-fix
-note projected.** That 33 t/s was an **in-region** rate; the us-central1 master reads us-west1
-**cross-region**, and now that the write fix removed the write stall, cross-region reads are the exposed
-ceiling (~2.7× penalty). Confirmed **I/O-bound** (bursty GPU util, **~61 idle vCPUs / ~780 GB free RAM**).
-Cheapest lever if we want it faster: raise `--num-workers` (idle CPU hides more read latency); the real
-2.7× would need in-region reads (fleet/staging). SSoT corrected: `infrastructure.md` §region/throughput +
-`inference.md`. **Post-run:** assemble (sharded COG) → vectorize → products; delete stale `rts-mapping-v2-usc1`.
+**MEASURED + TUNED throughput.** At the launch default (8 workers) the run was **I/O-bound on
+cross-region reads** (us-central1 master ← us-west1 data) at ~12 t/s/A100 → ~5 d — *not* the 1.8 d the
+write-fix note projected (that 33 t/s was an **in-region** rate). With **~61 idle vCPUs**, raising
+`--num-workers 8→16` hid the read latency and **~doubled throughput to ~24 t/s/A100 (~217 t/s aggregate)
+→ ETA ~2.3 days**, GPU util now dense 68–100% (near the in-region ceiling). 16 is now the launcher
+default. (Higher isn't free — per-worker §11.3 quad-cache fragmentation eventually re-inflates opens.)
+SSoT corrected: `infrastructure.md` §region/throughput + `inference.md`. **Post-run:** assemble (sharded
+COG) → vectorize → products; delete stale `rts-mapping-v2-usc1`.
 
 **Master `a100-8x-train` never stop/rename (A100 scarcity, ~500-retry acquire; on inference ~5 d → no v3
 training meanwhile); shared PDG project — only touch our `rts-`/`rts-infer-*` resources.** Branch
