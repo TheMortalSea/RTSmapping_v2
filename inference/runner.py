@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import time
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -212,6 +213,51 @@ def _predict_batch(ctx: InferenceContext, images: torch.Tensor, dep_cfg: dict) -
     return probs.clamp_(0.0, 1.0).cpu().numpy()  # §10.1 range guard
 
 
+class _ProbWriter:
+    """Background prob-COG writer (inference.md §8.2).
+
+    The per-tile COG write — a temp-file COG + a single GCS upload — is a
+    latency-bound round-trip. Done synchronously in the batch loop it stalls the
+    GPU: on an A100 the write, not the read, was the throughput bottleneck
+    (benchmark 2026-07-07: GCS-write 2.8 t/s → local/async write ~29–36 t/s).
+    Writes run in a thread pool (uploads are I/O-bound → threads overlap them
+    with the next batch's read+compute). Bounded in-flight applies backpressure;
+    a tile is marked ``done`` only after its write **succeeds** (a crash leaves
+    unwritten tiles unmarked → reprocessed on resume). Not thread-safe: only the
+    owning loop calls ``submit``/``flush`` (manifest marking stays single-thread).
+    """
+
+    def __init__(self, manifest: "Manifest", dtype: str,
+                 max_workers: int = 16, max_inflight: int = 512) -> None:
+        self._pool = ThreadPoolExecutor(max_workers=max_workers)
+        self._manifest = manifest
+        self._dtype = dtype
+        self._max_inflight = max_inflight
+        self._pending: dict = {}  # future -> tile_id
+
+    def _reap(self, futures) -> None:
+        for fut in futures:
+            tile_id = self._pending.pop(fut)
+            fut.result()  # re-raise a failed write on the owning thread
+            self._manifest.mark(tile_id, "done")
+
+    def submit(self, path: str, prob: np.ndarray, bounds, tile_id: str) -> None:
+        fut = self._pool.submit(write_probability_tile, path, prob, bounds,
+                                dtype=self._dtype)
+        self._pending[fut] = tile_id
+        self._reap([f for f in self._pending if f.done()])  # non-blocking sweep
+        while len(self._pending) >= self._max_inflight:  # backpressure
+            done, _ = wait(list(self._pending), return_when=FIRST_COMPLETED)
+            self._reap(done)
+
+    def flush(self) -> None:
+        """Wait for all writes to finish, marking each done; then shut down."""
+        while self._pending:
+            done, _ = wait(list(self._pending), return_when=FIRST_COMPLETED)
+            self._reap(done)
+        self._pool.shutdown(wait=True)
+
+
 def _run_inference_multiscale(ctx: InferenceContext, todo: pd.DataFrame, out: str,
                               manifest: Manifest, device: torch.device, num_workers: int,
                               scales: list[float],
@@ -229,6 +275,8 @@ def _run_inference_multiscale(ctx: InferenceContext, todo: pd.DataFrame, out: st
                         num_workers=num_workers, collate_fn=_collate_multiscale)
     logger.info("MULTISCALE inference: scales=%s (§7.3 arithmetic-mean fusion)", scales)
 
+    writer = _ProbWriter(manifest, output_dtype,
+                         max_workers=ctx.run_cfg["inference"].get("write_threads", 16))
     t0, n_done = time.time(), 0
     for batch in loader:
         keep = [i for i, nd in enumerate(batch["all_nodata"]) if not nd]
@@ -247,9 +295,8 @@ def _run_inference_multiscale(ctx: InferenceContext, todo: pd.DataFrame, out: st
                 # contributes so fused is finite (0.5× only adds where also valid).
                 fused = np.where(valid[1.0], fused, NODATA_PROB).astype(np.float32)
                 tile_id = batch["tile_id"][i]
-                write_probability_tile(f"{out}/{tile_id}.tif", fused,
-                                       batch["bounds"][i], dtype=output_dtype)
-                manifest.mark(tile_id, "done")
+                writer.submit(f"{out}/{tile_id}.tif", fused, batch["bounds"][i],
+                              tile_id)
         n_done += len(batch["tile_id"])
         rate = n_done / (time.time() - t0)
         if n_done % 512 < len(batch["tile_id"]):
@@ -257,6 +304,7 @@ def _run_inference_multiscale(ctx: InferenceContext, todo: pd.DataFrame, out: st
                         rate, (len(todo) - n_done) / rate / 3600)
             if progress_cb is not None:
                 progress_cb(n_done, len(todo))
+    writer.flush()
     manifest.save()
     logger.info("Done (multiscale): %s", manifest.counts())
     return manifest.counts()
@@ -291,6 +339,8 @@ def run_inference(ctx: InferenceContext, tiles: pd.DataFrame, output: str,
     loader = DataLoader(dataset, batch_size=ctx.run_cfg["inference"]["batch_size"],
                         num_workers=num_workers, collate_fn=_collate)
 
+    writer = _ProbWriter(manifest, output_dtype,
+                         max_workers=ctx.run_cfg["inference"].get("write_threads", 16))
     t0, n_done = time.time(), 0
     for batch in loader:
         keep = [i for i, all_nd in enumerate(batch["all_nodata"]) if not all_nd]
@@ -303,9 +353,8 @@ def run_inference(ctx: InferenceContext, tiles: pd.DataFrame, output: str,
                 prob = probs[j]
                 prob[batch["nodata_mask"][i]] = NODATA_PROB  # §5.3 output mask
                 tile_id = batch["tile_id"][i]
-                write_probability_tile(f"{out}/{tile_id}.tif", prob,
-                                       batch["bounds"][i], dtype=output_dtype)
-                manifest.mark(tile_id, "done")
+                writer.submit(f"{out}/{tile_id}.tif", np.ascontiguousarray(prob),
+                              batch["bounds"][i], tile_id)
         n_done += len(batch["tile_id"])
         rate = n_done / (time.time() - t0)
         if n_done % 512 < len(batch["tile_id"]):
@@ -314,6 +363,7 @@ def run_inference(ctx: InferenceContext, tiles: pd.DataFrame, output: str,
             if progress_cb is not None:
                 progress_cb(n_done, len(todo))
 
+    writer.flush()
     manifest.save()
     logger.info("Done: %s", manifest.counts())
     return manifest.counts()

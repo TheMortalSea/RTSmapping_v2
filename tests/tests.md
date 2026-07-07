@@ -530,6 +530,19 @@ synthetic adjacent block masks sharing a seam.
 | `test_seam_split_slump_reassembles_and_survives_min_blob` | a slump split into two 200px halves (each < min_blob 300) reassembles to one 400px polygon and is KEPT — proves min_blob is applied AFTER the dissolve, no double-count | real — the core seam-stitch invariant |
 | `test_min_blob_zero_keeps_all_including_tiny` | min_blob=0 → interior + tiny + reassembled seam slump all kept | real — filter-off path |
 
+### [test_prob_writer.py](test_prob_writer.py)
+
+`inference/runner.py::_ProbWriter` — background thread-pool prob-COG writer that
+un-blocks the GPU from the per-tile GCS upload (the A100 throughput bottleneck;
+benchmark 2026-07-07: 2.8 → 33 t/s on the real worker once writes went async +
+the GCS client was cached). GPU-free.
+
+| Test | Checks | Strictness |
+|---|---|---|
+| `test_writes_all_tiles_and_marks_done_after_success` | all tiles written + marked done via the pool | real — async write correctness |
+| `test_backpressure_caps_inflight` | pending writes never exceed `max_inflight` on any submit | real — bounded-memory backpressure |
+| `test_write_error_propagates_and_tile_not_marked_done` | a failed write re-raises on the owning thread; the tile is NOT marked done (crash-safe resume) | real — the done-only-after-success invariant |
+
 ### [test_assemble_region.py](test_assemble_region.py)
 
 `scripts/assemble_region.py` — blocked windowed merge that assembles a whole

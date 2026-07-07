@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import tempfile
+import threading
 import time
 from pathlib import Path
 
@@ -36,6 +37,24 @@ _COG_PROFILE = dict(
     blockxsize=256, blockysize=256, crs="EPSG:3857",
 )
 
+# One shared GCS client, created lazily. A fresh storage.Client() per tile is
+# both slow (auth + connection setup dominated the per-tile write cost) and
+# unsafe under concurrent writes — 16 write threads each opening a client
+# exhausted the process file descriptors ("Too many open files"). The client is
+# thread-safe for uploads, so all writers share one connection pool.
+_GCS_CLIENT = None
+_GCS_CLIENT_LOCK = threading.Lock()
+
+
+def _gcs_client():
+    global _GCS_CLIENT
+    if _GCS_CLIENT is None:
+        with _GCS_CLIENT_LOCK:
+            if _GCS_CLIENT is None:
+                from google.cloud import storage
+                _GCS_CLIENT = storage.Client()
+    return _GCS_CLIENT
+
 
 def _write_raster(path: str, array: np.ndarray, bounds: tuple, dtype: str,
                   nodata: float | int) -> None:
@@ -50,9 +69,8 @@ def _write_raster(path: str, array: np.ndarray, bounds: tuple, dtype: str,
         try:
             with rasterio.open(tmp_path, "w", **profile) as dst:
                 dst.write(array.astype(dtype), 1)
-            from google.cloud import storage
             bucket_name, blob_name = str(path)[5:].split("/", 1)
-            storage.Client().bucket(bucket_name).blob(blob_name).upload_from_filename(tmp_path)
+            _gcs_client().bucket(bucket_name).blob(blob_name).upload_from_filename(tmp_path)
         finally:
             os.unlink(tmp_path)
     else:
