@@ -61,3 +61,50 @@ def test_write_error_propagates_and_tile_not_marked_done(tmp_path, monkeypatch):
             w.submit(str(tmp_path / f"t{k}.tif"), prob, BOUNDS, f"t{k}")
         w.flush()
     assert not man.is_done("t0")  # a failed write is never marked done
+
+
+# --- fork-safe DataLoader + stall watchdog (South-readiness, 2026-07-07) --------
+
+def test_make_loader_uses_forkserver_only_with_workers():
+    """Workers must not inherit the parent's gRPC/CUDA threads (the Banks GPU-0
+    fork deadlock): num_workers>0 pins forkserver; num_workers=0 stays in-process."""
+    ds = [{"x": i} for i in range(4)]
+    single = runner._make_loader(ds, batch_size=2, num_workers=0, collate_fn=list)
+    multi = runner._make_loader(ds, batch_size=2, num_workers=2, collate_fn=list)
+    # DataLoader resolves the "forkserver" string into a ForkServerContext object;
+    # None (the default) means in-process for the num_workers=0 case.
+    assert single.multiprocessing_context is None
+    assert multi.multiprocessing_context._name == "forkserver"
+
+
+def test_stall_watchdog_disabled_is_noop():
+    assert runner._start_stall_watchdog([0.0], 0, "x")() is None  # timeout<=0 -> no-op stop fn
+
+
+def test_stall_watchdog_does_not_kill_while_progressing():
+    """A watchdog with a short timeout must not fire while last_active keeps moving."""
+    import time
+    last = [time.time()]
+    stop = runner._start_stall_watchdog(last, 0.5, "x")
+    for _ in range(8):          # ~0.8s of steady progress, each tick < timeout
+        time.sleep(0.1)
+        last[0] = time.time()
+    stop()                      # still alive: os._exit never called
+    assert True
+
+
+def test_stall_watchdog_exits_process_on_hard_stall():
+    """In a subprocess (so os._exit can't kill the test runner): a stalled
+    last_active makes the watchdog os._exit(3)."""
+    import subprocess
+    import sys
+    import textwrap
+    code = textwrap.dedent("""
+        import time, inference.runner as r
+        r._start_stall_watchdog([time.time() - 100.0], 0.2, "stall")  # already stale
+        time.sleep(10)  # watchdog should os._exit(3) well before this returns
+        print("NOT_REACHED")
+    """)
+    proc = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=30)
+    assert proc.returncode == 3
+    assert "NOT_REACHED" not in proc.stdout

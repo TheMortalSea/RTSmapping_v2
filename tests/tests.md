@@ -543,6 +543,16 @@ the GCS client was cached). GPU-free.
 | `test_backpressure_caps_inflight` | pending writes never exceed `max_inflight` on any submit | real — bounded-memory backpressure |
 | `test_write_error_propagates_and_tile_not_marked_done` | a failed write re-raises on the owning thread; the tile is NOT marked done (crash-safe resume) | real — the done-only-after-success invariant |
 
+Also covers the South-readiness fork-safety fixes in `inference/runner.py` (2026-07-07):
+`_make_loader` (forkserver worker start, avoiding the fork+gRPC deadlock that stranded Banks GPU-0) and `_start_stall_watchdog` (os._exit a wedged worker so its shard is reclaimed).
+
+| Test | Checks | Strictness |
+|---|---|---|
+| `test_make_loader_uses_forkserver_only_with_workers` | num_workers>0 → ForkServerContext; num_workers=0 → in-process (None) | real — the deadlock fix |
+| `test_stall_watchdog_disabled_is_noop` | `stall_timeout_s<=0` returns a no-op stop fn, starts no thread | shallow — off-switch |
+| `test_stall_watchdog_does_not_kill_while_progressing` | a live `last_active` never triggers os._exit | real — no false positives |
+| `test_stall_watchdog_exits_process_on_hard_stall` | a stale `last_active` os._exit(3)s (asserted in a subprocess) | real — the self-heal trigger |
+
 ### [test_assemble_region.py](test_assemble_region.py)
 
 `scripts/assemble_region.py` — blocked windowed merge that assembles a whole
@@ -553,6 +563,7 @@ constant-value overlapping tile COGs.
 | Test | Checks | Strictness |
 |---|---|---|
 | `test_blocked_merge_matches_single_shot` | blocked `merge_window` reconstruction == single-shot `merge_tiles` (incl. NoData mask) at 3 block sizes — the seamlessness guarantee | real — §7 mosaic == merge |
+| `test_cog_grid_mosaic_matches_single_cog` | the parallel super-tile-COG grid + `.vrt` (`cog_tile_px>0`, the South-scale path) reads back pixel-identical to the monolithic single-COG path (`cog_tile_px=0`) | real — grid is a scale/perf change only; skips w/o GDAL CLI |
 | `test_iter_blocks_tiles_the_canvas_without_gaps` | `iter_blocks` partitions the canvas exactly once (no gap/overlap) | real — block grid |
 
 ### [test_build_rgb_chips.py](test_build_rgb_chips.py)

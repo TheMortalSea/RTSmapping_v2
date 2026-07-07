@@ -79,3 +79,7 @@ inference:
   # / NoData -1.0 (~570 KB/tile, ~24 TB). Not a calibration key (not §14-checked);
   # merge_predictions decodes either via writer.read_probability_tile.
   output_dtype: scaled_uint8   # scaled_uint8 | float32
+  write_threads: 16            # async prob-COG writer pool (runner._ProbWriter); the 2.8→33 t/s fix
+  stall_timeout_s: 900         # runner._start_stall_watchdog: os._exit the worker after this many
+  #                              seconds with no tile progress so a wedged DataLoader releases its
+  #                              shard (defence behind the forkserver fix); the supervisor restarts it.

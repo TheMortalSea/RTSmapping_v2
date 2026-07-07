@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
+import threading
 import time
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass
@@ -58,6 +60,54 @@ def _collate_multiscale(items: list[dict]) -> dict:
         "all_nodata": [it["all_nodata"] for it in items],
         "bounds": [tuple(it["bounds"]) for it in items],
     }
+
+
+def _make_loader(dataset, batch_size: int, num_workers: int, collate_fn) -> DataLoader:
+    """Build the inference DataLoader with a fork-safe worker start method.
+
+    ``build_context`` and the queue worker create ``storage.Client()`` (gRPC
+    background threads) in the parent *before* the loader spawns workers. The
+    default Linux ``fork`` copies those locked gRPC mutexes into every child, so
+    a worker can deadlock on its first GCS-adjacent call — the probabilistic
+    Banks GPU-0 hang where one shard never produced a tile. ``forkserver`` starts
+    each worker from a clean server process, so no parent thread/CUDA state
+    crosses. Workers read imagery via GDAL ``/vsigs/`` only and need no GCS client
+    of their own, and the dataset is picklable (DataFrames + lazily-built trees).
+    """
+    kwargs = dict(batch_size=batch_size, num_workers=num_workers, collate_fn=collate_fn)
+    if num_workers > 0:
+        kwargs["multiprocessing_context"] = "forkserver"
+    return DataLoader(dataset, **kwargs)
+
+
+def _start_stall_watchdog(last_active: list[float], timeout_s: float, label: str):
+    """Kill the worker process if the batch loop makes no progress for ``timeout_s``.
+
+    Defence-in-depth behind the ``forkserver`` fix: if a DataLoader worker still
+    wedges (any cause), the main thread blocks inside ``for batch in loader`` and
+    the claim's heartbeat thread keeps the shard alive forever — the exact way
+    Banks stranded a shard. This daemon watches a timestamp the loop bumps each
+    batch and, on a hard stall, ``os._exit``s so the claim goes stale and a
+    supervised restart (launch script's per-GPU ``until`` loop) picks up fresh
+    work; the stalled shard is later reclaimed and resumed from its manifest.
+    ``timeout_s <= 0`` disables it (tests / single-shot CLI). Returns a stop fn.
+    """
+    if not timeout_s or timeout_s <= 0:
+        return lambda: None
+    stop = threading.Event()
+
+    def _watch() -> None:
+        while not stop.wait(min(30.0, timeout_s / 4)):
+            idle = time.time() - last_active[0]
+            if idle > timeout_s:
+                logger.critical(
+                    "STALL: no tile progress for %.0fs (%s) — exiting worker for "
+                    "supervised restart; the shard will be reclaimed and resumed",
+                    idle, label)
+                os._exit(3)
+
+    threading.Thread(target=_watch, daemon=True).start()
+    return stop.set
 
 
 def _crop_center_upsample(arr: np.ndarray, out_size: int, frac: float) -> np.ndarray:
@@ -271,14 +321,18 @@ def _run_inference_multiscale(ctx: InferenceContext, todo: pd.DataFrame, out: st
     dataset = InferenceTileDataset(todo, ctx.quad_index, pkg["stats"],
                                    s2_index=ctx.s2_index, extra_bands=ctx.extra_bands,
                                    scales=scales)
-    loader = DataLoader(dataset, batch_size=ctx.run_cfg["inference"]["batch_size"],
-                        num_workers=num_workers, collate_fn=_collate_multiscale)
+    loader = _make_loader(dataset, ctx.run_cfg["inference"]["batch_size"],
+                          num_workers, _collate_multiscale)
     logger.info("MULTISCALE inference: scales=%s (§7.3 arithmetic-mean fusion)", scales)
 
     writer = _ProbWriter(manifest, output_dtype,
                          max_workers=ctx.run_cfg["inference"].get("write_threads", 16))
     t0, n_done = time.time(), 0
+    last_active = [time.time()]
+    stop_watchdog = _start_stall_watchdog(
+        last_active, ctx.run_cfg["inference"].get("stall_timeout_s", 900.0), out)
     for batch in loader:
+        last_active[0] = time.time()
         keep = [i for i, nd in enumerate(batch["all_nodata"]) if not nd]
         for i, nd in enumerate(batch["all_nodata"]):
             if nd:
@@ -305,6 +359,7 @@ def _run_inference_multiscale(ctx: InferenceContext, todo: pd.DataFrame, out: st
             if progress_cb is not None:
                 progress_cb(n_done, len(todo))
     writer.flush()
+    stop_watchdog()
     manifest.save()
     logger.info("Done (multiscale): %s", manifest.counts())
     return manifest.counts()
@@ -336,13 +391,17 @@ def run_inference(ctx: InferenceContext, tiles: pd.DataFrame, output: str,
                                          num_workers, scales, progress_cb)
     dataset = InferenceTileDataset(todo, ctx.quad_index, pkg["stats"], scale=scale,
                                    s2_index=ctx.s2_index, extra_bands=ctx.extra_bands)
-    loader = DataLoader(dataset, batch_size=ctx.run_cfg["inference"]["batch_size"],
-                        num_workers=num_workers, collate_fn=_collate)
+    loader = _make_loader(dataset, ctx.run_cfg["inference"]["batch_size"],
+                          num_workers, _collate)
 
     writer = _ProbWriter(manifest, output_dtype,
                          max_workers=ctx.run_cfg["inference"].get("write_threads", 16))
     t0, n_done = time.time(), 0
+    last_active = [time.time()]
+    stop_watchdog = _start_stall_watchdog(
+        last_active, ctx.run_cfg["inference"].get("stall_timeout_s", 900.0), out)
     for batch in loader:
+        last_active[0] = time.time()
         keep = [i for i, all_nd in enumerate(batch["all_nodata"]) if not all_nd]
         for i, all_nd in enumerate(batch["all_nodata"]):
             if all_nd:
@@ -364,6 +423,7 @@ def run_inference(ctx: InferenceContext, tiles: pd.DataFrame, output: str,
                 progress_cb(n_done, len(todo))
 
     writer.flush()
+    stop_watchdog()
     manifest.save()
     logger.info("Done: %s", manifest.counts())
     return manifest.counts()

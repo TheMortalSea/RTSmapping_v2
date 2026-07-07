@@ -4,17 +4,19 @@ reproduce a single-shot merge exactly, so non-overlapping blocks mosaic seamless
 
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import pytest
+import rasterio
 
 from inference.quad_index import RESOLUTION_M
 from inference.tiles import TILE_SIZE_PX
 from inference.writer import NODATA_PROB, write_probability_tile
 from scripts.assemble_region import (
-    build_tile_paths, canvas_bounds, iter_blocks, merge_window,
+    assemble, build_tile_paths, canvas_bounds, iter_blocks, merge_window,
 )
 from scripts.merge_predictions import merge_tiles
 
@@ -70,6 +72,29 @@ def test_blocked_merge_matches_single_shot(tmp_path, block_px):
     both_data = (full != NODATA_PROB) & (recon != NODATA_PROB)
     assert np.array_equal(full == NODATA_PROB, recon == NODATA_PROB)
     np.testing.assert_allclose(recon[both_data], full[both_data], atol=1e-5)
+
+
+@pytest.mark.skipif(shutil.which("gdal_translate") is None
+                    or shutil.which("gdalbuildvrt") is None,
+                    reason="GDAL CLI not available")
+def test_cog_grid_mosaic_matches_single_cog(tmp_path):
+    """The parallel super-tile-COG grid (+.vrt) must read back identically to the
+    monolithic single-COG path — the grid is a performance/scale change only."""
+    tiles, tile_paths = _synthetic_tiles(tmp_path, n=3)
+    common = dict(threshold=0.65, sigma_px=SIGMA, block_px=256, workers=2)
+
+    single = assemble(tiles, tile_paths, tmp_path / "single", cog_tile_px=0, **common)
+    grid = assemble(tiles, tile_paths, tmp_path / "grid", cog_tile_px=512, **common)
+
+    assert single["n_cog_shards"] == 1 and grid["n_cog_shards"] >= 1
+    assert Path(grid["probability_cog"]).suffix == ".vrt"      # grid product is a VRT mosaic
+    with rasterio.open(single["probability_cog"]) as a, \
+            rasterio.open(grid["probability_cog"]) as b:
+        assert (a.width, a.height) == (b.width, b.height)
+        pa, pb = a.read(1), b.read(1)
+    both = (pa != NODATA_PROB) & (pb != NODATA_PROB)
+    assert np.array_equal(pa == NODATA_PROB, pb == NODATA_PROB)
+    np.testing.assert_allclose(pa[both], pb[both], atol=1e-5)
 
 
 def test_iter_blocks_tiles_the_canvas_without_gaps():
