@@ -7,11 +7,22 @@ importable anywhere else — there is no Linux/CI path for this script). Two
 ways to run it:
 
   1. Open ArcGIS Pro, open (or start a new blank) project, then in the
-     Python window: `%run build_arcgis_project.py --products-dir D:\\rts_qc\\banks`
+     Python window (a plain Python console — no IPython, so no `%run` magic):
+        ```
+        import sys
+        sys.path.insert(0, r"E:\path\to\this\script's\folder")
+        import build_arcgis_project as bap
+        sys.argv = ["build_arcgis_project.py",
+                    "--products-dir", r"D:\rts_qc\banks",
+                    "--products-uri", "gs://rts-mapping-v2-usw1/inference/banks/products/"]
+        bap.main()
+        ```
      — this adds layers to the *currently open* project/map.
-  2. From a shell using Pro's own python.exe, pointing at an existing .aprx:
-     `& "C:\\Program Files\\ArcGIS\\Pro\\bin\\Python\\envs\\arcgispro-py3\\python.exe" ^
-        build_arcgis_project.py --products-dir D:\\rts_qc\\banks --project D:\\rts_qc\\banks.aprx`
+  2. From the "Python Command Prompt" ArcGIS Pro installs (Start Menu ->
+     ArcGIS -> Python Command Prompt; activates arcgispro-py3), pointing at
+     an existing .aprx (no open Pro session needed, so `--project` is
+     required — "CURRENT" only resolves inside a live Pro session):
+     `python build_arcgis_project.py --products-dir D:\rts_qc\banks --project D:\rts_qc\banks.aprx`
 
 Either way, pass `--products-uri` to have it pull the whole products/ prefix
 (probability.tif, mask.tif, banks_rts.gpkg, region_log.json, rgb_chips/,
@@ -28,6 +39,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -47,10 +59,19 @@ logger = logging.getLogger(__name__)
 
 
 def download_products(products_uri: str, products_dir: Path) -> None:
-    """One-shot pull of the whole products/ prefix via the GCS CLI."""
+    """One-shot pull of the whole products/ prefix via the GCS CLI.
+
+    Resolves the executable via ``shutil.which`` rather than passing the bare
+    "gcloud" to subprocess: on Windows gcloud is installed as ``gcloud.cmd``,
+    and unlike a real shell, Python's subprocess doesn't consult PATHEXT for a
+    bare name — it needs the resolved path (WinError 2 otherwise).
+    """
+    gcloud = shutil.which("gcloud")
+    if gcloud is None:
+        raise RuntimeError("gcloud not found on PATH — install the Google Cloud SDK")
     products_dir.mkdir(parents=True, exist_ok=True)
     subprocess.run(
-        ["gcloud", "storage", "rsync", "-r", products_uri, str(products_dir)],
+        [gcloud, "storage", "rsync", "-r", products_uri, str(products_dir)],
         check=True,
     )
     logger.info("Synced %s -> %s", products_uri, products_dir)
@@ -138,6 +159,10 @@ def main() -> int:
     aprx = arcpy.mp.ArcGISProject(args.project or "CURRENT")
     maps = aprx.listMaps(args.map_name) if args.map_name else aprx.listMaps()
     m = maps[0] if maps else aprx.createMap("RTS QC")
+    # A newly-created map (or one that just isn't the active view) exists in
+    # the project but isn't necessarily visible — openView() activates it so
+    # the layers we're about to add actually show up on screen.
+    m.openView()
 
     rts_lyr = add_layers(m, args.products_dir)
     zoom_to_layer(aprx, rts_lyr)
